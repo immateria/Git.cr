@@ -1,11 +1,12 @@
 module Git
+  # :nodoc:
   # Typed commits and committed-tree inspection; never reads worktree files.
   # Requires only ref resolution and the object database.
   class HeadTree
     def initialize(@metadata : Metadata, @object_database : ObjectDatabase, @max_search_entries : Int32, @object_format : ObjectId::Format)
     end
 
-    def head_entry(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
+    protected def head_entry(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
       PathBytes.validate_relative!(path)
       parts = path.split('/')
       _, oid = @metadata.head
@@ -26,7 +27,7 @@ module Git
       raise Git::Error.new("Git tree lookup failed")
     end
 
-    def head_directory(path : String, max_bytes : Int32, &check : -> Nil) : Array({String, String, String})
+    protected def head_directory(path : String, max_bytes : Int32, &check : -> Nil) : Array({String, String, String})
       _, oid = @metadata.head
       raise Git::Error.new("Git HEAD has no commit") unless oid
       current = Commit.read(@object_database, oid, @object_format, max_bytes) { check.call }.tree
@@ -40,7 +41,7 @@ module Git
       parse_tree(raw)
     end
 
-    def read_head_file(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
+    protected def read_head_file(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
       mode, oid = head_entry(path, max_bytes) { check.call }
       raise Git::Error.new("Git HEAD entry is not a regular file") unless {"100644", "100755"}.includes?(mode)
       kind, content = @object_database.object(oid, max_bytes) { check.call }
@@ -56,7 +57,7 @@ module Git
       nil
     end
 
-    def parse_tree(raw : String) : Array({String, String, String})
+    protected def parse_tree(raw : String) : Array({String, String, String})
       results = [] of {String, String, String}
       pos = 0
       while pos < raw.bytesize

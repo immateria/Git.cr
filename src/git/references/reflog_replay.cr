@@ -1,6 +1,7 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
+      # :nodoc:
       # A reflog replay step is tied to the exact previous file prefix and
       # complete encoded entry. The journal stores only a digest of the
       # previous bytes, not their potentially large or private content.
@@ -9,8 +10,8 @@ module Git
 
       MAX_REFLOG_BYTES = 8_388_608
 
-      def self.log_intents(metadata : Metadata, format : ObjectId::Format,
-                           changes : Array(Change)) : Array(LogIntent)
+      protected def self.log_intents(metadata : Metadata, format : ObjectId::Format,
+                                     changes : Array(Change)) : Array(LogIntent)
         attached, _ = metadata.head
         logs = [] of LogIntent
         changes.each do |change|
@@ -88,8 +89,8 @@ module Git
           Digest::SHA256.hexdigest(before), attached_ref)
       end
 
-      def self.validate_logs!(changes : Array(Change), logs : Array(LogIntent),
-                              format : ObjectId::Format) : Nil
+      protected def self.validate_logs!(changes : Array(Change), logs : Array(LogIntent),
+                                        format : ObjectId::Format) : Nil
         raise Error.new("Git recovery reflog count exceeded") if logs.size > MAX_CHANGES * 2
         seen = Set({Bool, String}).new
         logs.each do |log|
@@ -128,9 +129,9 @@ module Git
       # resumed byte-for-byte, and a complete append is never duplicated.
       # External Git writers do not participate in this journal lock: their
       # concurrent modifications are detected when observed, not excluded.
-      def self.replay_logs!(metadata : Metadata, changes : Array(Change),
-                            logs : Array(LogIntent), format : ObjectId::Format,
-                            after_reflog : Proc(String, Nil)? = nil) : Nil
+      protected def self.replay_logs!(metadata : Metadata, changes : Array(Change),
+                                      logs : Array(LogIntent), format : ObjectId::Format,
+                                      after_reflog : Proc(String, Nil)? = nil) : Nil
         validate_logs!(changes, logs, format)
         logs.each do |log|
           if attached = log.attached_ref

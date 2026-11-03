@@ -1,11 +1,12 @@
 require "set"
 
 module Git
+  # :nodoc:
   # Bounded native revision parent selectors and commit-DAG merge bases.
   module Revision
-    def self.resolve_commit(repository : Repository, expression : String,
-                            max_bytes : Int32, check : Proc(Nil)?, *,
-                            max_hops : Int32 = 4_096) : String
+    protected def self.resolve_commit(repository : Repository, expression : String,
+                                      max_bytes : Int32, check : Proc(Nil)?, *,
+                                      max_hops : Int32 = 4_096) : String
       raise ArgumentError.new("invalid Git revision hop budget") if max_hops < 1
       raise Error.new("Git revision selector rejected") if expression.empty? || expression.bytesize > 4_096
       first_op = expression.index(/[~^]/) || raise Error.new("invalid Git revision expression")
@@ -41,13 +42,13 @@ module Git
         if op == '~'.ord
           count.times do
             check.try &.call
-            parent = repository.commit(oid, max_bytes) { check.try &.call }.parents.first?
+            parent = repository.read_commit(oid, max_bytes: max_bytes, check: check).parents.first?
             raise Error.new("Git revision first parent missing") unless parent
             oid = parent
           end
         elsif op == '^'.ord
           if count > 0
-            commit = repository.commit(oid, max_bytes) { check.try &.call }
+            commit = repository.read_commit(oid, max_bytes: max_bytes, check: check)
             parent = commit.parents[count.to_i - 1]?
             raise Error.new("Git revision parent missing") unless parent
             oid = parent
@@ -75,7 +76,7 @@ module Git
         next unless seen.add?(oid)
         commit = cache[oid]? || begin
           raise Error.new("Git merge-base node budget exceeded") if cache.size >= max_nodes
-          loaded = repository.commit(oid, max_bytes) { check.try &.call }
+          loaded = repository.read_commit(oid, max_bytes: max_bytes, check: check)
           cache[oid] = loaded
           loaded
         end
@@ -84,9 +85,9 @@ module Git
       seen
     end
 
-    def self.merge_bases(repository : Repository, left : String, right : String, *,
-                         max_nodes : Int32 = 16_384, max_commit_bytes : Int32 = 8_388_608,
-                         check : Proc(Nil)? = nil) : Array(String)
+    protected def self.merge_bases(repository : Repository, left : String, right : String, *,
+                                   max_nodes : Int32 = 16_384, max_commit_bytes : Int32 = 8_388_608,
+                                   check : Proc(Nil)? = nil) : Array(String)
       raise ArgumentError.new("invalid Git merge-base budgets") if max_nodes < 1 || max_commit_bytes < 128
       repository.check!
       left_oid = resolve_commit(repository, left, max_commit_bytes, check, max_hops: max_nodes)

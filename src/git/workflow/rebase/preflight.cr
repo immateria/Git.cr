@@ -14,7 +14,7 @@ module Git
       until cursor == base
         check.try &.call
         raise Error.new("Git rebase commit budget exceeded") if reverse.size >= max_commits
-        entry = commit(cursor, max_object_bytes) { check.try &.call }
+        entry = read_commit(cursor, max_bytes: max_object_bytes, check: check)
         raise Error.new("Git rebase merge commits unsupported") if entry.parents.size > 1
         parent = entry.parents.first? || raise Error.new("Git rebase base is not on the first-parent chain")
         reverse << cursor
@@ -29,7 +29,7 @@ module Git
                                         max_total_bytes : Int64,
                                         max_entries : Int32,
                                         check : Proc(Nil)?) : Nil
-      tree = commit(head_oid, max_object_bytes) { check.try &.call }.tree
+      tree = read_commit(head_oid, max_bytes: max_object_bytes, check: check).tree
       expected = Checkout.tree_files(self, tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
       current = @index.entries(max_index_bytes) { check.try &.call }

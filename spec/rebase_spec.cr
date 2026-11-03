@@ -44,8 +44,8 @@ describe "P33 native Git linear multi-commit rebase" do
         GitOracle.run(root, "log", "--reverse", "--format=%s|%an <%ae>", "#{main}..HEAD").stdout.should eq(oracle_log)
         GitOracle.run(root, "rev-list", "--first-parent", "--count", "#{main}..HEAD").stdout.strip.should eq("2")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.rebase_state?.should be_nil
-        repo.sequencer_state?.should be_nil
+        repo.rebase.state?.should be_nil
+        repo.sequencer.state?.should be_nil
       end
     end
 
@@ -76,22 +76,22 @@ describe "P33 native Git linear multi-commit rebase" do
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(main)
         File.read(File.join(root, ".git", "REBASE_HEAD")).strip.should eq(first)
         File.exists?(File.join(root, ".git", "CHERRY_PICK_HEAD")).should be_false
-        state = repo.rebase_state?.not_nil!
+        state = repo.rebase.state?.not_nil!
         state.next_index.should eq(0)
         state.expected_head.should eq(main)
-        repo.sequencer_state?.not_nil!.kind.rebase?.should be_true
+        repo.sequencer.state?.not_nil!.kind.rebase?.should be_true
         GitOracle.run(root, "ls-files", "-u").stdout.should_not eq("")
 
         File.write(File.join(root, "shared"), "resolved\n")
         repo.stage_file("shared")
-        completed = repo.rebase_continue(committer: sig)
+        completed = repo.rebase.continue(committer: sig)
         completed.completed.should be_true
         completed.next_index.should eq(2)
         File.read(File.join(root, "shared")).should eq("resolved\n")
         File.read(File.join(root, "later")).should eq("later\n")
         GitOracle.run(root, "log", "--reverse", "--format=%s", "#{main}..HEAD").stdout.should eq("conflicting pick\nlater pick\n")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.rebase_state?.should be_nil
+        repo.rebase.state?.should be_nil
       end
     end
 
@@ -115,7 +115,7 @@ describe "P33 native Git linear multi-commit rebase" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("R", "r@example.test", 1234567890_i64, 0)
         repo.rebase("main", committer: sig).completed.should be_false
-        result = repo.rebase_skip(committer: sig)
+        result = repo.rebase.skip(committer: sig)
         result.completed.should be_true
         File.read(File.join(root, "f")).should eq("main\n")
         File.read(File.join(root, "g")).should eq("keep\n")
@@ -148,14 +148,14 @@ describe "P33 native Git linear multi-commit rebase" do
         result.completed.should be_false
         result.next_index.should eq(1)
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should_not eq(original)
-        repo.rebase_abort(committer: sig).should_not be_empty
+        repo.rebase.abort(committer: sig).should_not be_empty
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
         GitOracle.run(root, "rev-parse", "HEAD^{tree}").stdout.strip.should eq(original_tree)
         File.read(File.join(root, "f")).should eq("topic conflict\n")
         File.read(File.join(root, "a")).should eq("first\n")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.rebase_state?.should be_nil
-        repo.sequencer_state?.should be_nil
+        repo.rebase.state?.should be_nil
+        repo.sequencer.state?.should be_nil
       end
     end
 
@@ -198,7 +198,7 @@ describe "P33 native Git linear multi-commit rebase" do
         result.completed.should be_true
         result.total.should eq(0)
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
-        repo.rebase_state?.should be_nil
+        repo.rebase.state?.should be_nil
       end
     end
 
@@ -224,7 +224,7 @@ describe "P33 native Git linear multi-commit rebase" do
           repo.rebase("upstream", committer: sig, onto: "side")
         end
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
-        repo.rebase_state?.should be_nil
+        repo.rebase.state?.should be_nil
         File.exists?(File.join(root, ".git", "rebase-merge")).should be_false
       end
     end
@@ -340,12 +340,12 @@ describe "P33 native Git linear multi-commit rebase" do
         sig = Git::Signature.new("R", "r@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "f"), "dirty\n")
         expect_raises(Git::Error, /dirty/) { repo.rebase(upstream, committer: sig) }
-        repo.rebase_state?.should be_nil
+        repo.rebase.state?.should be_nil
         GitOracle.run(root, "checkout", "--", "f")
         File.write(File.join(root, "staged"), "staged\n")
         GitOracle.run(root, "add", "staged")
         expect_raises(Git::Error, /index equal to HEAD/) { repo.rebase(upstream, committer: sig) }
-        repo.rebase_state?.should be_nil
+        repo.rebase.state?.should be_nil
       end
     end
 
@@ -364,12 +364,12 @@ describe "P33 native Git linear multi-commit rebase" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("R", "r@example.test", 1234567890_i64, 0)
         repo.rebase("main", committer: sig).completed.should be_false
-        expect_raises(Git::Error, /rebase|sequencer/) { repo.reset_head(mode: Git::Reset::Mode::Mixed) }
-        expect_raises(Git::Error, /rebase|sequencer/) { repo.checkout_branch("main") }
-        expect_raises(Git::Error, /rebase|sequencer/) { repo.commit_staged(author: sig, committer: sig, message: "bad") }
-        expect_raises(Git::Error, /rebase|sequencer/) { repo.merge_three_way("main", author: sig, committer: sig, message: "bad") }
+        expect_raises(Git::Error, /rebase|sequencer/) { repo.reset(mode: Git::Reset::Mode::Mixed) }
+        expect_raises(Git::Error, /rebase|sequencer/) { repo.switch("main") }
+        expect_raises(Git::Error, /rebase|sequencer/) { repo.commit(author: sig, committer: sig, message: "bad") }
+        expect_raises(Git::Error, /rebase|sequencer/) { repo.merge("main", author: sig, committer: sig, message: "bad") }
         expect_raises(Git::Error, /progress|sequencer|rebase/) { repo.cherry_pick("main", committer: sig) }
-        repo.rebase_abort(committer: sig)
+        repo.rebase.abort(committer: sig)
       end
     end
 
@@ -394,7 +394,7 @@ describe "P33 native Git linear multi-commit rebase" do
         expect_raises(Git::Error) { repo.rebase("main", committer: sig) }
         File.read(File.join(root, ".git", "index.lock")).should eq("foreign")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
-        repo.rebase_state?.should be_nil
+        repo.rebase.state?.should be_nil
         File.exists?(File.join(root, ".git", "rebase-merge")).should be_false
       end
     end
@@ -417,13 +417,13 @@ describe "P33 native Git linear multi-commit rebase" do
         repo.rebase("main", committer: sig).completed.should be_false
         File.write(File.join(root, "unrelated"), "keep\n")
         repo.stage_file("unrelated")
-        expect_raises(Git::Error, /unrelated staged/) { repo.rebase_abort(committer: sig) }
-        repo.rebase_state?.should_not be_nil
-        repo.sequencer_state?.should_not be_nil
+        expect_raises(Git::Error, /unrelated staged/) { repo.rebase.abort(committer: sig) }
+        repo.rebase.state?.should_not be_nil
+        repo.sequencer.state?.should_not be_nil
         File.read(File.join(root, "unrelated")).should eq("keep\n")
         repo.remove_from_index("unrelated")
         File.delete(File.join(root, "unrelated"))
-        repo.rebase_abort(committer: sig)
+        repo.rebase.abort(committer: sig)
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
@@ -456,9 +456,9 @@ describe "P33 native Git linear multi-commit rebase" do
         expect_raises(Git::Sequencer::PartialPublication) do
           repo.rebase("main", committer: sig, check: check)
         end
-        repo.rebase_state?.should_not be_nil
-        repo.sequencer_state?.not_nil!.kind.rebase?.should be_true
-        repo.rebase_abort(committer: sig)
+        repo.rebase.state?.should_not be_nil
+        repo.sequencer.state?.not_nil!.kind.rebase?.should be_true
+        repo.rebase.abort(committer: sig)
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
@@ -481,7 +481,7 @@ describe "P33 native Git linear multi-commit rebase" do
         sig = Git::Signature.new("R", "r@example.test", 1234567890_i64, 0)
         repo.rebase("main", committer: sig).completed.should be_false
         GitOracle.run(root, "ls-files", "--stage", "f").stdout.lines.size.should eq(3)
-        repo.rebase_abort(committer: sig)
+        repo.rebase.abort(committer: sig)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
     end

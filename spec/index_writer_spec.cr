@@ -14,9 +14,9 @@ describe "P18 native index mutation" do
         staged[0].should contain("100644 #{oid} 0\talpha.txt")
         staged[1].should contain("100755 ")
         GitOracle.run(root, "diff", "--cached", "--name-status").stdout.should contain("alpha.txt")
-        repo.staged_changes(8192, 10) { nil }[0].size.should eq(2)
+        repo.staged_changes(max_bytes: 8192, limit: 10).size.should eq(2)
         tree_oid = GitOracle.run(root, "write-tree").stdout.strip
-        repo.object(tree_oid, 8192) { nil }[0].should eq("tree")
+        repo.read_object(tree_oid, max_bytes: 8192).type.should eq(Git::ObjectType::Tree)
         repo.stage_blob("alpha.txt", "updated\n").should eq(GitOracle.run(root, "hash-object", "--stdin", input: "updated\n").stdout.strip)
         GitOracle.run(root, "ls-files", "--stage").stdout.lines.size.should eq(2)
         File.exists?(File.join(root, ".git", "index.lock")).should be_false
@@ -93,7 +93,7 @@ describe "P18 index v3/v4 mutation compatibility" do
           GitOracle.run(root, "ls-files", "-v").stdout.lines.find(&.includes?("a.txt")).not_nil!.should start_with("S ")
           GitOracle.run(root, "ls-files", "--stage").stdout.should contain("middle.txt")
           GitOracle.run(root, "write-tree")
-          repo.staged_changes(32_768, 10) { nil }[0].size.should eq(3)
+          repo.staged_changes(max_bytes: 32_768, limit: 10).size.should eq(3)
         end
       end
     end

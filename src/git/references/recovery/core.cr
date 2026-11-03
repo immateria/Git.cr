@@ -1,6 +1,6 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
       # Durable, caller-initiated forward recovery for the files-reference backend.
       # This is a redo journal, NOT a claim of globally atomic filesystem writes.
       # The original mixed-ref writer remains the only publisher of Git refs.
@@ -20,13 +20,15 @@ module Git
       class Conflict < Git::Error
       end
 
+      # :nodoc:
       record Stored, changes : Array(Change), logs : Array(LogIntent), index : Index::Image? = nil
+      # :nodoc:
       # A durable, strictly scoped cleanup intent; it survives an abrupt exit
       # after .redo removal and identifies only locks created by this finalizer.
       record Finalization, token : String, redo_checksum : String,
         refs : Array({String, String?}), index_checksum : String?
 
-      def self.validate!(changes : Array(Change), format : ObjectId::Format) : Nil
+      protected def self.validate!(changes : Array(Change), format : ObjectId::Format) : Nil
         raise Error.new("empty Git recovery transaction") if changes.empty?
         raise Error.new("Git recovery transaction exceeds entry budget") if changes.size > MAX_CHANGES
         previous = ""

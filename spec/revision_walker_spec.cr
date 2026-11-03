@@ -73,11 +73,11 @@ describe "Git::History::RevisionWalker" do
           args = ["rev-list", "--objects"] + wants + (haves.empty? ? [] of String : ["--not"] + haves)
           expected = rev_list(root, args).map { |line| line.starts_with?(resolve(root, "v1")) ? resolve(root, "v1") : line }.to_set
           items = repo.reachable_objects(wants.map { |rev| resolve(root, rev) }, haves.map { |rev| resolve(root, rev) })
-          actual = items.map { |item| item.type == "commit" || item.type == "tag" ? item.oid : "#{item.oid} #{item.path}" }.to_set
+          actual = items.map { |item| item.type.commit? || item.type.tag? ? item.oid : "#{item.oid} #{item.path}" }.to_set
           {wants, haves, actual}.should eq({wants, haves, expected})
           items.map(&.oid).uniq.size.should eq(items.size)
           items.each do |item|
-            GitOracle.run(root, "cat-file", "-t", item.oid).stdout.strip.should eq(item.type)
+            GitOracle.run(root, "cat-file", "-t", item.oid).stdout.strip.should eq(item.type.to_s)
           end
         end
         commits = Git::History::RevisionWalker.new(repo).commits([resolve(root, "main")], [resolve(root, "topic~2")])

@@ -32,22 +32,22 @@ describe "P22 native Git initialization" do
           File.read(File.join(admin, "HEAD")).should eq(File.read(File.join(other, "HEAD")))
           native.object_format.should eq(selected)
           native.bare?.should eq(bare)
-          native.head.should eq({"refs/heads/main", nil})
+          native.head.should eq(Git::References::Ref.new("HEAD", nil, "refs/heads/main"))
           GitOracle.run(root, "rev-parse", "--is-bare-repository").stdout.strip.should eq(bare.to_s)
           GitOracle.run(root, "symbolic-ref", "HEAD").stdout.strip.should eq("refs/heads/main")
           sig = Git::Signature.new("Writer", "writer@example.invalid", 1_700_000_000_i64, 0)
           if bare
             tree = native.write_tree([] of Git::Tree::Entry)
             oid = native.write_commit(tree: tree, author: sig, committer: sig, message: "bare\n")
-            native.update_ref("refs/heads/main", oid, expected_oid: nil)
+            native.refs.update("refs/heads/main", oid, expected_oid: nil)
             GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(oid)
           else
             native.stage_file("hello.txt")
-            oid = native.commit_staged(author: sig, committer: sig, message: "initial\n")
+            oid = native.commit(author: sig, committer: sig, message: "initial\n")
             GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(oid)
             GitOracle.run(root, "ls-tree", "-r", "HEAD").stdout.should contain("hello.txt")
           end
-          native.check!
+          native.revalidate!
         ensure
           FileUtils.rm_rf(base)
         end
@@ -112,9 +112,9 @@ describe "P10 native Git full commit-history traversal" do
         GitOracle.run(root, "tag", "-a", "v1", "-m", "release")
 
         repository = Git::Repository.new(root)
-        result = repository.history
+        result = repository.log(order: Git::History::Order::Topological)
         result.scanned.should eq(4)
-        result.truncated.should be_false
+        result.truncated?.should be_false
         result.commits.map(&.oid).to_set.should eq([baseline, side, main, merged].to_set)
         result.commits.first.oid.should eq(merged)
         index = {} of String => Int32
@@ -123,18 +123,18 @@ describe "P10 native Git full commit-history traversal" do
           commit.parents.each { |parent| index[commit.oid].should be < index[parent] }
         end
         GitOracle.run(root, "rev-list", "--all", "--count").stdout.strip.should eq(result.scanned.to_s)
-        abbreviated = repository.history(["HEAD"], limit: 2)
-        abbreviated.truncated.should be_true
+        abbreviated = repository.log(["HEAD"], limit: 2, order: Git::History::Order::Topological)
+        abbreviated.truncated?.should be_true
         abbreviated.commits.size.should eq(2)
         abbreviated.scanned.should eq(4)
-        repository.history(["refs/tags/v1"]).commits.first.oid.should eq(merged)
-        repository.history(["refs/heads/side"]).commits.map(&.oid).should eq([side, baseline])
-        repository.history([main]).commits.map(&.oid).should eq([main, baseline])
-        repository.history(["refs/heads/main", "refs/heads/side"]).scanned.should eq(4)
-        expect_raises(Git::Error, /node budget/) { repository.history(max_nodes: 2) }
-        expect_raises(Git::Error, /revision/) { repository.history(["--all"]) }
-        expect_raises(Git::Error, /resolved/) { repository.history(["refs/heads/missing"]) }
-        expect_raises(Git::Error, /not available/) { repository.history(["0" * repository.object_format.hexsize]) }
+        repository.log(["refs/tags/v1"], order: Git::History::Order::Topological).commits.first.oid.should eq(merged)
+        repository.log(["refs/heads/side"], order: Git::History::Order::Topological).commits.map(&.oid).should eq([side, baseline])
+        repository.log([main], order: Git::History::Order::Topological).commits.map(&.oid).should eq([main, baseline])
+        repository.log(["refs/heads/main", "refs/heads/side"], order: Git::History::Order::Topological).scanned.should eq(4)
+        expect_raises(Git::Error, /node budget/) { repository.log(max_commits: 2, order: Git::History::Order::Topological) }
+        expect_raises(Git::Error, /revision/) { repository.log(["--all"], order: Git::History::Order::Topological) }
+        expect_raises(Git::Error, /unknown Git revision/) { repository.log(["refs/heads/missing"], order: Git::History::Order::Topological) }
+        expect_raises(Git::Error, /unknown Git revision/) { repository.log(["0" * repository.object_format.hexsize], order: Git::History::Order::Topological) }
       end
     end
 
@@ -144,14 +144,14 @@ describe "P10 native Git full commit-history traversal" do
       begin
         repository = Git::Repository.init(base,
           object_format: format == "sha256" ? Git::ObjectId::Format::SHA256 : Git::ObjectId::Format::SHA1)
-        repository.history.scanned.should eq(0)
-        repository.history.commits.should be_empty
+        repository.log(order: Git::History::Order::Topological).scanned.should eq(0)
+        repository.log(order: Git::History::Order::Topological).commits.should be_empty
         signature = Git::Signature.new("Writer", "writer@example.invalid", 1_700_000_000_i64, 0)
         tree = repository.write_tree([] of Git::Tree::Entry)
         missing = "a" * repository.object_format.hexsize
         commit = repository.write_commit(tree: tree, parents: [missing], author: signature,
           committer: signature, message: "dangling")
-        expect_raises(Git::Error, /not available/) { repository.history([commit]) }
+        expect_raises(Git::Error, /not available/) { repository.log([commit], order: Git::History::Order::Topological) }
       ensure
         FileUtils.rm_rf(base)
       end
@@ -168,26 +168,26 @@ describe "P22 create-only native branch and tag operations" do
         GitOracle.run(root, "commit", "-qm", "initial")
         old = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         repo = Git::Repository.new(root)
-        repo.create_branch("topic/nested").should eq(old)
+        repo.branches.create("topic/nested").should eq(old)
         GitOracle.run(root, "rev-parse", "refs/heads/topic/nested").stdout.strip.should eq(old)
-        repo.head[0].should eq("refs/heads/main")
-        repo.create_tag("v1").should eq(old)
+        repo.head.symref_target.should eq("refs/heads/main")
+        repo.tags.create("v1").should eq(old)
         GitOracle.run(root, "rev-parse", "refs/tags/v1").stdout.strip.should eq(old)
         sig = Git::Signature.new("Tagger", "tagger@example.invalid", 1_700_000_000_i64, 0)
-        annotated = repo.create_tag("v2", from: "refs/heads/topic/nested", message: "Release\n", tagger: sig)
+        annotated = repo.tags.create("v2", from: "refs/heads/topic/nested", message: "Release\n", tagger: sig)
         GitOracle.run(root, "cat-file", "-t", annotated).stdout.strip.should eq("tag")
         GitOracle.run(root, "rev-parse", "refs/tags/v2^{}").stdout.strip.should eq(old)
-        repo.history(["refs/tags/v2"]).commits.first.oid.should eq(old)
-        repo.create_branch("from-tag", from: "refs/tags/v2").should eq(old)
-        bad = repo.write_tag(object: old, type: "tag", name: "bad", tagger: sig, message: "bad type\n")
-        repo.update_ref("refs/tags/bad", bad, expected_oid: nil)
-        expect_raises(Git::Error, /target type mismatch/) { repo.history(["refs/tags/bad"]) }
-        expect_raises(Git::Error, /compare-and-swap/) { repo.create_branch("topic/nested") }
-        expect_raises(Git::Error, /compare-and-swap/) { repo.create_tag("v1") }
-        expect_raises(Git::Error, /branch name/) { repo.create_branch("-force") }
-        expect_raises(Git::Error, /tag name/) { repo.create_tag("../wrong") }
-        expect_raises(Git::Error, /both tagger and message/) { repo.create_tag("v3", message: "message") }
-        repo.head[1].should eq(old)
+        repo.log(["refs/tags/v2"], order: Git::History::Order::Topological).commits.first.oid.should eq(old)
+        repo.branches.create("from-tag", from: "refs/tags/v2").should eq(old)
+        bad = repo.write_tag(object: old, type: Git::ObjectType::Tag, name: "bad", tagger: sig, message: "bad type\n")
+        repo.refs.update("refs/tags/bad", bad, expected_oid: nil)
+        expect_raises(Git::Error, /target type mismatch/) { repo.log(["refs/tags/bad"], order: Git::History::Order::Topological) }
+        expect_raises(Git::Error, /compare-and-swap/) { repo.branches.create("topic/nested") }
+        expect_raises(Git::Error, /compare-and-swap/) { repo.tags.create("v1") }
+        expect_raises(Git::Error, /branch name/) { repo.branches.create("-force") }
+        expect_raises(Git::Error, /tag name/) { repo.tags.create("../wrong") }
+        expect_raises(Git::Error, /both tagger and message/) { repo.tags.create("v3", message: "message") }
+        repo.head.oid.should eq(old)
       end
     end
   end

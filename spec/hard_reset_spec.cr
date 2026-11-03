@@ -21,7 +21,7 @@ describe "P27 native hard reset of regular worktrees" do
         File.write(File.join(root, "staged"), "staged\n")
         GitOracle.run(root, "add", "staged")
         repo = Git::Repository.new(root)
-        result = repo.reset_head("HEAD~1", mode: Git::Reset::Mode::Hard)
+        result = repo.reset("HEAD~1", mode: Git::Reset::Mode::Hard)
         result.target_oid.should eq(base)
         result.changed_index_paths.to_set.should eq(["keep", "new", "removed", "staged"].to_set)
         result.changed_worktree_paths.to_set.should eq(["keep", "new", "removed", "staged"].to_set)
@@ -31,7 +31,7 @@ describe "P27 native hard reset of regular worktrees" do
         File.exists?(File.join(root, "staged")).should be_false
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(base)
-        second = repo.reset_head(mode: Git::Reset::Mode::Hard)
+        second = repo.reset(mode: Git::Reset::Mode::Hard)
         second.changed_worktree_paths.should be_empty
         second.changed_index_paths.should be_empty
       end
@@ -44,7 +44,7 @@ describe "P27 native hard reset of regular worktrees" do
         GitOracle.run(root, "commit", "-qm", "base")
         File.write(File.join(root, "one"), "dirty\n")
         repo = Git::Repository.new(root)
-        result = repo.reset_head(mode: Git::Reset::Mode::Hard)
+        result = repo.reset(mode: Git::Reset::Mode::Hard)
         result.changed_worktree_paths.should eq(["one"])
         result.changed_index_paths.should be_empty
         File.read(File.join(root, "one")).should eq("base\n")
@@ -67,7 +67,7 @@ describe "P27 native hard reset of regular worktrees" do
         GitOracle.run(root, "checkout", "-q", "main")
         File.write(File.join(root, "collision"), "untracked\n")
         repo = Git::Repository.new(root)
-        expect_raises(Git::Error, /untracked path collision/) { repo.reset_head(target, mode: Git::Reset::Mode::Hard) }
+        expect_raises(Git::Error, /untracked path collision/) { repo.reset(target, mode: Git::Reset::Mode::Hard) }
         File.read(File.join(root, "collision")).should eq("untracked\n")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(base)
       end
@@ -87,7 +87,7 @@ describe "P27 native hard reset of regular worktrees" do
         check = -> do
           raise Git::Error.new("injected after first worktree publication") if File.read(File.join(root, "a")) == "first\n"
         end
-        error = expect_raises(Git::Reset::PartialPublication) { repo.reset_head(base, mode: Git::Reset::Mode::Hard, check: check) }
+        error = expect_raises(Git::Reset::PartialPublication) { repo.reset(base, mode: Git::Reset::Mode::Hard, check: check) }
         error.changed_worktree_paths.should eq(["a"])
         error.reference_published.should be_false
         error.index_published.should be_false

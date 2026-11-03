@@ -20,10 +20,10 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("Stasher", "stash@example.test", 1234567890_i64, -300)
-        entry = repo.stash_push(actor: actor, message: "demo").not_nil!
+        entry = repo.stash.push(actor: actor, message: "demo").not_nil!
         entry.base_oid.should eq(base)
         entry.position.should eq(0)
-        repo.resolve_ref?("refs/stash").should eq(entry.oid)
+        repo.refs.resolve?("refs/stash").should eq(entry.oid)
         GitOracle.run(root, "rev-list", "--parents", "-n", "1", entry.oid).stdout.strip.split.should eq([entry.oid, base, entry.index_oid])
         GitOracle.run(root, "rev-parse", "#{entry.index_oid}^{tree}").stdout.strip.should_not eq(base_tree)
         GitOracle.run(root, "rev-parse", "#{entry.index_oid}:f").stdout.strip.should eq(staged_blob)
@@ -32,7 +32,7 @@ describe "P34 native Git stash" do
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq("?? u\n")
         File.read(File.join(root, "f")).should eq("base\n")
         File.read(File.join(root, "u")).should eq("untracked\n")
-        repo.stash_list.map(&.oid).should eq([entry.oid])
+        repo.stash.list.map(&.oid).should eq([entry.oid])
         GitOracle.run(root, "stash", "list", "--format=%gd|%gs").stdout.should contain("stash@{0}|On main: demo")
       end
     end
@@ -49,9 +49,9 @@ describe "P34 native Git stash" do
         File.write(File.join(root, "f"), "unstaged\n")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor, message: "mixed").should_not be_nil
+        repo.stash.push(actor: actor, message: "mixed").should_not be_nil
 
-        applied = repo.stash_apply(actor: actor)
+        applied = repo.stash.apply(actor: actor)
         applied.conflicts.should be_empty
         applied.index_restored.should be_false
         File.read(File.join(root, "f")).should eq("unstaged\n")
@@ -59,7 +59,7 @@ describe "P34 native Git stash" do
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq(" M f\n")
         GitOracle.run(root, "reset", "--hard", "-q", "HEAD")
 
-        indexed = repo.stash_apply(actor: actor, restore_index: true)
+        indexed = repo.stash.apply(actor: actor, restore_index: true)
         indexed.conflicts.should be_empty
         indexed.index_restored.should be_true
         File.read(File.join(root, "f")).should eq("unstaged\n")
@@ -78,16 +78,16 @@ describe "P34 native Git stash" do
 
         File.write(File.join(root, "g"), "new\n")
         GitOracle.run(root, "add", "g")
-        repo.stash_push(actor: actor, message: "add").should_not be_nil
-        repo.stash_apply(actor: actor).conflicts.should be_empty
+        repo.stash.push(actor: actor, message: "add").should_not be_nil
+        repo.stash.apply(actor: actor).conflicts.should be_empty
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq("A  g\n")
         GitOracle.run(root, "reset", "--hard", "-q", "HEAD")
         File.delete(File.join(root, "g")) if File.exists?(File.join(root, "g"))
-        repo.stash_drop(0)
+        repo.stash.drop(0)
 
         GitOracle.run(root, "rm", "-q", "f")
-        repo.stash_push(actor: actor, message: "delete").should_not be_nil
-        repo.stash_apply(actor: actor).conflicts.should be_empty
+        repo.stash.push(actor: actor, message: "delete").should_not be_nil
+        repo.stash.apply(actor: actor).conflicts.should be_empty
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq(" D f\n")
       end
     end
@@ -100,14 +100,14 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "f"), "stashed\n")
-        entry = repo.stash_push(actor: actor, message: "conflict").not_nil!
+        entry = repo.stash.push(actor: actor, message: "conflict").not_nil!
         File.write(File.join(root, "f"), "current\n")
         GitOracle.run(root, "add", "f")
         GitOracle.run(root, "commit", "-qm", "current")
 
-        applied = repo.stash_apply(actor: actor)
+        applied = repo.stash.apply(actor: actor)
         applied.conflicts.should eq(["f"])
-        repo.resolve_ref?("refs/stash").should eq(entry.oid)
+        repo.refs.resolve?("refs/stash").should eq(entry.oid)
         File.exists?(File.join(root, ".git", "CHERRY_PICK_HEAD")).should be_false
         File.exists?(File.join(root, ".git", "CRYSTAL_SEQUENCER_ORIG")).should be_false
         GitOracle.run(root, "ls-files", "-u", "f").stdout.lines.size.should eq(3)
@@ -124,23 +124,23 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "f"), "one\n")
-        first = repo.stash_push(actor: actor, message: "one").not_nil!
-        pop = repo.stash_pop(actor: actor)
+        first = repo.stash.push(actor: actor, message: "one").not_nil!
+        pop = repo.stash.pop(actor: actor)
         pop.dropped.should be_true
-        pop.apply.conflicts.should be_empty
-        repo.resolve_ref?("refs/stash").should be_nil
+        pop.applied.conflicts.should be_empty
+        repo.refs.resolve?("refs/stash").should be_nil
         File.exists?(File.join(root, ".git", "logs", "refs", "stash")).should be_false
         File.read(File.join(root, "f")).should eq("one\n")
 
         GitOracle.run(root, "reset", "--hard", "-q", "HEAD")
         File.write(File.join(root, "f"), "two\n")
-        second = repo.stash_push(actor: actor, message: "two").not_nil!
+        second = repo.stash.push(actor: actor, message: "two").not_nil!
         File.write(File.join(root, "f"), "other\n")
         GitOracle.run(root, "commit", "-qam", "other")
-        conflict = repo.stash_pop(actor: actor)
+        conflict = repo.stash.pop(actor: actor)
         conflict.dropped.should be_false
-        conflict.apply.conflicts.should eq(["f"])
-        repo.resolve_ref?("refs/stash").should eq(second.oid)
+        conflict.applied.conflicts.should eq(["f"])
+        repo.refs.resolve?("refs/stash").should eq(second.oid)
       end
     end
 
@@ -154,13 +154,13 @@ describe "P34 native Git stash" do
         ids = [] of String
         {"s1", "s2", "s3"}.each_with_index do |message, index|
           File.write(File.join(root, "f"), "#{index + 1}\n")
-          ids << repo.stash_push(actor: actor, message: message).not_nil!.oid
+          ids << repo.stash.push(actor: actor, message: message).not_nil!.oid
         end
-        repo.stash_list.map(&.oid).should eq(ids.reverse)
-        dropped = repo.stash_drop(1)
+        repo.stash.list.map(&.oid).should eq(ids.reverse)
+        dropped = repo.stash.drop(1)
         dropped.oid.should eq(ids[1])
-        repo.stash_list.map(&.oid).should eq([ids[2], ids[0]])
-        repo.resolve_ref?("refs/stash").should eq(ids[2])
+        repo.stash.list.map(&.oid).should eq([ids[2], ids[0]])
+        repo.refs.resolve?("refs/stash").should eq(ids[2])
         GitOracle.run(root, "stash", "list", "--format=%H|%gs").stdout.lines.map(&.strip).should eq([
           "#{ids[2]}|On main: s3",
           "#{ids[0]}|On main: s1",
@@ -179,9 +179,9 @@ describe "P34 native Git stash" do
         File.symlink("target-b", File.join(root, "link"))
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor, message: "link").should_not be_nil
+        repo.stash.push(actor: actor, message: "link").should_not be_nil
         File.readlink(File.join(root, "link")).should eq("target-a")
-        repo.stash_apply(actor: actor).conflicts.should be_empty
+        repo.stash.apply(actor: actor).conflicts.should be_empty
         File.readlink(File.join(root, "link")).should eq("target-b")
         File.read(File.join(root, "target-b")).should eq("B\n")
       end
@@ -197,10 +197,10 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /excluded by staged deletion/) do
-          repo.stash_push(actor: actor, message: "unsafe")
+          repo.stash.push(actor: actor, message: "unsafe")
         end
         File.read(File.join(root, "f")).should eq("untracked-but-important\n")
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
       end
     end
 
@@ -214,10 +214,10 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /index.lock|descriptor file unavailable/) do
-          repo.stash_push(actor: actor, message: "locked")
+          repo.stash.push(actor: actor, message: "locked")
         end
         File.read(File.join(root, ".git", "index.lock")).should eq("foreign")
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
         File.read(File.join(root, "f")).should eq("dirty\n")
       end
     end
@@ -232,14 +232,14 @@ describe "P34 native Git stash" do
         GitOracle.run(root, "stash", "push", "-qu", "-m", "external")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_show
+        entry = repo.stash.show
         entry.untracked_oid.should_not be_nil
-        applied = repo.stash_apply(actor: actor)
+        applied = repo.stash.apply(actor: actor)
         applied.conflicts.should be_empty
         File.read(File.join(root, "f")).should eq("dirty\n")
         File.read(File.join(root, "u")).should eq("untracked\n")
         GitOracle.run(root, "status", "--porcelain=v1", "--untracked-files=all").stdout.should eq(" M f\n?? u\n")
-        repo.resolve_ref?("refs/stash").should eq(entry.oid)
+        repo.refs.resolve?("refs/stash").should eq(entry.oid)
       end
     end
 
@@ -250,9 +250,9 @@ describe "P34 native Git stash" do
         GitOracle.run(root, "commit", "-qm", "base")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor).should be_nil
-        repo.resolve_ref?("refs/stash").should be_nil
-        repo.stash_list.should be_empty
+        repo.stash.push(actor: actor).should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
+        repo.stash.list.should be_empty
       end
     end
 
@@ -267,10 +267,10 @@ describe "P34 native Git stash" do
         GitOracle.run(root, "add", "node/leaf")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor, message: "df").should_not be_nil
+        repo.stash.push(actor: actor, message: "df").should_not be_nil
         File.file?(File.join(root, "node")).should be_true
         File.read(File.join(root, "node")).should eq("base\n")
-        repo.stash_apply(actor: actor, restore_index: true).conflicts.should be_empty
+        repo.stash.apply(actor: actor, restore_index: true).conflicts.should be_empty
         Dir.exists?(File.join(root, "node")).should be_true
         File.read(File.join(root, "node", "leaf")).should eq("leaf\n")
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq("D  node\nA  node/leaf\n")
@@ -285,13 +285,13 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "f"), "one\n")
-        one = repo.stash_push(actor: actor, message: "one").not_nil!
+        one = repo.stash.push(actor: actor, message: "one").not_nil!
         File.write(File.join(root, "f"), "two\n")
-        two = repo.stash_push(actor: actor, message: "two").not_nil!
-        repo.resolve_ref?("refs/stash").should eq(two.oid)
-        repo.stash_drop(0).oid.should eq(two.oid)
-        repo.resolve_ref?("refs/stash").should eq(one.oid)
-        repo.stash_list.map(&.oid).should eq([one.oid])
+        two = repo.stash.push(actor: actor, message: "two").not_nil!
+        repo.refs.resolve?("refs/stash").should eq(two.oid)
+        repo.stash.drop(0).oid.should eq(two.oid)
+        repo.refs.resolve?("refs/stash").should eq(one.oid)
+        repo.stash.list.map(&.oid).should eq([one.oid])
         GitOracle.run(root, "stash", "list", "--format=%H|%gs").stdout.strip.should eq("#{one.oid}|On main: one")
       end
     end
@@ -306,20 +306,20 @@ describe "P34 native Git stash" do
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         injected = false
         check = -> do
-          if !injected && repo.resolve_ref?("refs/stash")
+          if !injected && repo.refs.resolve?("refs/stash")
             injected = true
             raise "injected stash cleanup failure"
           end
         end
         error = expect_raises(Git::Stash::PartialSave) do
-          repo.stash_push(actor: actor, message: "recoverable", check: check)
+          repo.stash.push(actor: actor, message: "recoverable", check: check)
         end
         injected.should be_true
-        repo.resolve_ref?("refs/stash").should eq(error.stash_oid)
-        repo.stash_show.oid.should eq(error.stash_oid)
+        repo.refs.resolve?("refs/stash").should eq(error.stash_oid)
+        repo.stash.show.oid.should eq(error.stash_oid)
         File.read(File.join(root, "f")).should eq("dirty\n")
         GitOracle.run(root, "reset", "--hard", "-q", "HEAD")
-        repo.stash_apply(actor: actor).conflicts.should be_empty
+        repo.stash.apply(actor: actor).conflicts.should be_empty
         File.read(File.join(root, "f")).should eq("dirty\n")
       end
     end
@@ -332,7 +332,7 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "f"), "stashed\n")
-        repo.stash_push(actor: actor, message: "oracle").should_not be_nil
+        repo.stash.push(actor: actor, message: "oracle").should_not be_nil
         File.write(File.join(root, "g"), "current\n")
         GitOracle.run(root, "add", "g")
         GitOracle.run(root, "commit", "-qm", "current")
@@ -343,7 +343,7 @@ describe "P34 native Git stash" do
         oracle_f = File.read(File.join(root, "f"))
         GitOracle.run(root, "reset", "--hard", "-q", "HEAD")
 
-        native = repo.stash_apply(actor: actor)
+        native = repo.stash.apply(actor: actor)
         native.conflicts.should be_empty
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq(oracle_status)
         GitOracle.run(root, "write-tree").stdout.strip.should eq(oracle_index)
@@ -359,13 +359,13 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "f"), "stashed\n")
-        repo.stash_push(actor: actor, message: "index-base").should_not be_nil
+        repo.stash.push(actor: actor, message: "index-base").should_not be_nil
         File.write(File.join(root, "g"), "advance\n")
         GitOracle.run(root, "add", "g")
         GitOracle.run(root, "commit", "-qm", "advance")
         before = GitOracle.run(root, "status", "--porcelain=v1").stdout
         expect_raises(Git::Error, /original base HEAD/) do
-          repo.stash_apply(actor: actor, restore_index: true)
+          repo.stash.apply(actor: actor, restore_index: true)
         end
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq(before)
         File.read(File.join(root, "g")).should eq("advance\n")
@@ -387,7 +387,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("Stasher", "stash@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "untracked", include_untracked: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "untracked", include_untracked: true).not_nil!
         untracked = entry.untracked_oid.not_nil!
         GitOracle.run(root, "rev-list", "--parents", "-n", "1", entry.oid).stdout.strip.split.should eq([
           entry.oid, base, entry.index_oid, untracked,
@@ -416,7 +416,7 @@ describe "P34 native Git stash" do
         File.symlink("u", File.join(root, "link"))
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "git-readable", include_untracked: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "git-readable", include_untracked: true).not_nil!
 
         GitOracle.run(root, "stash", "apply", "-q", "stash@{0}")
         File.read(File.join(root, "f")).should eq("dirty\n")
@@ -424,7 +424,7 @@ describe "P34 native Git stash" do
         (File.info(File.join(root, "u")).permissions.value & 0o111).should_not eq(0)
         File.readlink(File.join(root, "link")).should eq("u")
         GitOracle.run(root, "status", "--porcelain=v1", "--untracked-files=all").stdout.should eq(" M f\n?? link\n?? u\n")
-        repo.resolve_ref?("refs/stash").should eq(entry.oid)
+        repo.refs.resolve?("refs/stash").should eq(entry.oid)
       end
     end
 
@@ -436,15 +436,15 @@ describe "P34 native Git stash" do
         File.write(File.join(root, "u"), "only-untracked\n")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, include_untracked: true).not_nil!
+        entry = repo.stash.push(actor: actor, include_untracked: true).not_nil!
         entry.untracked_oid.should_not be_nil
         File.exists?(File.join(root, "u")).should be_false
-        pop = repo.stash_pop(actor: actor)
+        pop = repo.stash.pop(actor: actor)
         pop.dropped.should be_true
-        pop.apply.conflicts.should be_empty
+        pop.applied.conflicts.should be_empty
         File.read(File.join(root, "u")).should eq("only-untracked\n")
         GitOracle.run(root, "status", "--porcelain=v1", "--untracked-files=all").stdout.should eq("?? u\n")
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
       end
     end
 
@@ -457,17 +457,17 @@ describe "P34 native Git stash" do
         File.write(File.join(root, "u"), "saved\n")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "collision", include_untracked: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "collision", include_untracked: true).not_nil!
         File.write(File.join(root, "u"), "current\n")
 
         error = expect_raises(Git::Stash::PartialApply) do
-          repo.stash_apply(actor: actor)
+          repo.stash.apply(actor: actor)
         end
         error.stash_oid.should eq(entry.oid)
         error.changed_paths.should contain("f")
         File.read(File.join(root, "f")).should eq("stashed\n")
         File.read(File.join(root, "u")).should eq("current\n")
-        repo.resolve_ref?("refs/stash").should eq(entry.oid)
+        repo.refs.resolve?("refs/stash").should eq(entry.oid)
         File.exists?(File.join(root, ".git", "CHERRY_PICK_HEAD")).should be_false
       end
     end
@@ -481,7 +481,7 @@ describe "P34 native Git stash" do
         File.write(File.join(root, "f"), "important\n")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "staged-delete", include_untracked: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "staged-delete", include_untracked: true).not_nil!
         untracked = entry.untracked_oid.not_nil!
         GitOracle.run(root, "show", "#{entry.oid}:f").stdout.should eq("important\n")
         GitOracle.run(root, "show", "#{untracked}:f").stdout.should eq("important\n")
@@ -499,17 +499,17 @@ describe "P34 native Git stash" do
         File.write(File.join(root, "u"), "untracked\n")
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "conflict-u", include_untracked: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "conflict-u", include_untracked: true).not_nil!
         File.write(File.join(root, "f"), "current\n")
         GitOracle.run(root, "add", "f")
         GitOracle.run(root, "commit", "-qm", "current")
 
-        applied = repo.stash_apply(actor: actor)
+        applied = repo.stash.apply(actor: actor)
         applied.conflicts.should eq(["f"])
         File.read(File.join(root, "u")).should eq("untracked\n")
         GitOracle.run(root, "status", "--porcelain=v1", "--untracked-files=all").stdout.should contain("UU f\n")
         GitOracle.run(root, "status", "--porcelain=v1", "--untracked-files=all").stdout.should contain("?? u\n")
-        repo.resolve_ref?("refs/stash").should eq(entry.oid)
+        repo.refs.resolve?("refs/stash").should eq(entry.oid)
         File.exists?(File.join(root, ".git", "CHERRY_PICK_HEAD")).should be_false
       end
     end
@@ -528,9 +528,9 @@ describe "P34 native Git stash" do
         GitOracle.run(root, "stash", "push", "-a", "-m", "all")
 
         repo = Git::Repository.new(root)
-        entry = repo.stash_show
+        entry = repo.stash.show
         entry.untracked_oid.should_not be_nil
-        applied = repo.stash_apply(actor: Git::Signature.new("S", "s@example.test", 1234567890_i64, 0))
+        applied = repo.stash.apply(actor: Git::Signature.new("S", "s@example.test", 1234567890_i64, 0))
         applied.conflicts.should be_empty
         File.read(File.join(root, "f")).should eq("dirty\n")
         File.read(File.join(root, "u")).should eq("untracked\n")
@@ -560,7 +560,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "all", include_ignored: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "all", include_ignored: true).not_nil!
         untracked = entry.untracked_oid.not_nil!
         GitOracle.run(root, "rev-list", "--parents", "-n", "1", entry.oid).stdout.strip.split.size.should eq(4)
         GitOracle.run(root, "rev-list", "--parents", "-n", "1", untracked).stdout.strip.split.should eq([untracked])
@@ -590,15 +590,15 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
 
-        entry = repo.stash_push(actor: actor, include_ignored: true).not_nil!
+        entry = repo.stash.push(actor: actor, include_ignored: true).not_nil!
         entry.untracked_oid.should_not be_nil
         File.exists?(File.join(root, "only.tmp")).should be_false
-        pop = repo.stash_pop(actor: actor)
+        pop = repo.stash.pop(actor: actor)
         pop.dropped.should be_true
-        pop.apply.conflicts.should be_empty
+        pop.applied.conflicts.should be_empty
         File.read(File.join(root, "only.tmp")).should eq("ignored-only\n")
         GitOracle.run(root, "status", "--porcelain=v1", "--ignored", "--untracked-files=all").stdout.should eq("!! only.tmp\n")
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
       end
     end
 
@@ -615,7 +615,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "keep", keep_index: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "keep", keep_index: true).not_nil!
 
         File.read(File.join(root, "f")).should eq("stage1\nbase2\n")
         GitOracle.run(root, "show", ":f").stdout.should eq("stage1\nbase2\n")
@@ -644,7 +644,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor, message: "keep-shape", keep_index: true).should_not be_nil
+        repo.stash.push(actor: actor, message: "keep-shape", keep_index: true).should_not be_nil
 
         File.exists?(File.join(root, "f")).should be_false
         File.read(File.join(root, "n")).should eq("new\n")
@@ -670,7 +670,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, include_untracked: true, keep_index: true).not_nil!
+        entry = repo.stash.push(actor: actor, include_untracked: true, keep_index: true).not_nil!
 
         entry.untracked_oid.should_not be_nil
         File.read(File.join(root, "f")).should eq("staged\n")
@@ -691,7 +691,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, keep_index: true).not_nil!
+        entry = repo.stash.push(actor: actor, keep_index: true).not_nil!
 
         entry.tree.should eq(entry.index_tree)
         File.read(File.join(root, "f")).should eq("staged\n")
@@ -712,7 +712,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "staged", staged_only: true).not_nil!
+        entry = repo.stash.push(actor: actor, message: "staged", staged_only: true).not_nil!
 
         entry.tree.should eq(entry.index_tree)
         File.read(File.join(root, "f")).should eq("base1\nbase2\n")
@@ -738,7 +738,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, staged_only: true).not_nil!
+        entry = repo.stash.push(actor: actor, staged_only: true).not_nil!
 
         entry.tree.should eq(entry.index_tree)
         GitOracle.run(root, "show", "#{entry.oid}:f").stdout.should eq("A\nb\nc\n")
@@ -760,7 +760,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, staged_only: true).not_nil!
+        entry = repo.stash.push(actor: actor, staged_only: true).not_nil!
 
         entry.tree.should eq(entry.index_tree)
         File.read(File.join(root, "f")).should eq("base\n")
@@ -782,7 +782,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, staged_only: true, keep_index: true).not_nil!
+        entry = repo.stash.push(actor: actor, staged_only: true, keep_index: true).not_nil!
 
         entry.tree.should eq(entry.index_tree)
         GitOracle.run(root, "show", ":f").stdout.should eq("A\nb\nc\n")
@@ -803,12 +803,12 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         expect_raises(ArgumentError) do
-          repo.stash_push(actor: actor, staged_only: true, include_untracked: true)
+          repo.stash.push(actor: actor, staged_only: true, include_untracked: true)
         end
         expect_raises(ArgumentError) do
-          repo.stash_push(actor: actor, staged_only: true, include_ignored: true)
+          repo.stash.push(actor: actor, staged_only: true, include_ignored: true)
         end
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
         File.read(File.join(root, "f")).should eq("staged\n")
         File.read(File.join(root, "u")).should eq("untracked\n")
       end
@@ -823,8 +823,8 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor, staged_only: true).should be_nil
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.stash.push(actor: actor, staged_only: true).should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
         File.read(File.join(root, "f")).should eq("work\n")
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq(" M f\n")
       end
@@ -842,9 +842,9 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /staged-only cleanup conflict/) do
-          repo.stash_push(actor: actor, staged_only: true)
+          repo.stash.push(actor: actor, staged_only: true)
         end
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
         GitOracle.run(root, "show", ":f").stdout.should eq("A\nb\n")
         File.read(File.join(root, "f")).should eq("B\nb\n")
       end
@@ -867,7 +867,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, message: "partial", paths: ["f"]).not_nil!
+        entry = repo.stash.push(actor: actor, message: "partial", paths: ["f"]).not_nil!
 
         File.read(File.join(root, "f")).should eq("f0\n")
         File.read(File.join(root, "g")).should eq("g-work\n")
@@ -900,8 +900,8 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor, paths: ["f"]).should be_nil
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.stash.push(actor: actor, paths: ["f"]).should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq("M  g\n")
       end
     end
@@ -919,7 +919,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        repo.stash_push(actor: actor, paths: ["f"], keep_index: true).should_not be_nil
+        repo.stash.push(actor: actor, paths: ["f"], keep_index: true).should_not be_nil
 
         File.read(File.join(root, "f")).should eq("f-stage\n")
         GitOracle.run(root, "show", ":f").stdout.should eq("f-stage\n")
@@ -939,7 +939,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, paths: ["f", "u"], include_untracked: true).not_nil!
+        entry = repo.stash.push(actor: actor, paths: ["f", "u"], include_untracked: true).not_nil!
 
         entry.untracked_oid.should_not be_nil
         File.read(File.join(root, "f")).should eq("f0\n")
@@ -962,9 +962,9 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /selected path/) do
-          repo.stash_push(actor: actor, paths: ["one.tmp"], include_untracked: true)
+          repo.stash.push(actor: actor, paths: ["one.tmp"], include_untracked: true)
         end
-        entry = repo.stash_push(actor: actor, paths: ["one.tmp"], include_ignored: true).not_nil!
+        entry = repo.stash.push(actor: actor, paths: ["one.tmp"], include_ignored: true).not_nil!
         File.exists?(File.join(root, "one.tmp")).should be_false
         File.read(File.join(root, "two.tmp")).should eq("two\n")
         GitOracle.run(root, "show", "#{entry.untracked_oid.not_nil!}:one.tmp").stdout.should eq("one\n")
@@ -982,7 +982,7 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        entry = repo.stash_push(actor: actor, paths: ["f", "n"]).not_nil!
+        entry = repo.stash.push(actor: actor, paths: ["f", "n"]).not_nil!
 
         File.read(File.join(root, "f")).should eq("f0\n")
         File.exists?(File.join(root, "n")).should be_false
@@ -1002,9 +1002,9 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        expect_raises(Git::Error, /selected path/) { repo.stash_push(actor: actor, paths: ["f"]) }
-        expect_raises(Git::Error, /selected path/) { repo.stash_push(actor: actor, paths: ["missing"]) }
-        repo.resolve_ref?("refs/stash").should be_nil
+        expect_raises(Git::Error, /selected path/) { repo.stash.push(actor: actor, paths: ["f"]) }
+        expect_raises(Git::Error, /selected path/) { repo.stash.push(actor: actor, paths: ["missing"]) }
+        repo.refs.resolve?("refs/stash").should be_nil
         GitOracle.run(root, "status", "--porcelain=v1").stdout.should eq("D  f\n")
       end
     end
@@ -1019,9 +1019,9 @@ describe "P34 native Git stash" do
 
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
-        expect_raises(ArgumentError) { repo.stash_push(actor: actor, paths: ["f"], staged_only: true) }
-        expect_raises(Git::Error, /duplicate/) { repo.stash_push(actor: actor, paths: ["f", "f"]) }
-        repo.resolve_ref?("refs/stash").should be_nil
+        expect_raises(ArgumentError) { repo.stash.push(actor: actor, paths: ["f"], staged_only: true) }
+        expect_raises(Git::Error, /duplicate/) { repo.stash.push(actor: actor, paths: ["f", "f"]) }
+        repo.refs.resolve?("refs/stash").should be_nil
       end
     end
 
@@ -1036,12 +1036,12 @@ describe "P34 native Git stash" do
         repo = Git::Repository.new(root)
         actor = Git::Signature.new("S", "s@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /empty Git stash selected paths/) do
-          repo.stash_push(actor: actor, paths: [] of String)
+          repo.stash.push(actor: actor, paths: [] of String)
         end
         expect_raises(Git::Error, /selected path/) do
-          repo.stash_push(actor: actor, paths: ["dir"])
+          repo.stash.push(actor: actor, paths: ["dir"])
         end
-        repo.resolve_ref?("refs/stash").should be_nil
+        repo.refs.resolve?("refs/stash").should be_nil
         File.read(File.join(root, "dir", "f")).should eq("work\n")
       end
     end

@@ -54,7 +54,7 @@ describe "Git maintenance" do
       maintenance_history(root)
       copy = File.join(File.dirname(root), "copy")
       FileUtils.cp_r(root, copy)
-      Git::Repository.new(root).pack_refs.should eq(GitOracle.run(root, "for-each-ref").stdout.lines.reject(&.includes?("origin/HEAD")).size)
+      Git::Repository.new(root).refs.pack.should eq(GitOracle.run(root, "for-each-ref").stdout.lines.reject(&.includes?("origin/HEAD")).size)
       GitOracle.run(copy, "pack-refs", "--all")
       File.read(File.join(root, ".git", "packed-refs")).should eq(File.read(File.join(copy, ".git", "packed-refs")))
       loose = ->(base : String) { Dir.glob(File.join(base, ".git", "refs", "**", "*")).select { |path| File.file?(path) }.map(&.sub(base, "")).sort }

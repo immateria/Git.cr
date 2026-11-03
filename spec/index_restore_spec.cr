@@ -17,13 +17,13 @@ describe "P24 index-only restore and reset" do
         File.delete(File.join(root, "removed"))
         GitOracle.run(root, "add", "-A")
         repo = Git::Repository.new(root)
-        repo.restore_staged_paths(["edit", "added", "removed"]).to_set.should eq(["edit", "added", "removed"].to_set)
+        repo.restore_staged(["edit", "added", "removed"]).to_set.should eq(["edit", "added", "removed"].to_set)
         GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("")
         GitOracle.run(root, "status", "--porcelain").stdout.should contain("?? added")
         File.read(File.join(root, "edit")).should eq("staged\n")
         File.exists?(File.join(root, "removed")).should be_false
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(before_head)
-        repo.restore_staged_paths(["edit", "removed"]).should be_empty
+        repo.restore_staged(["edit", "removed"]).should be_empty
       end
     end
 
@@ -38,13 +38,13 @@ describe "P24 index-only restore and reset" do
         GitOracle.run(root, "add", "-A")
         GitOracle.run(root, "commit", "-qm", "two")
         repo = Git::Repository.new(root)
-        repo.restore_staged_paths(["first", "later"], source: old).to_set.should eq(["first", "later"].to_set)
+        repo.restore_staged(["first", "later"], source: old).to_set.should eq(["first", "later"].to_set)
         GitOracle.run(root, "ls-files", "--stage").stdout.should contain("first")
         GitOracle.run(root, "ls-files", "--stage").stdout.should_not contain("later")
         # Git's porcelain pathspec rejects `later` after it is no longer
         # indexed or in the source tree; our explicit path operation similarly
         # rejects it on a subsequent call.
-        expect_raises(Git::Error, /neither indexed nor in source/) { repo.restore_staged_paths(["later"], source: old) }
+        expect_raises(Git::Error, /neither indexed nor in source/) { repo.restore_staged(["later"], source: old) }
         File.exists?(File.join(root, "first")).should be_false
         File.read(File.join(root, "later")).should eq("later\n")
       end
@@ -62,13 +62,13 @@ describe "P24 index-only restore and reset" do
         File.write(File.join(root, "three"), "extra\n")
         GitOracle.run(root, "add", "-A")
         repo = Git::Repository.new(root)
-        repo.reset_index_to.to_set.should eq(["one", "two", "three"].to_set)
+        repo.read_tree.to_set.should eq(["one", "two", "three"].to_set)
         GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("")
         File.read(File.join(root, "one")).should eq("changed\n")
         File.exists?(File.join(root, "two")).should be_false
         File.read(File.join(root, "three")).should eq("extra\n")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(old)
-        repo.reset_index_to.should be_empty
+        repo.read_tree.should be_empty
       end
     end
 
@@ -83,7 +83,7 @@ describe "P24 index-only restore and reset" do
         File.symlink("different", File.join(root, "link"))
         GitOracle.run(root, "add", "link")
         repo = Git::Repository.new(root)
-        repo.restore_staged_paths(["link"]).should eq(["link"])
+        repo.restore_staged(["link"]).should eq(["link"])
         GitOracle.run(root, "ls-files", "--stage", "--", "link").stdout.should eq(old_stage)
         File.readlink(File.join(root, "link")).should eq("different")
       end
@@ -98,14 +98,14 @@ describe "P24 index-only restore and reset" do
         GitOracle.run(root, "add", "tracked")
         repo = Git::Repository.new(root)
         original = GitOracle.run(root, "ls-files", "--stage").stdout
-        expect_raises(Git::Error, /neither indexed nor in source/) { repo.restore_staged_paths(["missing"]) }
-        expect_raises(Git::Error, /duplicate/) { repo.restore_staged_paths(["tracked", "tracked"]) }
-        expect_raises(ArgumentError, /budget/) { repo.reset_index_to(max_entries: 0) }
-        expect_raises(Git::Error, /resolved/) { repo.reset_index_to("refs/heads/unknown") }
+        expect_raises(Git::Error, /neither indexed nor in source/) { repo.restore_staged(["missing"]) }
+        expect_raises(Git::Error, /duplicate/) { repo.restore_staged(["tracked", "tracked"]) }
+        expect_raises(ArgumentError, /budget/) { repo.read_tree(max_entries: 0) }
+        expect_raises(Git::Error, /resolved/) { repo.read_tree("refs/heads/unknown") }
         File.write(File.join(root, ".git", "index.lock"), "foreign")
         begin
-          expect_raises(Git::Error) { repo.restore_staged_paths(["tracked"]) }
-          expect_raises(Git::Error) { repo.reset_index_to }
+          expect_raises(Git::Error) { repo.restore_staged(["tracked"]) }
+          expect_raises(Git::Error) { repo.read_tree }
           File.read(File.join(root, ".git", "index.lock")).should eq("foreign")
           GitOracle.run(root, "ls-files", "--stage").stdout.should eq(original)
         ensure
@@ -129,7 +129,7 @@ describe "P24 index-only restore and reset" do
         GitOracle.run(root, "ls-files", "-u").stdout.should_not eq("")
         conflict_text = File.read(File.join(root, "conflict"))
         repo = Git::Repository.new(root)
-        repo.restore_staged_paths(["conflict"]).should eq(["conflict"])
+        repo.restore_staged(["conflict"]).should eq(["conflict"])
         GitOracle.run(root, "ls-files", "-u").stdout.should eq("")
         File.read(File.join(root, "conflict")).should eq(conflict_text)
         GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("")
@@ -147,7 +147,7 @@ describe "P24 index-only restore and reset" do
         File.write(File.join(root, "folder", "one"), "new\n")
         GitOracle.run(root, "add", "folder/one")
         repo = Git::Repository.new(root)
-        repo.restore_staged_paths(["folder/one"]).should eq(["folder/one"])
+        repo.restore_staged(["folder/one"]).should eq(["folder/one"])
         File.read(File.join(root, ".git", "index")).byte_slice(4, 4).to_slice.hexstring.should eq("00000004")
         GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("")
       end

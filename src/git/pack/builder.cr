@@ -66,13 +66,13 @@ module Git
       def write(io : IO, items : Array(History::ReachableObject),
                 preferred_bases : Array(History::ReachableObject) = [] of History::ReachableObject) : Stats
         candidates = items.map_with_index do |item, order|
-          Candidate.new(item.oid, item.type, Builder.name_hash(item.path), 0, false, nil, order)
+          Candidate.new(item.oid, item.type.to_s, Builder.name_hash(item.path), 0, false, nil, order)
         end
         seen = items.map(&.oid).to_set
         bases = preferred_bases.compact_map do |item|
-          next nil if seen.includes?(item.oid) || !{"tree", "blob"}.includes?(item.type)
+          next nil if seen.includes?(item.oid) || !(item.type.tree? || item.type.blob?)
           seen << item.oid
-          Candidate.new(item.oid, item.type, Builder.name_hash(item.path), 0, true, nil, -1)
+          Candidate.new(item.oid, item.type.to_s, Builder.name_hash(item.path), 0, true, nil, -1)
         end
         plan_reuse(candidates, bases) if @reuse
         find_deltas(candidates + bases) if @window > 0
@@ -134,7 +134,7 @@ module Git
         else
           kind, raw = @repository.object(candidate.oid, @max_object_bytes) { @check.try &.call }
           raise Error.new("Git object #{candidate.oid} type changed while packing") unless kind == candidate.type
-          offset, crc = writer.write_object(kind, raw.to_slice)
+          offset, crc = writer.write_object(ObjectType.parse(kind), raw.to_slice)
           block.call(Written::Full)
         end
         candidate.offset = offset
@@ -152,7 +152,7 @@ module Git
           @check.try &.call
           entry = @repository.pack_files.raw_entry(candidate.oid) || next
           if !entry.header.type.delta?
-            next unless entry.header.type.object_type == candidate.type
+            next unless entry.header.type.object_type.to_s == candidate.type
             candidate.raw = entry
           elsif base_oid = entry.base_oid
             base = by_oid[base_oid]? || external[base_oid]?
@@ -170,7 +170,7 @@ module Git
         list = all.select { |candidate| (candidate.type == "tree" || candidate.type == "blob") && !candidate.reused_delta }
         list.each do |candidate|
           @check.try &.call
-          _, size = @repository.object_header(candidate.oid) { @check.try &.call }
+          size = @repository.object_header(candidate.oid, check: @check).size
           candidate.size = size.clamp(0_i64, Int32::MAX.to_i64).to_i32
         end
         list.sort! do |a, b|

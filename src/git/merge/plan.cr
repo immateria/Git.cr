@@ -1,7 +1,8 @@
 require "set"
 
 module Git
-  module Merge
+  struct Merge
+    # :nodoc:
     # Shared publication plan for three-way merges and sequencer replay.
     # Blob merging may materialize objects in the repository, but branch refs,
     # operation metadata, index and worktree publication remain with the
@@ -41,6 +42,7 @@ module Git
       end
     end
 
+    # :nodoc:
     # Both merge and sequencer require the index to name exactly HEAD, including
     # index flags. Treat this as one shared invariant, not operation policy.
     def self.index_matches_head?(current : Array(Index::Entry), ours : Hash(String, Checkout::FileState)) : Bool
@@ -50,6 +52,7 @@ module Git
       end
     end
 
+    # :nodoc:
     # Convert unmerged Git index stages back into one conflict per path. Missing
     # stages must remain nil; they cannot be replaced with synthetic blobs.
     def self.conflicts_from_entries(staged : Array(Index::Entry)) : Array(Conflict)
@@ -70,13 +73,13 @@ module Git
     # Preserve each caller's error label and marker source while centralizing
     # the otherwise identical rename/conflict/blob-budget decisions. Object
     # writes by merge_blob are intentionally unchanged from the original plan.
-    def self.plan_files(repository : Repository, names : Array(String),
-                        base : Hash(String, Checkout::FileState),
-                        ours : Hash(String, Checkout::FileState),
-                        theirs : Hash(String, Checkout::FileState),
-                        renames : RenamePlan, *, marker_label : String,
-                        operation : String, max_object_bytes : Int32,
-                        max_total_bytes : Int64, check : Proc(Nil)?) : FilePlan
+    protected def self.plan_files(repository : Repository, names : Array(String),
+                                  base : Hash(String, Checkout::FileState),
+                                  ours : Hash(String, Checkout::FileState),
+                                  theirs : Hash(String, Checkout::FileState),
+                                  renames : RenamePlan, *, marker_label : String,
+                                  operation : String, max_object_bytes : Int32,
+                                  max_total_bytes : Int64, check : Proc(Nil)?) : FilePlan
       edits = [] of Index::Edit
       writes = [] of Checkout::Write
       removals = [] of {String, Checkout::FileState}

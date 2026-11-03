@@ -17,7 +17,7 @@ module Git
                    work_tree : String? = nil, follow_gitfile : Bool = true,
                    discover : Bool = false,
                    discovery_ceiling : String? = nil,
-                   before_config : Proc(Location::AdmissionSite, Nil)? = nil,
+                   before_config : Proc(Admission::Site, Nil)? = nil,
                    before_implicit_bare : Proc(Nil)? = nil,
                    @max_scan_bytes : Int32 = 8_388_608, @max_search_entries : Int32 = 10_000)
       @metadata = Metadata.new(root, linked_worktree_admin_dir: linked_worktree_admin_dir,
@@ -48,9 +48,16 @@ module Git
         max_search_entries: max_search_entries)
     end
 
-    def check! : Nil
+    # Repeat the location and admission checks made when the repository
+    # was opened. Raises when the Git directory has moved or been replaced,
+    # or its ownership no longer passes.
+    def revalidate! : Nil
       @metadata.check!
       raise Error.new("Git metadata changed during inspection") unless @metadata.common == @common && @metadata.git_dir == @git_dir
+    end
+
+    protected def check! : Nil
+      revalidate!
     end
 
     getter object_format : ObjectId::Format
@@ -164,7 +171,7 @@ module Git
       # Location invokes this before consulting core.bare, core.worktree,
       # repository extensions or the object-format declaration. Only trusted
       # system/global/command inputs can authorize foreign ownership.
-      admission = ->(site : Location::AdmissionSite) do
+      admission = ->(site : Admission::Site) do
         protected_config = load_protected_config(system_files, global_files, command_values, home)
         unless Admission.allowed?(site.root, site.git_dir, site.bare, site.gitfile,
                  identity, protected_config, home: home, git_prefix: git_prefix)
@@ -192,20 +199,26 @@ module Git
       Config.load(sources, context: Config::Context.new(home: home), commands: commands)
     end
 
-    def head : {String?, String?}
+    # HEAD as a ref: symbolic (symref_target is the branch, oid nil while
+    # it is unborn) or detached.
+    def head : References::Ref
+      @metadata.head_ref
+    end
+
+    # HEAD's symbolic target and object ID, for internal compare-and-swap
+    # checks.
+    protected def head_ref_and_oid : {String?, String?}
       @metadata.head
     end
 
-    def resolve_ref?(ref : String, depth : Int32 = 0) : String?
+    protected def resolve_ref?(ref : String, depth : Int32 = 0) : String?
       @metadata.resolve_ref?(ref, depth)
     end
 
-    def refs(scope : String, max_entries : Int32) : {Array({String, String}), Bool}
-      @metadata.refs(scope, max_entries)
-    end
-
-    def commit(oid : String, max_bytes : Int32, &check : -> Nil) : Commit
-      Commit.read(@object_database, oid, @object_format, max_bytes) { check.call }
+    # Read and parse a commit object.
+    def read_commit(oid : String, *, max_bytes : Int32 = 8_388_608,
+                    check : Proc(Nil)? = nil) : Commit
+      Commit.read(@object_database, oid, @object_format, max_bytes) { check.try &.call }
     end
 
     # Native, explicitly requested SHA-1/SHA-256 loose-blob publication.
@@ -263,7 +276,7 @@ module Git
 
     # Publish the annotated tag object only. Updating refs/tags/* remains a
     # separately authorized future reference transaction.
-    def write_tag(*, object : String, type : String, name : String,
+    def write_tag(*, object : String, type : ObjectType, name : String,
                   message : String, tagger : Signature? = nil,
                   max_bytes : Int64 = Int64::MAX,
                   check : Proc(Nil)? = nil) : String
@@ -277,8 +290,15 @@ module Git
       end
     end
 
-    def object(oid : String, max_bytes : Int32, depth : Int32 = 0, seen = Set(String).new, &check : -> Nil) : {String, String}
-      @object_database.object(oid, max_bytes, depth, seen) { check.call }
+    protected def object(oid : String, max_bytes : Int32, &check : -> Nil) : {String, String}
+      @object_database.object(oid, max_bytes) { check.call }
+    end
+
+    # A stored object's type and contents (`git cat-file`).
+    def read_object(oid : String, *, max_bytes : Int32 = 8_388_608,
+                    check : Proc(Nil)? = nil) : RawObject
+      type, data = @object_database.object(oid, max_bytes) { check.try &.call }
+      RawObject.new(ObjectType.parse(type), data)
     end
 
     # Whether this repository has the object, loose or packed, without
@@ -287,18 +307,15 @@ module Git
       @object_database.has_object?(oid)
     end
 
-    # Type and size from stored headers, without reading the contents
+    # Type and size from the stored header, without reading the contents
     # (`git cat-file -t/-s`). Not verified against the object ID.
-    def object_header(oid : String, &check : -> Nil) : {String, Int64}
-      @object_database.object_header(oid) { check.call }
-    end
-
-    def object_header(oid : String) : {String, Int64}
-      @object_database.object_header(oid) { nil }
+    def object_header(oid : String, *, check : Proc(Nil)? = nil) : ObjectHeader
+      type, size = @object_database.object_header(oid) { check.try &.call }
+      ObjectHeader.new(ObjectType.parse(type), size)
     end
 
     # The pack directory reader (for copying stored entries).
-    def pack_files : ObjectDatabase::PackFiles
+    protected def pack_files : ObjectDatabase::PackFiles
       @object_database.pack_files
     end
 
@@ -308,12 +325,12 @@ module Git
     end
 
     # The common Git directory (objects, refs, config).
-    def common_directory : String
+    def common_dir : String
       @common
     end
 
     # The Git directory of this worktree (HEAD, index).
-    def git_directory : String
+    def git_dir : String
       @git_dir
     end
 
@@ -328,27 +345,38 @@ module Git
       !shallow_commits.empty?
     end
 
-    # The staging area's entries, every stage, in index order.
-    def index_entries(max_bytes : Int32 = Int32::MAX // 2) : Array(Index::Entry)
-      @index.entries(max_bytes) { nil }
+    # The staging area's entries, every stage, in index order
+    # (`git ls-files --stage`).
+    def index_entries(*, max_bytes : Int32 = 8_388_608, check : Proc(Nil)? = nil) : Array(Index::Entry)
+      @index.entries(max_bytes) { check.try &.call }
     end
 
     # Object IDs (loose or packed) that start with a lowercase hex prefix,
     # up to limit of them, sorted: what an abbreviated ID may mean.
-    def object_ids_with_prefix(prefix : String, *, limit : Int32 = 16) : Array(String)
+    protected def object_ids_with_prefix(prefix : String, *, limit : Int32 = 16) : Array(String)
       @object_database.prefix_matches(prefix, limit)
     end
 
-    def head_entry(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
-      @head_tree.head_entry(path, max_bytes) { check.call }
+    # The committed entry at path in HEAD's tree (`git ls-tree HEAD path`).
+    def head_entry(path : String, *, max_bytes : Int32 = 8_388_608,
+                   check : Proc(Nil)? = nil) : Tree::Entry
+      mode, oid = @head_tree.head_entry(path, max_bytes) { check.try &.call }
+      Tree::Entry.new(path.split('/').last, mode, oid)
     end
 
-    def head_directory(path : String, max_bytes : Int32, &check : -> Nil) : Array({String, String, String})
-      @head_tree.head_directory(path, max_bytes) { check.call }
+    # The entries of a directory in HEAD's tree ("." for the root).
+    def head_directory(path : String = ".", *, max_bytes : Int32 = 8_388_608,
+                       check : Proc(Nil)? = nil) : Array(Tree::Entry)
+      @head_tree.head_directory(path, max_bytes) { check.try &.call }.map do |name, mode, oid|
+        Tree::Entry.new(name, mode, oid)
+      end
     end
 
-    def read_head_file(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
-      @head_tree.read_head_file(path, max_bytes) { check.call }
+    # The committed text of a regular file in HEAD. Refuses a non-file or
+    # content that is not UTF-8 text.
+    def read_head_file(path : String, *, max_bytes : Int32 = 8_388_608,
+                       check : Proc(Nil)? = nil) : String
+      @head_tree.read_head_file(path, max_bytes) { check.try &.call }[1]
     end
 
     private def parse_tree(raw : String) : Array({String, String, String})

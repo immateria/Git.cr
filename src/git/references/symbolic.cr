@@ -5,8 +5,8 @@ module Git
     # .lock and renamed into place; target need not exist yet. With
     # expected_target the ref must currently point there; with create_only
     # it must not exist.
-    def set_symbolic_ref(name : String, target : String, *, expected_target : String? = nil,
-                         create_only : Bool = false, check : Proc(Nil)? = nil) : Nil
+    protected def set_symbolic_ref(name : String, target : String, *, expected_target : String? = nil,
+                                   create_only : Bool = false, check : Proc(Nil)? = nil) : Nil
       check!
       raise Error.new("invalid Git symbolic ref target") unless target.starts_with?("refs/") && RefName.valid?(target)
       path = symbolic_ref_path(name)
@@ -39,7 +39,7 @@ module Git
     end
 
     # Remove a symbolic ref (not HEAD) such as refs/remotes/origin/HEAD.
-    def delete_symbolic_ref(name : String) : Nil
+    protected def delete_symbolic_ref(name : String) : Nil
       check!
       raise Error.new("Git HEAD cannot be deleted") if name == "HEAD"
       path = symbolic_ref_path(name)
@@ -57,10 +57,10 @@ module Git
     end
 
     # Point HEAD directly at a commit (a detached HEAD).
-    def detach_head(oid : String) : Nil
+    protected def detach_head(oid : String) : Nil
       check!
       ObjectId.valid!(oid, @object_format)
-      raise Error.new("Git object #{oid} is not a commit") unless object_header(oid)[0] == "commit"
+      raise Error.new("Git object #{oid} is not a commit") unless object_header(oid).type.commit?
       path = File.join(@git_dir, "HEAD")
       lock = path + ".lock"
       fd = LibC.open(lock, LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL | LibC::O_CLOEXEC | LibC::O_NOFOLLOW, 0o644)

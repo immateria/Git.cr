@@ -2,7 +2,7 @@ module Git
   # Bounded non-interactive rebase state. This first native lane deliberately
   # replays a linear first-parent commit stack; merge-preserving/interactive
   # todo syntax is outside this checkpoint.
-  module Rebase
+  struct Rebase
     record State, branch : String, original_head : String, upstream : String,
       onto : String, todo : Array(String), next_index : Int32,
       expected_head : String, keep_empty : Bool

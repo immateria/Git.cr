@@ -33,14 +33,14 @@ module Git
              max_entries : Int32 = 100_000, max_total_bytes : Int64 = 1_073_741_824,
              check : Proc(Nil)? = nil) : Pull::Result
       require_worktree!
-      branch_ref = head[0] || raise Error.new("Git pull needs a checked-out branch")
+      branch_ref = head_ref_and_oid[0] || raise Error.new("Git pull needs a checked-out branch")
       raise Error.new("Git pull needs a branch") unless branch_ref.starts_with?("refs/heads/")
       branch = branch_ref.byte_slice(11)
       remote_name, merge_ref = branch_upstream(branch) || raise Error.new("Git branch #{branch} has no upstream")
       fetched = fetch(remote_name, transport: transport, actor: actor, progress: progress, check: check)
       tracking = upstream_tracking_ref(remote_name, merge_ref) || raise Error.new("Git upstream #{merge_ref} is not fetched")
       target = resolve_ref?(tracking) || raise Error.new("Git upstream #{tracking} does not exist")
-      previous = head[1]
+      previous = head_ref_and_oid[1]
       if previous.nil?
         update_ref(branch_ref, target, expected_oid: nil, max_object_bytes: 268_435_456)
         populate_worktree(target, max_files: max_entries, check: check)
@@ -51,17 +51,17 @@ module Git
       return Pull::Result.new(fetched, previous, previous, Pull::Action::UpToDate) if walker.ancestor?(target, previous)
       log = actor.try { |who| References::LogEntry.new(who, "pull: Fast-forward") }
       if walker.ancestor?(previous, target)
-        merge_fast_forward(target, log: log, max_object_bytes: 268_435_456, max_index_bytes: Int32::MAX // 2,
+        fast_forward(target, log: log, max_object_bytes: 268_435_456, max_index_bytes: Int32::MAX // 2,
           max_total_bytes: max_total_bytes, max_entries: Math.min(max_entries, @max_search_entries), check: check)
         return Pull::Result.new(fetched, previous, target, Pull::Action::FastForward)
       end
       raise Error.new("Git pull cannot fast-forward #{branch}: histories diverged") if mode.fast_forward_only?
       who = author || raise Error.new("Git pull merge needs an author")
       message = "Merge branch '#{merge_ref.sub(/\Arefs\/heads\//, "")}' of #{remote(remote_name).url}\n"
-      result = merge_three_way(target, author: who, committer: committer || who, message: message,
+      result = merge(target, author: who, committer: committer || who, message: message,
         max_object_bytes: 268_435_456, max_index_bytes: Int32::MAX // 2, max_total_bytes: max_total_bytes,
         max_entries: Math.min(max_entries, @max_search_entries), check: check)
-      Pull::Result.new(fetched, previous, head[1], Pull::Action::Merge, result)
+      Pull::Result.new(fetched, previous, head_ref_and_oid[1], Pull::Action::Merge, result)
     end
   end
 end

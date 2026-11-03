@@ -1,5 +1,6 @@
 module Git
-  module Merge
+  struct Merge
+    # :nodoc:
     # One edit against the base's half-open line interval. Replacement lines
     # are byte-exact; no newline conversion or Git attribute filtering.
     record LineEdit, start : Int32, stop : Int32, replacement : Array(String)
@@ -93,9 +94,9 @@ module Git
     # A new merged regular blob may be written before ref/index publication;
     # an interruption can leave an unreachable immutable object. No model
     # tool is authorized merely by producing this object.
-    def self.merge_blob(repository : Repository, base : Checkout::FileState?,
-                        ours : Checkout::FileState?, theirs : Checkout::FileState?,
-                        max_bytes : Int32, check : Proc(Nil)?) : {Checkout::FileState, String}?
+    protected def self.merge_blob(repository : Repository, base : Checkout::FileState?,
+                                  ours : Checkout::FileState?, theirs : Checkout::FileState?,
+                                  max_bytes : Int32, check : Proc(Nil)?) : {Checkout::FileState, String}?
       return nil unless base && ours && theirs && {base.mode, ours.mode, theirs.mode}.all? { |mode| {"100644", "100755"}.includes?(mode) }
       mode = if ours.mode == theirs.mode || theirs.mode == base.mode
                ours.mode

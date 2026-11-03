@@ -8,7 +8,7 @@ module Git
     # caller-supplied object source, as `index-pack --fix-thin` does.
     class Indexer
       record Result, checksum : String, entries : Array(IndexEntry), appended : Int32,
-        types : Hash(String, String)
+        types : Hash(String, ObjectType)
 
       DEFAULT_MAX_OBJECT_BYTES = 2_147_483_646_i64
 
@@ -37,7 +37,7 @@ module Git
       def initialize(@format : ObjectId::Format, *,
                      @max_object_bytes : Int64 = DEFAULT_MAX_OBJECT_BYTES,
                      @max_objects : Int64 = 40_000_000,
-                     @local_object : Proc(String, {String, String}?)? = nil,
+                     @local_object : Proc(String, RawObject?)? = nil,
                      @fix_thin : Bool = false,
                      @check_collisions : Bool = true,
                      @check : Proc(Nil)? = nil)
@@ -111,7 +111,7 @@ module Git
           oid = nil.as(String?)
           type = nil.as(String?)
           unless entry_type.delta?
-            type = entry_type.object_type
+            type = entry_type.object_type.to_s
             oid = ObjectId.digest(type, data, @format)
           end
           by_offset[offset] = entries.size
@@ -149,7 +149,7 @@ module Git
           raise Git::Error.new("Git pack has #{unresolved} unresolved deltas") unless @fix_thin && (source = @local_object)
           bases = missing.map do |oid|
             found = source.call(oid) || raise Git::Error.new("Git thin pack base #{oid} is missing locally")
-            {oid, found[0], found[1]}
+            {oid, found.type.to_s, found.data}
           end
           appended_entries = append_bases(file, entries.size, bases)
           bases.each_with_index do |(oid, type, content), position|
@@ -163,7 +163,7 @@ module Git
         end
         checksum = finish_checksum(file, appended > 0)
         result = entries.map { |entry| IndexEntry.new(entry.oid.not_nil!, entry.offset, entry.crc) }
-        Result.new(checksum.hexstring, result, appended, types)
+        Result.new(checksum.hexstring, result, appended, types.transform_values { |type| ObjectType.parse(type) })
       end
 
       private def resolve_children(file : File, entries : Array(Parsed), root : Int32, type : String,
@@ -204,7 +204,7 @@ module Git
         return if local || !@check_collisions
         if source = @local_object
           if existing = source.call(oid)
-            unless existing[0] == type && existing[1] == content
+            unless existing.type.to_s == type && existing.data == content
               raise Git::Error.new("Git object collision for #{oid}")
             end
           end
@@ -233,7 +233,7 @@ module Git
         appended = [] of Parsed
         bases.each do |(oid, type, content)|
           offset = file.pos.to_i64
-          entry_type = EntryType.for_object(type)
+          entry_type = EntryType.for_object(ObjectType.parse(type))
           size = content.bytesize.to_i64
           header = EntryHeader.encode(entry_type, size)
           compressed = IO::Memory.new

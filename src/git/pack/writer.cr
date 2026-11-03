@@ -23,7 +23,7 @@ module Git
       end
 
       # Write an undeltified object. Returns its offset and entry CRC32.
-      def write_object(type : String, data : Bytes) : {Int64, UInt32}
+      def write_object(type : ObjectType, data : Bytes) : {Int64, UInt32}
         write_entry(EntryType.for_object(type), data.size.to_i64, nil, data)
       end
 

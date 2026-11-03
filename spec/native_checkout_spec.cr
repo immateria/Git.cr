@@ -24,8 +24,8 @@ describe "P23 native Git checkout" do
         side_oid = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         GitOracle.run(root, "checkout", "-q", "main")
         repository = Git::Repository.new(root)
-        repository.head.should eq({"refs/heads/main", main_oid})
-        result = repository.checkout_branch("feature")
+        repository.head.should eq(Git::References::Ref.new("HEAD", main_oid, "refs/heads/main"))
+        result = repository.switch("feature")
         result.reference.should eq("refs/heads/feature")
         result.commit_oid.should eq(side_oid)
         result.changed_paths.to_set.should eq(["edit", "nested/added", "remove"].to_set)
@@ -35,7 +35,7 @@ describe "P23 native Git checkout" do
         File.file?(File.join(root, "remove")).should be_false
         File.read(File.join(root, "nested", "added")).should eq("added\n")
         (File.info(File.join(root, "nested", "added")).permissions.value & 0o111).should_not eq(0)
-        repository.checkout_branch("main")
+        repository.switch("main")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
         File.read(File.join(root, "remove")).should eq("gone\n")
         File.file?(File.join(root, "nested", "added")).should be_false
@@ -50,12 +50,12 @@ describe "P23 native Git checkout" do
         GitOracle.run(root, "branch", "topic")
         repo = Git::Repository.new(root)
         File.write(File.join(root, "a"), "dirty\n")
-        expect_raises(Git::Error, /dirty/) { repo.checkout_branch("topic") }
-        repo.head[0].should eq("refs/heads/main")
+        expect_raises(Git::Error, /dirty/) { repo.switch("topic") }
+        repo.head.symref_target.should eq("refs/heads/main")
         File.read(File.join(root, "a")).should eq("dirty\n")
         GitOracle.run(root, "add", "a")
-        expect_raises(Git::Error, /index equal to HEAD/) { repo.checkout_branch("topic") }
-        repo.head[0].should eq("refs/heads/main")
+        expect_raises(Git::Error, /index equal to HEAD/) { repo.switch("topic") }
+        repo.head.symref_target.should eq("refs/heads/main")
       end
     end
 
@@ -71,9 +71,9 @@ describe "P23 native Git checkout" do
         GitOracle.run(root, "checkout", "-q", "main")
         File.write(File.join(root, "collision"), "untracked\n")
         repo = Git::Repository.new(root)
-        expect_raises(Git::Error, /untracked path collision/) { repo.checkout_branch("topic") }
+        expect_raises(Git::Error, /untracked path collision/) { repo.switch("topic") }
         File.read(File.join(root, "collision")).should eq("untracked\n")
-        repo.head[0].should eq("refs/heads/main")
+        repo.head.symref_target.should eq("refs/heads/main")
       end
     end
 
@@ -87,15 +87,15 @@ describe "P23 native Git checkout" do
         File.write(File.join(root, "one"), "dirty\n")
         File.delete(File.join(root, "two"))
         repo = Git::Repository.new(root)
-        repo.restore_paths(["one", "two"]).to_set.should eq(["one", "two"].to_set)
+        repo.restore(["one", "two"]).to_set.should eq(["one", "two"].to_set)
         File.read(File.join(root, "one")).should eq("first\n")
         File.read(File.join(root, "two")).should eq("second\n")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(oid)
         File.write(File.join(root, "one"), "dirty again\n")
-        repo.restore_paths(["one"]).should eq(["one"])
-        repo.restore_paths(["one"]).should be_empty
-        expect_raises(Git::Error, /tracked paths/) { repo.restore_paths(["untracked"]) }
+        repo.restore(["one"]).should eq(["one"])
+        repo.restore(["one"]).should be_empty
+        expect_raises(Git::Error, /tracked paths/) { repo.restore(["untracked"]) }
       end
     end
 
@@ -112,12 +112,12 @@ describe "P23 native Git checkout" do
         GitOracle.run(root, "commit", "-qm", "second")
         second_oid = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         repo = Git::Repository.new(root)
-        repo.restore_paths(["a"], source: first_oid).should eq(["a"])
+        repo.restore(["a"], source: first_oid).should eq(["a"])
         File.read(File.join(root, "a")).should eq("one\n")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(second_oid)
         GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("")
         GitOracle.run(root, "diff", "--name-only").stdout.should contain("a")
-        expect_raises(Git::Error, /tracked paths/) { repo.restore_paths(["obsolete"], source: first_oid) }
+        expect_raises(Git::Error, /tracked paths/) { repo.restore(["obsolete"], source: first_oid) }
       end
     end
 
@@ -131,11 +131,11 @@ describe "P23 native Git checkout" do
         GitOracle.run(root, "add", "later")
         GitOracle.run(root, "commit", "-qm", "second")
         repo = Git::Repository.new(root)
-        repo.restore_paths(["later"], source: before).should eq(["later"])
+        repo.restore(["later"], source: before).should eq(["later"])
         File.exists?(File.join(root, "later")).should be_false
         GitOracle.run(root, "status", "--porcelain").stdout.should contain(" D later")
         GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("")
-        repo.restore_paths(["later"]).should eq(["later"])
+        repo.restore(["later"]).should eq(["later"])
         File.read(File.join(root, "later")).should eq("tracked\n")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
@@ -157,8 +157,8 @@ describe "P23 native Git checkout" do
         File.write(File.join(external, "sentinel"), "protected\n")
         File.symlink(external, File.join(root, "nested"))
         repo = Git::Repository.new(root)
-        expect_raises(Git::Error, /symlinked destination parent/) { repo.checkout_branch("other") }
-        repo.head[0].should eq("refs/heads/main")
+        expect_raises(Git::Error, /symlinked destination parent/) { repo.switch("other") }
+        repo.head.symref_target.should eq("refs/heads/main")
         File.read(File.join(external, "sentinel")).should eq("protected\n")
         File.exists?(File.join(external, "added")).should be_false
       end
@@ -174,10 +174,10 @@ describe "P23 native Git checkout" do
         File.write(index_lock, "foreign lock")
         repo = Git::Repository.new(root)
         begin
-          expect_raises(Git::Error) { repo.checkout_branch("other") }
-          expect_raises(Git::Error) { repo.restore_paths(["a"]) }
+          expect_raises(Git::Error) { repo.switch("other") }
+          expect_raises(Git::Error) { repo.restore(["a"]) }
           File.read(index_lock).should eq("foreign lock")
-          repo.head[0].should eq("refs/heads/main")
+          repo.head.symref_target.should eq("refs/heads/main")
         ensure
           File.delete(index_lock) if File.exists?(index_lock)
         end
@@ -199,10 +199,10 @@ describe "P23 native Git checkout" do
           raise Git::Error.new("injected after worktree write") if File.read(File.join(root, "a")) == "other\n"
           nil
         end
-        err = expect_raises(Git::Checkout::PartialPublication) { repo.checkout_branch("other", check: guard) }
+        err = expect_raises(Git::Checkout::PartialPublication) { repo.switch("other", check: guard) }
         err.changed_paths.should eq(["a"])
         err.index_published.should be_false
-        repo.head[0].should eq("refs/heads/main")
+        repo.head.symref_target.should eq("refs/heads/main")
         File.read(File.join(root, "a")).should eq("other\n")
         File.exists?(File.join(root, ".git", "HEAD.lock")).should be_false
         File.exists?(File.join(root, ".git", "index.lock")).should be_false
@@ -223,8 +223,8 @@ describe "P23 native Git checkout" do
         GitOracle.run(root, "commit", "-qm", "topic")
         GitOracle.run(root, "checkout", "-q", "main")
         repo = Git::Repository.new(root)
-        expect_raises(Git::Error, /regular files/) { repo.checkout_branch("topic") }
-        repo.head[0].should eq("refs/heads/main")
+        expect_raises(Git::Error, /regular files/) { repo.switch("topic") }
+        repo.head.symref_target.should eq("refs/heads/main")
       end
     end
   end
@@ -246,10 +246,10 @@ describe "P31 native Git checkout file/directory transitions" do
         GitOracle.run(root, "checkout", "-q", "main")
 
         repo = Git::Repository.new(root)
-        repo.checkout_branch("topic")
+        repo.switch("topic")
         File.read(File.join(root, "node", "child")).should eq("topic\n")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.checkout_branch("main")
+        repo.switch("main")
         File.file?(File.join(root, "node")).should be_true
         File.read(File.join(root, "node")).should eq("base\n")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
@@ -269,12 +269,12 @@ describe "P31 native Git checkout file/directory transitions" do
         GitOracle.run(root, "commit", "-qm", "topic")
 
         repo = Git::Repository.new(root)
-        repo.checkout_branch("main").reference.should eq("refs/heads/main")
-        repo.checkout_branch("topic")
+        repo.switch("main").reference.should eq("refs/heads/main")
+        repo.switch("topic")
         File.write(File.join(root, "node", "untracked"), "keep\n")
-        expect_raises(Git::Error, /untracked/) { repo.checkout_branch("main") }
+        expect_raises(Git::Error, /untracked/) { repo.switch("main") }
         File.read(File.join(root, "node", "untracked")).should eq("keep\n")
-        repo.head[0].should eq("refs/heads/topic")
+        repo.head.symref_target.should eq("refs/heads/topic")
       end
     end
   end

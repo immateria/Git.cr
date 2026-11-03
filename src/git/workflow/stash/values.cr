@@ -1,18 +1,19 @@
 module Git
-  module Stash
+  struct Stash
     REF = "refs/stash"
 
     record Entry, position : Int32, oid : String, base_oid : String,
       index_oid : String, tree : String, index_tree : String,
       message : String, untracked_oid : String?
 
-    module Result
-      record Apply, entry : Entry, changed_paths : Array(String),
-        conflicts : Array(String), index_restored : Bool
+    # What applying an entry did to the index and worktree.
+    record Applied, entry : Entry, changed_paths : Array(String),
+      conflicts : Array(String), index_restored : Bool
 
-      record Pop, apply : Apply, dropped : Bool
-    end
+    # An application followed by dropping the entry.
+    record Popped, applied : Applied, dropped : Bool
 
+    # :nodoc:
     record LogRecord, old_oid : String, new_oid : String,
       identity : String, message : String do
       def encode : String
@@ -58,10 +59,10 @@ module Git
     end
 
     class PartialPop < Git::Error
-      getter apply : Result::Apply
+      getter applied : Applied
       getter original_error : Exception
 
-      def initialize(@apply : Result::Apply, @original_error : Exception)
+      def initialize(@applied : Applied, @original_error : Exception)
         super("Git stash applied but drop failed (#{@original_error.class}); inspect refs/stash before retrying")
       end
     end

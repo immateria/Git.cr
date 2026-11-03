@@ -14,7 +14,7 @@ module Git
     # HEAD, reflog entries and the index.
     private def keep_tips : Array(String)
       tips = references("refs/").compact_map(&.oid)
-      head[1].try { |oid| tips << oid }
+      head_ref_and_oid[1].try { |oid| tips << oid }
       logs = File.join(@common, "logs")
       if Dir.exists?(logs)
         Dir.glob(File.join(logs, "**", "*")).each do |path|

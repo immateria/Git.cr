@@ -23,7 +23,7 @@ describe "P30 exact-identity Git rename during three-way merge" do
         GitOracle.run(root, "merge", "--abort")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         result.changed_paths.to_set.should eq(Set{"old", "new"})
         File.exists?(File.join(root, "old")).should be_false
@@ -50,7 +50,7 @@ describe "P30 exact-identity Git rename during three-way merge" do
         GitOracle.run(root, "merge", "--abort")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         File.exists?(File.join(root, "old")).should be_false
         File.read(File.join(root, "new")).should eq(expected)
@@ -72,7 +72,7 @@ describe "P30 exact-identity Git rename during three-way merge" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /rename\/rename/) do
-          repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+          repo.merge("topic", author: sig, committer: sig, message: "merge")
         end
         File.read(File.join(root, "local")).should eq("base\n")
         File.exists?(File.join(root, "remote")).should be_false
@@ -102,7 +102,7 @@ describe "P31 exact-content Git rename with independent mode changes" do
 
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         File.exists?(File.join(root, "old")).should be_false
         File.read(File.join(root, "new")).should eq("ours\n")
@@ -129,7 +129,7 @@ describe "P31 exact-content Git rename with independent mode changes" do
 
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         File.exists?(File.join(root, "old")).should be_false
         File.read(File.join(root, "new")).should eq("theirs\n")

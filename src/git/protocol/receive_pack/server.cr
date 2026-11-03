@@ -93,7 +93,7 @@ module Git
         # Validate every command, then apply. Atomic pushes are all or none.
         private def apply(commands : Array(Command), atomic : Bool) : Array({Command, String?})
           zero = ObjectId.zero(@repository.object_format)
-          current_branch = @repository.bare? ? nil : @repository.head[0]
+          current_branch = @repository.bare? ? nil : @repository.head_ref_and_oid[0]
           walker = History::RevisionWalker.new(@repository, check: @options.check)
           checked = commands.map do |command|
             error = nil.as(String?)
@@ -108,7 +108,7 @@ module Git
                 error = "branch is currently checked out" if command.name == current_branch && @options.deny_current_branch
                 error ||= "missing necessary objects" unless @repository.has_object?(command.new_oid)
                 if error.nil? && current && @options.deny_non_fast_forwards &&
-                   !(@repository.object_header(current)[0] == "commit" && walker.ancestor?(current, command.new_oid))
+                   !(@repository.object_header(current).type.commit? && walker.ancestor?(current, command.new_oid))
                   error = "non-fast-forward"
                 end
               end
@@ -152,7 +152,7 @@ module Git
           existing = @repository.references("refs/").compact_map(&.oid).select { |oid| @repository.has_object?(oid) }
           items = History::RevisionWalker.new(@repository, check: @options.check).objects(tips, existing)
           items.each do |item|
-            return "missing necessary objects" unless item.type != "blob" || @repository.has_object?(item.oid)
+            return "missing necessary objects" unless !item.type.blob? || @repository.has_object?(item.oid)
           end
           nil
         rescue ex : Git::Error

@@ -1,5 +1,6 @@
 module Git
-  module References
+  struct References
+    # :nodoc:
     class Transaction
       # Delete one direct ref only if its observed OID still matches. This
       # removes both loose and packed representations to prevent a packed

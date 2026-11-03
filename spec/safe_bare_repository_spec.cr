@@ -137,11 +137,11 @@ describe "P06 protected safe.bareRepository" do
     bare_fixture do |root, bare|
       global = bare_global(root, "all")
       store = Git::Repository.open_with_bare_repository_check(bare, global_files: [global])
-      store.check!
+      store.revalidate!
       File.write(global, "[safe]\n bareRepository = explicit\n")
-      expect_raises(Git::Error, /bare/) { store.check! }
+      expect_raises(Git::Error, /bare/) { store.revalidate! }
       File.write(global, "[safe]\n bareRepository = all\n")
-      store.check!
+      store.revalidate!
     end
   end
 

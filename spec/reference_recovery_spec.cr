@@ -12,7 +12,7 @@ if root = ENV["CR_GIT_RECOVERY_CHILD"]?
   changes << Git::References::Update.new("refs/heads/a", new_oid, old_oid)
   changes << Git::References::Update.new("refs/heads/b", new_oid, nil)
   changes << Git::References::Delete.new("refs/heads/obsolete", old_oid)
-  repo.change_refs_recoverably(changes, id: "killed-writer",
+  repo.recovery.apply(changes, id: "killed-writer",
     after_publish: ->(name : String) do
       LibC._exit(73) if name == "refs/heads/a"
       nil
@@ -28,7 +28,7 @@ if root = ENV["CR_GIT_REFLOG_RECOVERY_CHILD"]?
   log = Git::References::LogEntry.new(Git::Signature.new("Recovery", "recovery@example.invalid", 1_i64, 0), "crash")
   changes = [] of Git::References::Change
   changes << Git::References::Update.new("refs/heads/main", new_oid, old_oid, log)
-  repo.change_refs_recoverably(changes, id: "crash-reflog",
+  repo.recovery.apply(changes, id: "crash-reflog",
     after_reflog: ->(name : String) do
       LibC._exit(74) if name == "refs/heads/main"
       nil
@@ -45,8 +45,8 @@ describe "P19 explicit durable mixed-ref redo journal" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         first = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
         second = repo.write_commit(tree: tree, parents: [first], author: sig, committer: sig, message: "two")
-        repo.update_ref("refs/heads/alpha", first, expected_oid: nil)
-        repo.update_ref("refs/heads/obsolete", first, expected_oid: nil)
+        repo.refs.update("refs/heads/alpha", first, expected_oid: nil)
+        repo.refs.update("refs/heads/obsolete", first, expected_oid: nil)
         GitOracle.run(root, "pack-refs", "--all")
         changes = [] of Git::References::Change
         changes << Git::References::Update.new("refs/heads/alpha", second, first)
@@ -54,12 +54,12 @@ describe "P19 explicit durable mixed-ref redo journal" do
         changes << Git::References::Delete.new("refs/heads/obsolete", first)
         observer = ->(name : String) { raise Git::Error.new("interrupted after first ref") if name == "refs/heads/alpha" }
         error = expect_raises(Git::References::PartialPublication) do
-          repo.change_refs_recoverably(changes, id: "resume-#{format}", after_publish: observer)
+          repo.recovery.apply(changes, id: "resume-#{format}", after_publish: observer)
         end
         error.published_refs.should eq(["refs/heads/alpha"])
-        repo.pending_ref_recoveries.should eq(["resume-#{format}"])
-        repo.recover_refs("resume-#{format}")
-        repo.pending_ref_recoveries.should be_empty
+        repo.recovery.pending.should eq(["resume-#{format}"])
+        repo.recovery.resume("resume-#{format}")
+        repo.recovery.pending.should be_empty
         GitOracle.run(root, "rev-parse", "refs/heads/alpha").stdout.strip.should eq(second)
         GitOracle.run(root, "rev-parse", "refs/heads/new").stdout.strip.should eq(first)
         GitOracle.run(root, "show-ref", "--verify", "refs/heads/obsolete", check: false).success?.should be_false
@@ -75,19 +75,19 @@ describe "P19 explicit durable mixed-ref redo journal" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       old_oid = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       new_oid = repo.write_commit(tree: tree, parents: [old_oid], author: sig, committer: sig, message: "two")
-      repo.update_ref("refs/heads/a", old_oid, expected_oid: nil)
-      repo.update_ref("refs/heads/obsolete", old_oid, expected_oid: nil)
+      repo.refs.update("refs/heads/a", old_oid, expected_oid: nil)
+      repo.refs.update("refs/heads/obsolete", old_oid, expected_oid: nil)
       GitOracle.run(root, "pack-refs", "--all")
       child = Process.run(Process.executable_path.not_nil!, [] of String,
         env: {"CR_GIT_RECOVERY_CHILD" => root, "CR_GIT_RECOVERY_OLD" => old_oid,
               "CR_GIT_RECOVERY_NEW" => new_oid},
         output: Process::Redirect::Close, error: Process::Redirect::Close)
       child.exit_code.should eq(73)
-      repo.pending_ref_recoveries.should eq(["killed-writer"])
+      repo.recovery.pending.should eq(["killed-writer"])
       File.exists?(File.join(root, ".git", "refs", "heads", "b.lock")).should be_true
-      expect_raises(Git::Error, /blocked by ref lock/) { repo.recover_refs("killed-writer") }
-      repo.recover_refs("killed-writer", clear_abandoned_locks: true)
-      repo.pending_ref_recoveries.should be_empty
+      expect_raises(Git::Error, /blocked by ref lock/) { repo.recovery.resume("killed-writer") }
+      repo.recovery.resume("killed-writer", clear_abandoned_locks: true)
+      repo.recovery.pending.should be_empty
       GitOracle.run(root, "rev-parse", "refs/heads/a").stdout.strip.should eq(new_oid)
       GitOracle.run(root, "rev-parse", "refs/heads/b").stdout.strip.should eq(new_oid)
       GitOracle.run(root, "show-ref", "--verify", "refs/heads/obsolete", check: false).success?.should be_false
@@ -102,18 +102,18 @@ describe "P19 explicit durable mixed-ref redo journal" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       oid = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       log = Git::References::LogEntry.new(sig, "created")
-      repo.update_ref("refs/heads/obsolete", oid, expected_oid: nil, log: log)
+      repo.refs.update("refs/heads/obsolete", oid, expected_oid: nil, log: log)
       reflog = File.join(root, ".git", "logs", "refs", "heads", "obsolete")
       File.file?(reflog).should be_true
       changes = [] of Git::References::Change
       changes << Git::References::Delete.new("refs/heads/obsolete", oid)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "orphan-log", after_publish: ->(_name : String) { raise "interrupt before log cleanup" })
+        repo.recovery.apply(changes, id: "orphan-log", after_publish: ->(_name : String) { raise "interrupt before log cleanup" })
       end
       File.file?(reflog).should be_true
-      repo.recover_refs("orphan-log")
+      repo.recovery.resume("orphan-log")
       File.exists?(reflog).should be_false
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.pending.should be_empty
     end
   end
 
@@ -128,10 +128,10 @@ describe "P19 explicit durable mixed-ref redo journal" do
       # Synthesize a post-crash persisted valid journal by interrupting just
       # after the only ref was published, rather than editing private bytes.
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "already-done", after_publish: ->(_name : String) { raise "exit before journal cleanup" })
+        repo.recovery.apply(changes, id: "already-done", after_publish: ->(_name : String) { raise "exit before journal cleanup" })
       end
-      repo.recover_refs("already-done")
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.resume("already-done")
+      repo.recovery.pending.should be_empty
       GitOracle.run(root, "rev-parse", "refs/heads/new").stdout.strip.should eq(oid)
     end
   end
@@ -144,18 +144,18 @@ describe "P19 explicit durable mixed-ref redo journal" do
       oid1 = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       oid2 = repo.write_commit(tree: tree, parents: [oid1], author: sig, committer: sig, message: "two")
       oid3 = repo.write_commit(tree: tree, parents: [oid2], author: sig, committer: sig, message: "three")
-      repo.update_ref("refs/heads/a", oid1, expected_oid: nil)
+      repo.refs.update("refs/heads/a", oid1, expected_oid: nil)
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/a", oid2, oid1)
       changes << Git::References::Update.new("refs/heads/z", oid2, nil)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "diverged", after_publish: ->(_name : String) { raise "stop" })
+        repo.recovery.apply(changes, id: "diverged", after_publish: ->(_name : String) { raise "stop" })
       end
-      repo.update_ref("refs/heads/a", oid3, expected_oid: oid2)
-      expect_raises(Git::References::Recovery::Conflict, /conflict/) { repo.recover_refs("diverged") }
-      repo.pending_ref_recoveries.should eq(["diverged"])
-      repo.resolve_ref?("refs/heads/a").should eq(oid3)
-      repo.resolve_ref?("refs/heads/z").should be_nil
+      repo.refs.update("refs/heads/a", oid3, expected_oid: oid2)
+      expect_raises(Git::References::Recovery::Conflict, /conflict/) { repo.recovery.resume("diverged") }
+      repo.recovery.pending.should eq(["diverged"])
+      repo.refs.resolve?("refs/heads/a").should eq(oid3)
+      repo.refs.resolve?("refs/heads/z").should be_nil
     end
   end
 
@@ -168,12 +168,12 @@ describe "P19 explicit durable mixed-ref redo journal" do
       log = Git::References::LogEntry.new(sig, "not idempotent")
       with_log = [] of Git::References::Change
       with_log << Git::References::Update.new("refs/heads/new", oid, nil, log)
-      repo.change_refs_recoverably(with_log, id: "allowed")
+      repo.recovery.apply(with_log, id: "allowed")
       File.read(File.join(root, ".git", "logs", "refs", "heads", "new")).should eq(log.encode("0" * repo.object_format.hexsize, oid))
       stale = [] of Git::References::Change
       stale << Git::References::Update.new("refs/heads/new", oid, nil)
-      expect_raises(Git::Error, /compare-and-swap/) { repo.change_refs_recoverably(stale, id: "stale") }
-      repo.pending_ref_recoveries.should be_empty
+      expect_raises(Git::Error, /compare-and-swap/) { repo.recovery.apply(stale, id: "stale") }
+      repo.recovery.pending.should be_empty
     end
   end
 
@@ -185,14 +185,14 @@ describe "P19 explicit durable mixed-ref redo journal" do
       oid = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/new", oid, nil)
-      expect_raises(Git::Error, /identifier/) { repo.change_refs_recoverably(changes, id: "../escape") }
+      expect_raises(Git::Error, /identifier/) { repo.recovery.apply(changes, id: "../escape") }
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "corrupt", after_publish: ->(_name : String) { raise "stop" })
+        repo.recovery.apply(changes, id: "corrupt", after_publish: ->(_name : String) { raise "stop" })
       end
       journal = File.join(root, ".git", "crystal-git-recovery", "corrupt.redo")
       File.open(journal, "a") { |io| io << "extra" }
-      expect_raises(Git::Error, /checksum|envelope/) { repo.recover_refs("corrupt") }
-      repo.pending_ref_recoveries.should eq(["corrupt"])
+      expect_raises(Git::Error, /checksum|envelope/) { repo.recovery.resume("corrupt") }
+      repo.recovery.pending.should eq(["corrupt"])
     end
   end
 
@@ -206,16 +206,16 @@ describe "P19 explicit durable mixed-ref redo journal" do
       changes << Git::References::Update.new("refs/heads/a", oid, nil)
       changes << Git::References::Update.new("refs/heads/z", oid, nil)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "abandoned", after_publish: ->(_name : String) { raise "interrupt" })
+        repo.recovery.apply(changes, id: "abandoned", after_publish: ->(_name : String) { raise "interrupt" })
       end
       lock = File.join(root, ".git", "refs", "heads", "z.lock")
       File.write(lock, "#{oid}\n")
-      expect_raises(Git::Error, /blocked by ref lock/) { repo.recover_refs("abandoned") }
+      expect_raises(Git::Error, /blocked by ref lock/) { repo.recovery.resume("abandoned") }
       File.exists?(lock).should be_true
-      repo.recover_refs("abandoned", clear_abandoned_locks: true)
+      repo.recovery.resume("abandoned", clear_abandoned_locks: true)
       File.exists?(lock).should be_false
-      repo.pending_ref_recoveries.should be_empty
-      repo.resolve_ref?("refs/heads/z").should eq(oid)
+      repo.recovery.pending.should be_empty
+      repo.refs.resolve?("refs/heads/z").should eq(oid)
     end
   end
 end
@@ -230,17 +230,17 @@ describe "P19 idempotent reflog redo" do
         first = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
         second = repo.write_commit(tree: tree, parents: [first], author: sig, committer: sig, message: "two")
         initial = Git::References::LogEntry.new(sig, "initialize")
-        repo.update_ref("refs/heads/main", first, expected_oid: nil, log: initial)
+        repo.refs.update("refs/heads/main", first, expected_oid: nil, log: initial)
         before = File.read(File.join(root, ".git", "logs", "refs", "heads", "main"))
         next_log = Git::References::LogEntry.new(sig, "recoverable ref update")
         change = [] of Git::References::Change
         change << Git::References::Update.new("refs/heads/main", second, first, next_log)
-        repo.change_refs_recoverably(change, id: "with-logs")
+        repo.recovery.apply(change, id: "with-logs")
         branch = File.read(File.join(root, ".git", "logs", "refs", "heads", "main"))
         head_log = File.read(File.join(root, ".git", "logs", "HEAD"))
         branch.should eq(before + next_log.encode(first, second))
         head_log.should eq(initial.encode("0" * repo.object_format.hexsize, first) + next_log.encode(first, second))
-        repo.pending_ref_recoveries.should be_empty
+        repo.recovery.pending.should be_empty
         GitOracle.run(root, "reflog", "show", "--format=%H", "refs/heads/main").stdout.lines.first.strip.should eq(second)
         GitOracle.run(root, "fsck", "--no-reflogs")
       end
@@ -254,12 +254,12 @@ describe "P19 idempotent reflog redo" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       first = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       second = repo.write_commit(tree: tree, parents: [first], author: sig, committer: sig, message: "two")
-      repo.update_ref("refs/heads/main", first, expected_oid: nil)
+      repo.refs.update("refs/heads/main", first, expected_oid: nil)
       log = Git::References::LogEntry.new(sig, "recover-once")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/main", second, first, log)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "half-logs",
+        repo.recovery.apply(changes, id: "half-logs",
           after_reflog: ->(name : String) { raise "stop at branch log" if name == "refs/heads/main" })
       end
       branch_path = File.join(root, ".git", "logs", "refs", "heads", "main")
@@ -267,10 +267,10 @@ describe "P19 idempotent reflog redo" do
       File.read(branch_path).should eq(expected)
       head_path = File.join(root, ".git", "logs", "HEAD")
       File.exists?(head_path).should be_false
-      repo.recover_refs("half-logs")
+      repo.recovery.resume("half-logs")
       File.read(branch_path).should eq(expected)
       File.read(head_path).should eq(expected)
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.pending.should be_empty
     end
   end
 
@@ -284,15 +284,15 @@ describe "P19 idempotent reflog redo" do
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/topic", oid, nil, log)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "partial-log", after_publish: ->(_name : String) { raise "before log" })
+        repo.recovery.apply(changes, id: "partial-log", after_publish: ->(_name : String) { raise "before log" })
       end
       path = File.join(root, ".git", "logs", "refs", "heads", "topic")
       Dir.mkdir_p(File.dirname(path))
       line = log.encode("0" * repo.object_format.hexsize, oid)
       File.write(path, line.byte_slice(0, 19))
-      repo.recover_refs("partial-log")
+      repo.recovery.resume("partial-log")
       File.read(path).should eq(line)
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.pending.should be_empty
     end
   end
 
@@ -304,18 +304,18 @@ describe "P19 idempotent reflog redo" do
       first = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       second = repo.write_commit(tree: tree, parents: [first], author: sig, committer: sig, message: "two")
       initial = Git::References::LogEntry.new(sig, "prior")
-      repo.update_ref("refs/heads/main", first, expected_oid: nil, log: initial)
+      repo.refs.update("refs/heads/main", first, expected_oid: nil, log: initial)
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/main", second, first, Git::References::LogEntry.new(sig, "new"))
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "log-conflict", after_publish: ->(_name : String) { raise "no log" })
+        repo.recovery.apply(changes, id: "log-conflict", after_publish: ->(_name : String) { raise "no log" })
       end
       branch_path = File.join(root, ".git", "logs", "refs", "heads", "main")
       File.open(branch_path, "a") { |io| io << "alien record\n" }
       before_head = File.read(File.join(root, ".git", "logs", "HEAD"))
-      expect_raises(Git::References::Recovery::Conflict, /diverged/) { repo.recover_refs("log-conflict") }
+      expect_raises(Git::References::Recovery::Conflict, /diverged/) { repo.recovery.resume("log-conflict") }
       File.read(File.join(root, ".git", "logs", "HEAD")).should eq(before_head)
-      repo.pending_ref_recoveries.should eq(["log-conflict"])
+      repo.recovery.pending.should eq(["log-conflict"])
     end
   end
 
@@ -326,13 +326,13 @@ describe "P19 idempotent reflog redo" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       first = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       second = repo.write_commit(tree: tree, parents: [first], author: sig, committer: sig, message: "two")
-      repo.update_ref("refs/heads/main", first, expected_oid: nil)
+      repo.refs.update("refs/heads/main", first, expected_oid: nil)
       child = Process.run(Process.executable_path.not_nil!, [] of String,
         env: {"CR_GIT_REFLOG_RECOVERY_CHILD" => root, "CR_GIT_RECOVERY_OLD" => first, "CR_GIT_RECOVERY_NEW" => second},
         output: Process::Redirect::Close, error: Process::Redirect::Close)
       child.exit_code.should eq(74)
-      repo.pending_ref_recoveries.should eq(["crash-reflog"])
-      repo.recover_refs("crash-reflog")
+      repo.recovery.pending.should eq(["crash-reflog"])
+      repo.recovery.resume("crash-reflog")
       expected = Git::References::LogEntry.new(sig, "crash").encode(first, second)
       File.read(File.join(root, ".git", "logs", "refs", "heads", "main")).should eq(expected)
       File.read(File.join(root, ".git", "logs", "HEAD")).should eq(expected)
@@ -351,7 +351,7 @@ describe "P19 reflog recovery compatibility and refusal" do
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/new", oid, nil)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "old-format", after_publish: ->(_name : String) { raise "stop" })
+        repo.recovery.apply(changes, id: "old-format", after_publish: ->(_name : String) { raise "stop" })
       end
       path = File.join(root, ".git", "crystal-git-recovery", "old-format.redo")
       raw = File.read(path)
@@ -361,9 +361,9 @@ describe "P19 reflog recovery compatibility and refusal" do
       legacy = body.sub("crystal-git-ref-redo-2\n", "crystal-git-ref-redo-1\n")
       legacy = legacy.byte_slice(0, legacy.bytesize - 2)
       File.write(path, "#{Digest::SHA256.hexdigest(legacy)}\n#{legacy}")
-      repo.recover_refs("old-format")
-      repo.pending_ref_recoveries.should be_empty
-      repo.resolve_ref?("refs/heads/new").should eq(oid)
+      repo.recovery.resume("old-format")
+      repo.recovery.pending.should be_empty
+      repo.refs.resolve?("refs/heads/new").should eq(oid)
     end
   end
 
@@ -374,21 +374,21 @@ describe "P19 reflog recovery compatibility and refusal" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       first = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       second = repo.write_commit(tree: tree, parents: [first], author: sig, committer: sig, message: "two")
-      repo.update_ref("refs/heads/main", first, expected_oid: nil)
+      repo.refs.update("refs/heads/main", first, expected_oid: nil)
       log = Git::References::LogEntry.new(sig, "branch write")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/main", second, first, log)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "head-moved", after_publish: ->(_name : String) { raise "stop" })
+        repo.recovery.apply(changes, id: "head-moved", after_publish: ->(_name : String) { raise "stop" })
       end
       GitOracle.run(root, "symbolic-ref", "HEAD", "refs/heads/other")
-      expect_raises(Git::References::Recovery::Conflict, /HEAD moved/) { repo.recover_refs("head-moved") }
-      repo.pending_ref_recoveries.should eq(["head-moved"])
+      expect_raises(Git::References::Recovery::Conflict, /HEAD moved/) { repo.recovery.resume("head-moved") }
+      repo.recovery.pending.should eq(["head-moved"])
       # Git's own symbolic-ref operation also changes the HEAD reflog. A
       # return to the old branch does NOT authorize overwriting that history.
       GitOracle.run(root, "symbolic-ref", "HEAD", "refs/heads/main")
-      expect_raises(Git::References::Recovery::Conflict, /diverged/) { repo.recover_refs("head-moved") }
-      repo.pending_ref_recoveries.should eq(["head-moved"])
+      expect_raises(Git::References::Recovery::Conflict, /diverged/) { repo.recovery.resume("head-moved") }
+      repo.recovery.pending.should eq(["head-moved"])
     end
   end
 end
@@ -408,9 +408,9 @@ describe "P19 reflog recovery safety" do
       log = Git::References::LogEntry.new(sig, "no redirect")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/topic", oid, nil, log)
-      expect_raises(Git::Error, /reflog redirected/) { repo.change_refs_recoverably(changes, id: "symlink") }
-      repo.resolve_ref?("refs/heads/topic").should be_nil
-      repo.pending_ref_recoveries.should be_empty
+      expect_raises(Git::Error, /reflog redirected/) { repo.recovery.apply(changes, id: "symlink") }
+      repo.refs.resolve?("refs/heads/topic").should be_nil
+      repo.recovery.pending.should be_empty
       File.read(foreign).should eq("protected")
     end
   end
@@ -423,20 +423,20 @@ describe "P19 reflog recovery safety" do
       first = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       second = repo.write_commit(tree: tree, parents: [first], author: sig, committer: sig, message: "two")
       original_log = Git::References::LogEntry.new(sig, "first")
-      repo.update_ref("refs/heads/topic", first, expected_oid: nil, log: original_log)
+      repo.refs.update("refs/heads/topic", first, expected_oid: nil, log: original_log)
       log_path = File.join(root, ".git", "logs", "refs", "heads", "topic")
       before = File.read(log_path)
       next_log = Git::References::LogEntry.new(sig, "second")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/topic", second, first, next_log)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "nonempty", after_publish: ->(_name : String) { raise "stop" })
+        repo.recovery.apply(changes, id: "nonempty", after_publish: ->(_name : String) { raise "stop" })
       end
       line = next_log.encode(first, second)
       File.open(log_path, "a") { |io| io << line.byte_slice(0, 27) }
-      repo.recover_refs("nonempty")
+      repo.recovery.resume("nonempty")
       File.read(log_path).should eq(before + line)
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.pending.should be_empty
     end
   end
 end

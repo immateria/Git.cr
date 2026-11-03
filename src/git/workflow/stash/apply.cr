@@ -5,14 +5,14 @@ module Git
     # markers but leave the stash entry intact and no sequencer metadata.
     # restore_index reproduces the saved index exactly and is intentionally
     # restricted to the original base commit in this first native slice.
-    def stash_apply(position : Int32 = 0, *, actor : Signature,
-                    restore_index : Bool = false,
-                    max_object_bytes : Int32 = 8_388_608,
-                    max_index_bytes : Int32 = 8_388_608,
-                    max_total_bytes : Int64 = 67_108_864,
-                    max_entries : Int32 = 10_000,
-                    max_log_bytes : Int32 = 8_388_608,
-                    check : Proc(Nil)? = nil) : Stash::Result::Apply
+    protected def stash_apply(position : Int32 = 0, *, actor : Signature,
+                              restore_index : Bool = false,
+                              max_object_bytes : Int32 = 8_388_608,
+                              max_index_bytes : Int32 = 8_388_608,
+                              max_total_bytes : Int64 = 67_108_864,
+                              max_entries : Int32 = 10_000,
+                              max_log_bytes : Int32 = 8_388_608,
+                              check : Proc(Nil)? = nil) : Stash::Applied
       entry = stash_show(position, max_log_bytes: max_log_bytes,
         max_object_bytes: max_object_bytes, max_entries: max_entries, check: check)
       untracked_writes, untracked_bytes = stash_untracked_writes(entry.untracked_oid,
@@ -21,10 +21,10 @@ module Git
       tracked_budget = max_total_bytes - untracked_bytes
       raise Error.new("Git stash total byte budget exceeded") if tracked_budget < max_object_bytes
       if restore_index
-        current_head = head[1]
+        current_head = head_ref_and_oid[1]
         raise Error.new("Git stash --index requires original base HEAD") unless current_head == entry.base_oid
       end
-      expected_head = head
+      expected_head = head_ref_and_oid
       result = nil.as(Sequencer::Result?)
       begin
         result = sequencer_start(Sequencer::Kind::CherryPick, entry.oid,
@@ -42,7 +42,7 @@ module Git
       if applied.conflicts.empty?
         begin
           if restore_index
-            reset_index_to(entry.index_oid, max_object_bytes: max_object_bytes,
+            read_tree(entry.index_oid, max_object_bytes: max_object_bytes,
               max_index_bytes: max_index_bytes, max_entries: max_entries, check: check)
             restored = true
           else
@@ -62,7 +62,7 @@ module Git
       unless untracked_writes.empty?
         guard = -> do
           check.try &.call
-          raise Error.new("Git stash apply HEAD changed during untracked restore") unless head == expected_head
+          raise Error.new("Git stash apply HEAD changed during untracked restore") unless head_ref_and_oid == expected_head
           raise Error.new("Git stash apply sequencer metadata reappeared") if sequencer_state?
         end
         begin
@@ -80,31 +80,31 @@ module Git
             applied.conflicts, restored, ex)
         end
       end
-      Stash::Result::Apply.new(entry, changed_paths, applied.conflicts, restored)
+      Stash::Applied.new(entry, changed_paths, applied.conflicts, restored)
     end
 
     # Apply and remove only after a conflict-free application. A conflict is
     # a successful stopped state: the stash remains on the stack for recovery.
-    def stash_pop(position : Int32 = 0, *, actor : Signature,
-                  restore_index : Bool = false,
-                  max_object_bytes : Int32 = 8_388_608,
-                  max_index_bytes : Int32 = 8_388_608,
-                  max_total_bytes : Int64 = 67_108_864,
-                  max_entries : Int32 = 10_000,
-                  max_log_bytes : Int32 = 8_388_608,
-                  check : Proc(Nil)? = nil) : Stash::Result::Pop
+    protected def stash_pop(position : Int32 = 0, *, actor : Signature,
+                            restore_index : Bool = false,
+                            max_object_bytes : Int32 = 8_388_608,
+                            max_index_bytes : Int32 = 8_388_608,
+                            max_total_bytes : Int64 = 67_108_864,
+                            max_entries : Int32 = 10_000,
+                            max_log_bytes : Int32 = 8_388_608,
+                            check : Proc(Nil)? = nil) : Stash::Popped
       applied = stash_apply(position, actor: actor, restore_index: restore_index,
         max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
         max_total_bytes: max_total_bytes, max_entries: max_entries,
         max_log_bytes: max_log_bytes, check: check)
-      return Stash::Result::Pop.new(applied, false) unless applied.conflicts.empty?
+      return Stash::Popped.new(applied, false) unless applied.conflicts.empty?
       begin
         stash_drop(position, max_log_bytes: max_log_bytes,
           max_object_bytes: max_object_bytes, max_entries: max_entries, check: check)
       rescue ex
         raise Stash::PartialPop.new(applied, ex)
       end
-      Stash::Result::Pop.new(applied, true)
+      Stash::Popped.new(applied, true)
     end
   end
 end

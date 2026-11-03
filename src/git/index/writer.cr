@@ -8,15 +8,17 @@ module Git
     record PutStages, path : String, stages : Array(Entry)
     alias Edit = Put | Remove | PutStages
 
+    # :nodoc:
     # Complete, checksummed image, bound to the SHA-256 digest of the exact
     # predecessor (nil means the index was absent). This is a redo intent,
     # not permission to write or a guarantee of an atomic multi-file commit.
     record Image, before_sha256 : String?, data : String
+    # :nodoc:
     record Plan, image : Image, entries : Array(Entry)
 
     # Fingerprint the complete index for best-effort staged snapshot guards.
     # This is not a descriptor-held atomic snapshot against hostile writers.
-    def snapshot_checksum(max_bytes : Int32 = 8_388_608) : String?
+    protected def snapshot_checksum(max_bytes : Int32 = 8_388_608) : String?
       raise ArgumentError.new("invalid Git index byte budget") if max_bytes < 128
       @metadata.check!
       raw = read_index_bounded(File.join(@metadata.git_dir, "index"), max_bytes)
@@ -27,9 +29,9 @@ module Git
     # acquiring Git's exclusive .lock, then rebuilt in its existing DIRC
     # version (2, 3 or 4) and atomically published. Unsupported extensions
     # are refused; supported flags including CE_VALID are preserved.
-    def stage_entry(path : String, mode : String, oid : String, *,
-                    max_bytes : Int32 = 8_388_608, max_entries : Int32 = 100_000,
-                    check : Proc(Nil)? = nil) : Nil
+    protected def stage_entry(path : String, mode : String, oid : String, *,
+                              max_bytes : Int32 = 8_388_608, max_entries : Int32 = 100_000,
+                              check : Proc(Nil)? = nil) : Nil
       PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH)
       raise Error.new("unsupported Git staging mode") unless {"100644", "100755", "120000", "160000"}.includes?(mode)
       ObjectId.valid!(oid, @object_format)
@@ -40,12 +42,13 @@ module Git
     # Remove all stages for a tracked path from the index without touching
     # its worktree file. This deliberately differs from git rm's filesystem
     # side effects and performs no pathspec expansion or ignore filtering.
-    def remove_entry(path : String, *, max_bytes : Int32 = 8_388_608,
-                     max_entries : Int32 = 100_000, check : Proc(Nil)? = nil) : Nil
+    protected def remove_entry(path : String, *, max_bytes : Int32 = 8_388_608,
+                               max_entries : Int32 = 100_000, check : Proc(Nil)? = nil) : Nil
       PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH)
       mutate_entry(path, nil, max_bytes: max_bytes, max_entries: max_entries, check: check)
     end
 
+    # :nodoc:
     # Build a complete index image without publishing it. The result can be
     # journaled before any index or reference changes are made. Existing
     # stages/flags and v2/v3/v4 representation are retained, or refused.
@@ -55,6 +58,7 @@ module Git
       prepare_changes_plan(changes, max_bytes: max_bytes, max_entries: max_entries, check: check).image
     end
 
+    # :nodoc:
     def prepare_changes_plan(changes : Array(Edit), *, max_bytes : Int32 = 8_388_608,
                              max_entries : Int32 = 100_000,
                              check : Proc(Nil)? = nil) : Plan
@@ -135,7 +139,7 @@ module Git
     # A verified image may be replayed safely: only the exact predecessor or
     # the exact desired state is admissible. A foreign index value is never
     # overwritten. The exclusive Git index.lock guards cooperative writers.
-    def image_state(image : Image, *, max_bytes : Int32 = 8_388_608) : Symbol
+    protected def image_state(image : Image, *, max_bytes : Int32 = 8_388_608) : Symbol
       validate_image!(image, max_bytes)
       @metadata.check!
       raw = read_index_bounded(File.join(@metadata.git_dir, "index"), max_bytes)
@@ -145,8 +149,8 @@ module Git
       raise Error.new("Git index recovery conflict: index differs from both recorded images")
     end
 
-    def publish_image(image : Image, *, max_bytes : Int32 = 8_388_608,
-                      check : Proc(Nil)? = nil) : Nil
+    protected def publish_image(image : Image, *, max_bytes : Int32 = 8_388_608,
+                                check : Proc(Nil)? = nil) : Nil
       validate_image!(image, max_bytes)
       @metadata.check!
       dir = DescriptorPath::Directory.open(@metadata.git_dir)

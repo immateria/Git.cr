@@ -1,4 +1,5 @@
 module Git
+  # :nodoc:
   # Physical repository selection is intentionally separate from ref/object
   # interpretation. All non-default metadata locations must be explicitly
   # supplied by a trusted caller; no process environment is read implicitly.
@@ -7,11 +8,6 @@ module Git
     @ceiling : String?
     record Selection, root : String, git_dir : String, common : String,
       work_tree : String?, bare : Bool
-
-    # Physical paths available before reading repository-local configuration.
-    # A checked caller must make its ownership decision at this boundary.
-    record AdmissionSite, root : String, git_dir : String, bare : Bool,
-      gitfile : String?
 
     getter root : String
     getter git_dir : String
@@ -23,7 +19,7 @@ module Git
                    @common_dir_option : String? = nil, @work_tree_option : String? = nil,
                    @linked_admin : String? = nil, @follow_gitfile : Bool = true,
                    @discover : Bool = false, @discovery_ceiling : String? = nil,
-                   @before_config : Proc(AdmissionSite, Nil)? = nil,
+                   @before_config : Proc(Repository::Admission::Site, Nil)? = nil,
                    @before_implicit_bare : Proc(Nil)? = nil)
       @start_real = File.realpath(@start)
       raise Error.new("Git repository selection must start at a directory") unless Dir.exists?(@start_real)
@@ -95,7 +91,7 @@ module Git
                 elsif bare_candidate?(repository_root)
                   # A bare candidate's core.bare must not be interpreted before
                   # the checked caller has assessed its physical ownership.
-                  @before_config.try &.call(AdmissionSite.new(repository_root,
+                  @before_config.try &.call(Repository::Admission::Site.new(repository_root,
                     repository_root, true, nil))
                   raise Error.new("Git metadata is missing") unless bare_repository?(repository_root)
                   @before_implicit_bare.try &.call
@@ -107,7 +103,7 @@ module Git
       if before_config = @before_config
         guessed_bare = selected_worktree.nil? && git_dir == repository_root
         gitfile = !explicit_git || selected_admin ? (File.file?(dot_git) ? dot_git : nil) : nil
-        before_config.call(AdmissionSite.new(guessed_bare ? git_dir : marker_root,
+        before_config.call(Repository::Admission::Site.new(guessed_bare ? git_dir : marker_root,
           git_dir, guessed_bare, gitfile))
       end
       if selected_admin && (git_dir == marker_root || within?(git_dir, marker_root))
@@ -168,7 +164,7 @@ module Git
         raise Error.new("Git metadata symlink refused") if File.symlink?(marker)
         return current if Dir.exists?(marker) || File.file?(marker)
         if bare_candidate?(current)
-          @before_config.try &.call(AdmissionSite.new(current, current, true, nil))
+          @before_config.try &.call(Repository::Admission::Site.new(current, current, true, nil))
           if bare_repository?(current)
             @before_implicit_bare.try &.call
             return current

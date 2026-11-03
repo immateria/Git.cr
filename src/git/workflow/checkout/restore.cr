@@ -2,11 +2,11 @@ module Git
   class Repository
     # Accessors stay on Repository so Checkout need not reach into unrelated
     # store internals or bind this shard to a host.
-    def checkout_tree_entries(raw : String) : Array({String, String, String})
+    protected def checkout_tree_entries(raw : String) : Array({String, String, String})
       @head_tree.parse_tree(raw)
     end
 
-    def checkout_working_regular(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
+    protected def checkout_working_regular(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
       @worktree.stage_content(path, max_bytes) { check.call }
     end
 
@@ -14,12 +14,12 @@ module Git
     # to the worktree only. Deliberately overwrites dirty tracked bytes at those
     # paths; never touches the index or HEAD and never creates an untracked
     # path. For staged restoration use the separate index API in a later slice.
-    def restore_paths(paths : Array(String), *, source : String = "HEAD",
-                      max_blob_bytes : Int32 = 8_388_608,
-                      max_index_bytes : Int32 = 8_388_608,
-                      max_total_bytes : Int64 = 67_108_864,
-                      max_files : Int32 = 10_000,
-                      check : Proc(Nil)? = nil) : Array(String)
+    def restore(paths : Array(String), *, source : String = "HEAD",
+                max_blob_bytes : Int32 = 8_388_608,
+                max_index_bytes : Int32 = 8_388_608,
+                max_total_bytes : Int64 = 67_108_864,
+                max_files : Int32 = 10_000,
+                check : Proc(Nil)? = nil) : Array(String)
       require_worktree!
       raise ArgumentError.new("invalid Git restore budgets") if max_blob_bytes < 128 || max_index_bytes < 128 ||
                                                                 max_total_bytes < max_blob_bytes || max_files < 1 || max_files > @max_search_entries
@@ -28,7 +28,7 @@ module Git
       paths.each { |path| PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH) }
       check!
       source_oid = History.resolve_commit(self, source, max_blob_bytes, check)
-      source_tree = commit(source_oid, max_blob_bytes) { check.try &.call }.tree
+      source_tree = read_commit(source_oid, max_bytes: max_blob_bytes, check: check).tree
       desired = Checkout.tree_files(self, source_tree, max_object_bytes: max_blob_bytes,
         max_files: max_files, check: check)
       entries = @index.entries(max_index_bytes) { check.try &.call }

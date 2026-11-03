@@ -4,22 +4,22 @@ module Git
     # sequencer metadata. Resolution-time unrelated staged paths are refused.
     # D/F transitions are restored with the same collision planner used by
     # checkout and merge; untracked content is never recursively removed.
-    def sequencer_abort(*, max_object_bytes : Int32 = 8_388_608,
-                        max_index_bytes : Int32 = 8_388_608,
-                        max_total_bytes : Int64 = 67_108_864,
-                        max_entries : Int32 = 10_000,
-                        check : Proc(Nil)? = nil) : Array(String)
+    protected def sequencer_abort(*, max_object_bytes : Int32 = 8_388_608,
+                                  max_index_bytes : Int32 = 8_388_608,
+                                  max_total_bytes : Int64 = 67_108_864,
+                                  max_entries : Int32 = 10_000,
+                                  check : Proc(Nil)? = nil) : Array(String)
       require_worktree!
       state = sequencer_state? || raise Error.new("no Git sequencer operation in progress")
-      raise Error.new("Git sequencer abort HEAD changed") unless head == {state.branch, state.original_head}
-      original_tree = commit(state.original_head, max_object_bytes) { check.try &.call }.tree
+      raise Error.new("Git sequencer abort HEAD changed") unless head_ref_and_oid == {state.branch, state.original_head}
+      original_tree = read_commit(state.original_head, max_bytes: max_object_bytes, check: check).tree
       original = Checkout.tree_files(self, original_tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
       source = Sequencer.read_source(self, state.source, max_object_bytes, check)
       source_files = Checkout.tree_files(self, source.tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
       parent_files = if parent_oid = state.parent
-                       parent_tree = commit(parent_oid, max_object_bytes) { check.try &.call }.tree
+                       parent_tree = read_commit(parent_oid, max_bytes: max_object_bytes, check: check).tree
                        Checkout.tree_files(self, parent_tree, max_object_bytes: max_object_bytes,
                          max_files: max_entries, check: check, allow_symlinks: true)
                      else
@@ -91,7 +91,7 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
-          raise Error.new("Git sequencer abort state changed") unless head == {state.branch, state.original_head} &&
+          raise Error.new("Git sequencer abort state changed") unless head_ref_and_oid == {state.branch, state.original_head} &&
                                                                       sequencer_state? == state &&
                                                                       @index.snapshot_checksum(max_index_bytes) == snapshot
         end
@@ -148,25 +148,6 @@ module Git
         end
         admin.close
       end
-    end
-
-    # For the current single-item sequencer, skip restores the pre-operation
-    # state and clears metadata. A later multi-item sequencer can advance its
-    # todo list on top of this same public operation.
-    def sequencer_skip(**options) : Array(String)
-      sequencer_abort(**options)
-    end
-
-    def cherry_pick_abort(**options) : Array(String)
-      state = sequencer_state? || raise Error.new("no Git cherry-pick in progress")
-      raise Error.new("Git sequencer operation is not a cherry-pick") unless state.kind.cherry_pick?
-      sequencer_abort(**options)
-    end
-
-    def revert_abort(**options) : Array(String)
-      state = sequencer_state? || raise Error.new("no Git revert in progress")
-      raise Error.new("Git sequencer operation is not a revert") unless state.kind.revert?
-      sequencer_abort(**options)
     end
   end
 end

@@ -12,18 +12,18 @@ module Git
     # expansion; the stash object still retains Git's full saved-index parent.
     # The caller supplies identity/time explicitly; no ambient Git config,
     # environment or clock is consulted.
-    def stash_push(*, actor : Signature, message : String? = nil,
-                   include_untracked : Bool = false,
-                   include_ignored : Bool = false,
-                   keep_index : Bool = false,
-                   staged_only : Bool = false,
-                   paths : Array(String)? = nil,
-                   max_object_bytes : Int32 = 8_388_608,
-                   max_index_bytes : Int32 = 8_388_608,
-                   max_total_bytes : Int64 = 67_108_864,
-                   max_entries : Int32 = 10_000,
-                   max_log_bytes : Int32 = 8_388_608,
-                   check : Proc(Nil)? = nil) : Stash::Entry?
+    protected def stash_push(*, actor : Signature, message : String? = nil,
+                             include_untracked : Bool = false,
+                             include_ignored : Bool = false,
+                             keep_index : Bool = false,
+                             staged_only : Bool = false,
+                             paths : Array(String)? = nil,
+                             max_object_bytes : Int32 = 8_388_608,
+                             max_index_bytes : Int32 = 8_388_608,
+                             max_total_bytes : Int64 = 67_108_864,
+                             max_entries : Int32 = 10_000,
+                             max_log_bytes : Int32 = 8_388_608,
+                             check : Proc(Nil)? = nil) : Stash::Entry?
       require_worktree!
       raise ArgumentError.new("invalid Git stash budgets") if max_object_bytes < 128 || max_index_bytes < 128 ||
                                                               max_total_bytes < max_object_bytes || max_entries < 1 ||
@@ -52,9 +52,9 @@ module Git
         raise Error.new("Git stash message invalid") if text.empty? || text.includes?('\0') || text.includes?('\n') || text.includes?('\r') || text.bytesize > 4096
       end
 
-      branch, head_oid = head
+      branch, head_oid = head_ref_and_oid
       raise Error.new("Git stash requires an existing symbolic branch") unless branch && branch.starts_with?("refs/heads/") && head_oid
-      head_commit = commit(head_oid, max_object_bytes) { check.try &.call }
+      head_commit = read_commit(head_oid, max_bytes: max_object_bytes, check: check)
       head_files = Checkout.tree_files(self, head_commit.tree,
         max_object_bytes: max_object_bytes, max_files: max_entries,
         check: check, allow_symlinks: true)
@@ -250,7 +250,7 @@ module Git
 
       guard = -> do
         check.try &.call
-        raise Error.new("Git stash HEAD changed") unless head == {branch, head_oid}
+        raise Error.new("Git stash HEAD changed") unless head_ref_and_oid == {branch, head_oid}
         raise Error.new("Git stash index changed") unless @index.snapshot_checksum(max_index_bytes) == checksum
       end
 

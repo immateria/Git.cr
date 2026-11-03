@@ -16,7 +16,7 @@ describe "P26 native symbolic-HEAD reset" do
         head = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         initial_index = File.read(File.join(root, ".git", "index"))
         repo = Git::Repository.new(root)
-        result = repo.reset_head("HEAD^", mode: Git::Reset::Mode::Soft)
+        result = repo.reset("HEAD^", mode: Git::Reset::Mode::Soft)
         result.reference.should eq("refs/heads/main")
         result.previous_oid.should eq(head)
         result.target_oid.should eq(base)
@@ -42,7 +42,7 @@ describe "P26 native symbolic-HEAD reset" do
         GitOracle.run(root, "commit", "-qm", "second")
         File.write(File.join(root, "one"), "working\n")
         repo = Git::Repository.new(root)
-        result = repo.reset_head("HEAD^", mode: Git::Reset::Mode::Mixed)
+        result = repo.reset("HEAD^", mode: Git::Reset::Mode::Mixed)
         result.target_oid.should eq(base)
         result.changed_index_paths.to_set.should eq(["one", "two", "three"].to_set)
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(base)
@@ -66,13 +66,13 @@ describe "P26 native symbolic-HEAD reset" do
         File.write(File.join(root, "a"), "staged\n")
         GitOracle.run(root, "add", "a")
         repo = Git::Repository.new(root)
-        result = repo.reset_head
+        result = repo.reset
         result.previous_oid.should eq(head)
         result.target_oid.should eq(head)
         result.changed_index_paths.should eq(["a"])
         GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("")
         File.read(File.join(root, "a")).should eq("staged\n")
-        repo.reset_head.changed_index_paths.should be_empty
+        repo.reset.changed_index_paths.should be_empty
       end
     end
 
@@ -87,7 +87,7 @@ describe "P26 native symbolic-HEAD reset" do
         File.write(File.join(root, ".git", "index.lock"), "foreign")
         repo = Git::Repository.new(root)
         begin
-          expect_raises(Git::Error) { repo.reset_head }
+          expect_raises(Git::Error) { repo.reset }
           File.read(File.join(root, ".git", "index.lock")).should eq("foreign")
           GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(head)
           GitOracle.run(root, "diff", "--cached", "--name-only").stdout.should eq("a\n")
@@ -107,9 +107,9 @@ describe "P26 native symbolic-HEAD reset" do
         GitOracle.run(root, "commit", "-qam", "second")
         repo = Git::Repository.new(root)
         check = -> do
-          raise Git::Error.new("injected after ref publication") if repo.head[1] == base
+          raise Git::Error.new("injected after ref publication") if repo.head.oid == base
         end
-        raised = expect_raises(Git::Reset::PartialPublication) { repo.reset_head("HEAD^", check: check) }
+        raised = expect_raises(Git::Reset::PartialPublication) { repo.reset("HEAD^", check: check) }
         raised.reference_published.should be_true
         raised.index_published.should be_false
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(base)

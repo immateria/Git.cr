@@ -3,6 +3,7 @@ require "digest/crc32"
 require "set"
 
 module Git
+  # :nodoc:
   # Pack index v2 lookup and compressed delta reconstruction. The only
   # caller supplies an object-ID resolver for REF_DELTA parents that live
   # outside the pack being read.
@@ -187,7 +188,7 @@ module Git
             raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < io.size - @object_format.bytesize
             io.seek(current)
             header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
-            return {header.type.object_type, size || header.size} unless header.type.delta?
+            return {header.type.object_type.to_s, size || header.size} unless header.type.delta?
             if size.nil?
               io.seek(header.data_offset)
               prefix = Compress::Zlib::Reader.open(io) do |zlib|
@@ -228,6 +229,7 @@ module Git
         raise Git::Error.new("Git packed object header invalid: #{ex.class}")
       end
 
+      # :nodoc:
       # A stored pack entry that can be copied into another pack: its header,
       # its delta base by object ID (for OFS_DELTA too) and the bounds of
       # its compressed data. The entry CRC has been verified.
@@ -555,7 +557,7 @@ module Git
               break
             end
             raise Git::Error.new("Git packed entry size mismatch") unless inflated.bytesize == header.size
-            base = {header.type.object_type, inflated}
+            base = {header.type.object_type.to_s, inflated}
             store_base(file, current, base) unless chain.empty?
             break
           end

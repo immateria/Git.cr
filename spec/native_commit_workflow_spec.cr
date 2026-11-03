@@ -12,23 +12,23 @@ describe "P18/P19 native staging and branch commit workflow" do
         repo.stage_blob("sub/two", "two\n", mode: "100755")
         tree = repo.write_index_tree
         tree.should eq(GitOracle.run(root, "write-tree").stdout.strip)
-        first = repo.commit_staged(author: sig, committer: sig, message: "Initial\n")
+        first = repo.commit(author: sig, committer: sig, message: "Initial\n")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(first)
         GitOracle.run(root, "ls-tree", "-r", "HEAD").stdout.should contain("sub/two")
-        repo.head[1].should eq(first)
+        repo.head.oid.should eq(first)
         expect_raises(Git::Error, /nothing staged/) do
-          repo.commit_staged(author: sig, committer: sig, message: "not needed\n")
+          repo.commit(author: sig, committer: sig, message: "not needed\n")
         end
         Dir.mkdir(File.join(root, "sub"))
         File.write(File.join(root, "sub", "three"), "three\n")
         repo.stage_file("sub/three")
-        second = repo.commit_staged(author: sig, committer: sig, message: "Second\n")
+        second = repo.commit(author: sig, committer: sig, message: "Second\n")
         GitOracle.run(root, "rev-list", "--count", "HEAD").stdout.strip.should eq("2")
         reflog = GitOracle.run(root, "reflog", "show", "--format=%gs", "HEAD").stdout
         reflog.should contain("commit (initial): Initial")
         reflog.should contain("commit: Second")
         GitOracle.run(root, "rev-parse", "HEAD^").stdout.strip.should eq(first)
-        repo.commit(second, 4096) { nil }.parents.should eq([first])
+        repo.read_commit(second, max_bytes: 4096).parents.should eq([first])
         GitOracle.run(root, "fsck", "--no-reflogs")
       end
     end
@@ -64,10 +64,10 @@ describe "P18/P19 native write refusal boundaries" do
       Dir.mkdir_p(File.dirname(log))
       File.symlink(File.join(root, "no-such-log"), log)
       expect_raises(Git::Error, /reflog symlink/) do
-        repo.update_ref("refs/heads/main", commit, expected_oid: nil,
+        repo.refs.update("refs/heads/main", commit, expected_oid: nil,
           log: Git::References::LogEntry.new(sig, "commit: first"))
       end
-      repo.head[1].should be_nil
+      repo.head.oid.should be_nil
       File.exists?(File.join(root, ".git", "refs", "heads", "main.lock")).should be_false
     end
   end
@@ -79,10 +79,10 @@ describe "P19 empty initial commit semantics" do
       repo = Git::Repository.new(root)
       sig = Git::Signature.new("Crystal", "crystal@example.invalid", 1_700_000_000_i64, 0)
       expect_raises(Git::Error, /nothing staged/) do
-        repo.commit_staged(author: sig, committer: sig, message: "empty")
+        repo.commit(author: sig, committer: sig, message: "empty")
       end
-      repo.head[1].should be_nil
-      oid = repo.commit_staged(author: sig, committer: sig, message: "empty", allow_empty: true)
+      repo.head.oid.should be_nil
+      oid = repo.commit(author: sig, committer: sig, message: "empty", allow_empty: true)
       GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(oid)
     end
   end

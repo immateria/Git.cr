@@ -33,13 +33,13 @@ module Git
     # discarding tracked worktree changes. Detached HEAD, ORIG_HEAD/ref-log
     # automation and merge-in-progress state are not yet supported. No
     # subprocess, filter, hook, or implicit policy grant.
-    def reset_head(source : String = "HEAD", *, mode : Reset::Mode = Reset::Mode::Mixed,
-                   log : References::LogEntry? = nil,
-                   max_object_bytes : Int32 = 8_388_608,
-                   max_index_bytes : Int32 = 8_388_608,
-                   max_total_bytes : Int64 = 67_108_864,
-                   max_entries : Int32 = 10_000,
-                   check : Proc(Nil)? = nil) : Reset::Result
+    def reset(source : String = "HEAD", *, mode : Reset::Mode = Reset::Mode::Mixed,
+              log : References::LogEntry? = nil,
+              max_object_bytes : Int32 = 8_388_608,
+              max_index_bytes : Int32 = 8_388_608,
+              max_total_bytes : Int64 = 67_108_864,
+              max_entries : Int32 = 10_000,
+              check : Proc(Nil)? = nil) : Reset::Result
       if mode.hard?
         return reset_head_hard(source, log: log, max_object_bytes: max_object_bytes,
           max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
@@ -52,7 +52,7 @@ module Git
       raise ArgumentError.new("invalid Git reset budgets") if max_object_bytes < 128 ||
                                                               max_index_bytes < 128 || max_entries < 1 || max_entries > @max_search_entries
       check!
-      original_ref, original_oid = head
+      original_ref, original_oid = head_ref_and_oid
       raise Error.new("Git reset requires an existing symbolic branch HEAD") unless original_ref &&
                                                                                     original_ref.starts_with?("refs/heads/") && original_oid
       reference = original_ref
@@ -62,7 +62,7 @@ module Git
         if target != previous
           guard = -> do
             check.try &.call
-            raise Error.new("Git reset HEAD changed") unless head == {reference, previous}
+            raise Error.new("Git reset HEAD changed") unless head_ref_and_oid == {reference, previous}
           end
           update_ref(reference, target, expected_oid: previous, log: log,
             max_object_bytes: max_object_bytes, check: guard)
@@ -70,7 +70,7 @@ module Git
         return Reset::Result.new(reference, previous, target, mode, [] of String)
       end
 
-      tree = commit(target, max_object_bytes) { check.try &.call }.tree
+      tree = read_commit(target, max_bytes: max_object_bytes, check: check).tree
       desired = IndexRestore.source_entries(self, tree, max_object_bytes: max_object_bytes,
         max_entries: max_entries, check: check)
       current = @index.entries(max_index_bytes) { check.try &.call }
@@ -91,7 +91,7 @@ module Git
         locked = index_dir.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
-          raise Error.new("Git reset HEAD changed") unless head == {reference, previous}
+          raise Error.new("Git reset HEAD changed") unless head_ref_and_oid == {reference, previous}
           raise Error.new("Git reset index changed") unless @index.snapshot_checksum(max_index_bytes) == checksum
         end
         guard.call

@@ -1,5 +1,6 @@
 module Git
-  module References
+  struct References
+    # :nodoc:
     class Transaction
       # expected_oid: nil means the reference MUST NOT exist. Callers must
       # supply an exact old value for updates. The .lock serializes cooperating

@@ -1,19 +1,18 @@
 module Git
-  module References
-    # Refs Git keeps directly in the Git directory, outside refs/.
-    PSEUDO_REFS = {"HEAD", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"}
-  end
-
+  # :nodoc:
   module Revision
     # Follow tags (and from a commit to its tree) until an object of kind.
-    def self.peel(repository : Repository, oid : String, kind : String, max_bytes : Int32 = 268_435_456) : String
+    protected def self.peel(repository : Repository, oid : String, kind : String, max_bytes : Int32 = 268_435_456) : String
       current = oid
+      declared = nil.as(String?)
       32.times do
         type, raw = repository.object(current, max_bytes) { nil }
+        raise Error.new("Git annotated tag target type mismatch") if declared && type != declared
         return current if type == kind
         case type
         when "tag"
           target = raw.each_line.find(&.starts_with?("object ")) || raise Error.new("invalid Git tag #{current}")
+          declared = raw.each_line.find(&.starts_with?("type ")).try(&.byte_slice(5).strip)
           current = ObjectId.valid!(target.byte_slice(7).strip, repository.object_format)
         when "commit"
           raise Error.new("Git object #{oid} cannot be peeled to a #{kind}") unless kind == "tree"
@@ -28,7 +27,7 @@ module Git
     # The commits to include and exclude for rev-list style arguments:
     # A, ^A, A..B and A...B (the symmetric difference, excluding the merge
     # bases).
-    def self.ranges(repository : Repository, revisions : Array(String)) : {Array(String), Array(String)}
+    protected def self.ranges(repository : Repository, revisions : Array(String)) : {Array(String), Array(String)}
       wants = [] of String
       haves = [] of String
       commit_of = ->(text : String) { peel(repository, repository.rev_parse(text.empty? ? "HEAD" : text), "commit") }
@@ -50,6 +49,7 @@ module Git
       {wants.uniq, haves.uniq}
     end
 
+    # :nodoc:
     # Resolves Git's everyday revision grammar to object IDs (see
     # Repository#rev_parse).
     class Parser
@@ -89,7 +89,7 @@ module Git
       # A ref name expanded with Git's rules, or nil.
       def expand_ref(name : String) : String?
         if References::PSEUDO_REFS.includes?(name)
-          return name if name == "HEAD" || File.file?(File.join(@repository.git_directory, name))
+          return name if name == "HEAD" || File.file?(File.join(@repository.git_dir, name))
         end
         RefName::REV_PARSE_RULES.each do |rule|
           candidate = rule.sub("%s", name)
@@ -117,7 +117,7 @@ module Git
       # <ref>@{upstream} and <ref>@{n}.
       private def resolve_selector(name : String, selector : String) : String
         ref = if name.empty? || name == "HEAD"
-                @repository.head[0] || "HEAD"
+                @repository.head_ref_and_oid[0] || "HEAD"
               else
                 expand_ref(name) || raise Error.new("unknown Git revision #{name}")
               end
@@ -137,8 +137,8 @@ module Git
       private def resolve_name(name : String) : String?
         format = @repository.object_format
         if References::PSEUDO_REFS.includes?(name)
-          return @repository.head[1] if name == "HEAD"
-          path = File.join(@repository.git_directory, name)
+          return @repository.head_ref_and_oid[1] if name == "HEAD"
+          path = File.join(@repository.git_dir, name)
           return nil unless File.file?(path)
           first = File.read(path).lines.first?.try(&.split(/\s/).first?)
           return first ? ObjectId.valid!(first, format) : nil
@@ -243,7 +243,7 @@ module Git
       end
 
       private def reflog_value(ref : String, count : Int32) : String
-        base = ref == "HEAD" ? @repository.git_directory : @repository.common_directory
+        base = ref == "HEAD" ? @repository.git_dir : @repository.common_dir
         path = File.join(base, "logs", ref)
         raise Error.new("Git ref #{ref} has no reflog") unless File.file?(path)
         lines = File.read(path).lines.reject(&.empty?)
@@ -266,7 +266,7 @@ module Git
     end
 
     # A short ref name expanded with Git's rules, or nil.
-    def expand_ref(name : String) : String?
+    protected def expand_ref(name : String) : String?
       Revision::Parser.new(self).expand_ref(name)
     end
 
@@ -280,12 +280,24 @@ module Git
       limit ? commits.first(limit) : commits
     end
 
-    # `git log <revisions>` as commit records (see rev_list).
+    # `git log <revisions>`: commits reachable from the positive revisions
+    # and not from the negative ones (^A, A..B, A...B), at most limit of
+    # them, in order. An unborn HEAD contributes nothing. Raises when the
+    # range holds more than max_commits commits.
     def log(revisions : Array(String) = ["HEAD"], *, limit : Int32 = 100,
-            max_commit_bytes : Int32 = 8_388_608, check : Proc(Nil)? = nil) : Array(Commit)
-      rev_list(revisions, limit: limit, check: check).map do |oid|
-        commit(oid, max_commit_bytes) { check.try &.call }
-      end
+            order : History::Order = History::Order::Date,
+            max_commits : Int32 = 1_000_000, max_commit_bytes : Int32 = 8_388_608,
+            check : Proc(Nil)? = nil) : History::Result
+      raise ArgumentError.new("invalid Git log budgets") if limit < 0 || max_commits < 1 || max_commit_bytes < 128
+      check!
+      born = revisions.reject { |revision| revision == "HEAD" && head_ref_and_oid[1].nil? }
+      return History::Result.new([] of Commit, false, 0) if born.empty?
+      wants, haves = Revision.ranges(self, born)
+      walker = History::RevisionWalker.new(self, check: check)
+      oids = walker.commits(wants, haves, max_commits: max_commits)
+      oids = walker.topological(oids) if order.topological?
+      commits = oids.first(limit).map { |oid| read_commit(oid, max_bytes: max_commit_bytes, check: check) }
+      History::Result.new(commits, oids.size > limit, oids.size)
     end
 
     # Commits only on left and only on right (`git rev-list --left-right

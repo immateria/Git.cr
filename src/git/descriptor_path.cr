@@ -25,6 +25,7 @@ lib LibC
 end
 
 module Git
+  # :nodoc:
   module DescriptorPath
     {% if flag?(:darwin) %}
       # Darwin sys/fcntl.h: O_DIRECTORY is 0x00100000, AT_SYMLINK_NOFOLLOW is

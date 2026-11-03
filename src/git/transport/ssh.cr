@@ -32,7 +32,7 @@ module Git
       end
 
       # {user, host, port, path} of an ssh or scp-like URL.
-      def self.parse(url : String) : {String?, String, Int32?, String}
+      protected def self.parse(url : String) : {String?, String, Int32?, String}
         if url.starts_with?("ssh://") || url.starts_with?("git+ssh://") || url.starts_with?("ssh+git://")
           uri = URI.parse(url.sub(/\A(git\+ssh|ssh\+git):/, "ssh:"))
           host = uri.host || raise ArgumentError.new("Git ssh URL has no host")
@@ -49,6 +49,7 @@ module Git
         end
       end
 
+      # :nodoc:
       # Git's sq_quote_buf: single quotes, with ' and ! escaped.
       def self.quote(text : String) : String
         String.build do |io|

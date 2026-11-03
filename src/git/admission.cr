@@ -5,6 +5,11 @@ module Git
   # authorization or proves tenant ownership.
   class Repository
     module Admission
+      # Where a repository was found, before any of its own configuration
+      # is read: the point at which an ownership decision must be made
+      # (Repository.new's before_config hook receives one).
+      record Site, root : String, git_dir : String, bare : Bool, gitfile : String?
+
       record Identity, uid : String, sudo_uid : String? = nil do
         def owns?(owner_id : String) : Bool
           return true if uid == owner_id
@@ -25,7 +30,7 @@ module Git
       # Git 2.47's bare-repository admission uses the last protected value and
       # only consults it for implicit bare discovery. Local repository config
       # cannot loosen the policy; invalid enum spellings fail closed.
-      def self.require_implicit_bare_allowed!(config : Config) : Nil
+      protected def self.require_implicit_bare_allowed!(config : Config) : Nil
         if entry = config.protected_entries("safe.barerepository").last?
           case entry.value
           when "all"      then return
@@ -35,9 +40,9 @@ module Git
         end
       end
 
-      def self.allowed?(repository : String, git_dir : String, bare : Bool,
-                        gitfile : String?, identity : Identity, config : Config, *,
-                        home : String? = nil, git_prefix : String? = nil) : Bool
+      protected def self.allowed?(repository : String, git_dir : String, bare : Bool,
+                                  gitfile : String?, identity : Identity, config : Config, *,
+                                  home : String? = nil, git_prefix : String? = nil) : Bool
         paths = bare ? [git_dir] : [repository, git_dir]
         paths << gitfile.not_nil! if gitfile
         return true if paths.all? { |path| identity.owns?(File.info(path, follow_symlinks: false).owner_id) }

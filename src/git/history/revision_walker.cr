@@ -5,8 +5,9 @@ module Git
     # One object a revision walk reached. path is the first path at which a
     # tree or blob was reached ("" for a root tree); commits and tags have
     # none.
-    record ReachableObject, oid : String, type : String, path : String?
+    record ReachableObject, oid : String, type : ObjectType, path : String?
 
+    # :nodoc:
     # A commit as the revision walk sees it: its tree, its parents and its
     # committer time.
     record CommitNode, tree : String, parents : Array(String), time : Int64 do
@@ -38,6 +39,7 @@ module Git
       end
     end
 
+    # :nodoc:
     # Git's revision walk (`rev-list`): commits reachable from wants and not
     # from haves, newest first by committer date with Git's SLOP for clock
     # skew; with objects, every tree, blob and tag they reach (`rev-list
@@ -96,9 +98,12 @@ module Git
       end
 
       # Commits reachable from wants and not from haves, newest first by
-      # committer date (Git's default rev-list order).
-      def commits(wants : Array(String), haves : Array(String)) : Array(String)
+      # committer date (Git's default rev-list order). Raises when more than
+      # max_commits commits are visited.
+      def commits(wants : Array(String), haves : Array(String), *,
+                  max_commits : Int32 = Int32::MAX) : Array(String)
         queue = DateQueue.new
+        visited = 0
         wants.each do |oid|
           next unless add?(oid)
           queue.push(oid, commit_node(oid).time)
@@ -113,6 +118,8 @@ module Git
         until queue.empty?
           @check.try &.call
           oid = queue.pop
+          visited += 1
+          raise Error.new("Git history node budget exceeded") if visited > max_commits
           node = commit_node(oid)
           uninteresting = flag?(oid, UNINTERESTING)
           if uninteresting
@@ -133,6 +140,34 @@ module Git
           end
         end
         result.reject { |oid| flag?(oid, UNINTERESTING) }
+      end
+
+      # The same commits with every commit before its parents, and otherwise
+      # newest first (`git rev-list --topo-order`). date_ordered must be in
+      # the order #commits returns.
+      def topological(date_ordered : Array(String)) : Array(String)
+        rank = {} of String => Int32
+        date_ordered.each_with_index { |oid, index| rank[oid] = index }
+        pending_children = Hash(String, Int32).new(0)
+        date_ordered.each do |oid|
+          commit_node(oid).parents.each { |parent| pending_children[parent] += 1 if rank.has_key?(parent) }
+        end
+        # Ready commits, newest last so the next one pops off the end.
+        ready = date_ordered.select { |oid| pending_children[oid] == 0 }.reverse!
+        ordered = [] of String
+        until ready.empty?
+          @check.try &.call
+          oid = ready.pop
+          ordered << oid
+          commit_node(oid).parents.each do |parent|
+            next unless rank.has_key?(parent)
+            pending_children[parent] -= 1
+            next unless pending_children[parent] == 0
+            position = ready.bsearch_index { |queued| rank[queued] < rank[parent] } || ready.size
+            ready.insert(position, parent)
+          end
+        end
+        ordered
       end
 
       # Every object reachable from wants and not from haves. With
@@ -174,7 +209,7 @@ module Git
         end
         included.each do |oid|
           mark(oid, SEEN)
-          items << ReachableObject.new(oid, "commit", nil)
+          items << ReachableObject.new(oid, ObjectType::Commit, nil)
           budget!(items)
         end
         pending.each do |oid, kind, path|
@@ -182,7 +217,7 @@ module Git
             walk_tree(oid, path || "", items)
           elsif !flag?(oid, UNINTERESTING) && !flag?(oid, SEEN)
             mark(oid, SEEN)
-            items << ReachableObject.new(oid, kind, path)
+            items << ReachableObject.new(oid, ObjectType.parse(kind), path)
           end
         end
         included.each { |oid| walk_tree(commit_node(oid).tree, "", items) }
@@ -229,7 +264,7 @@ module Git
           oid, kind, path = stack.pop
           next if flag?(oid, UNINTERESTING) || flag?(oid, SEEN)
           mark(oid, SEEN)
-          items << ReachableObject.new(oid, kind, path)
+          items << ReachableObject.new(oid, ObjectType.parse(kind), path)
           budget!(items)
           next unless kind == "tree"
           children = [] of {String, String, String}
@@ -303,6 +338,7 @@ module Git
       end
     end
 
+    # :nodoc:
     # A max-heap of commits by committer time; ties pop in insertion order.
     class DateQueue
       @heap = [] of {Int64, Int64, String}

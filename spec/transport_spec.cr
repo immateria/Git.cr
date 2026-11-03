@@ -37,10 +37,10 @@ private def round_trip(transport : Git::Transport, bare : String, clone : String
   repo = Git::Repository.clone(transport, clone, url: transport.url)
   GitOracle.run(clone, "fsck", "--strict", "--no-dangling")
   GitOracle.run(clone, "status", "--porcelain").stdout.should eq("")
-  repo.resolve_ref?("refs/tags/v1").should eq(GitOracle.run(bare, "rev-parse", "v1").stdout.strip)
+  repo.refs.resolve?("refs/tags/v1").should eq(GitOracle.run(bare, "rev-parse", "v1").stdout.strip)
   File.write(File.join(clone, "c.txt"), "c\n")
   repo.stage_file("c.txt")
-  commit = repo.commit_staged(author: SIGNATURE, committer: SIGNATURE, message: "third\n")
+  commit = repo.commit(author: SIGNATURE, committer: SIGNATURE, message: "third\n")
   repo.push("origin", ["main", "main:refs/heads/copy"], transport: transport).success?.should be_true
   GitOracle.run(bare, "rev-parse", "main", "copy").stdout.lines.should eq([commit, commit])
   GitOracle.run(bare, "fsck", "--strict", "--no-dangling")
@@ -133,10 +133,10 @@ describe "Git transports" do
   end
 
   it "TRANSPORT-O04 parses ssh and scp-like URLs" do
-    Git::Transport::SSH.parse("ssh://git@github.com/immateria/Git.cr.git").should eq({"git", "github.com", nil, "/immateria/Git.cr.git"})
-    Git::Transport::SSH.parse("ssh://host:2200/~user/repo").should eq({nil, "host", 2200, "~user/repo"})
-    Git::Transport::SSH.parse("git@github.com:immateria/Git.cr.git").should eq({"git", "github.com", nil, "immateria/Git.cr.git"})
-    Git::Transport::SSH.parse("host:path/to/repo").should eq({nil, "host", nil, "path/to/repo"})
+    Git::Transport::SSH.new("ssh://git@github.com/immateria/Git.cr.git").try { |ssh| {ssh.user, ssh.host, ssh.port, ssh.path} }.should eq({"git", "github.com", nil, "/immateria/Git.cr.git"})
+    Git::Transport::SSH.new("ssh://host:2200/~user/repo").try { |ssh| {ssh.user, ssh.host, ssh.port, ssh.path} }.should eq({nil, "host", 2200, "~user/repo"})
+    Git::Transport::SSH.new("git@github.com:immateria/Git.cr.git").try { |ssh| {ssh.user, ssh.host, ssh.port, ssh.path} }.should eq({"git", "github.com", nil, "immateria/Git.cr.git"})
+    Git::Transport::SSH.new("host:path/to/repo").try { |ssh| {ssh.user, ssh.host, ssh.port, ssh.path} }.should eq({nil, "host", nil, "path/to/repo"})
     Git::Transport::SSH.quote("a'b!c").should eq("'a'\\''b'\\!'c'")
     Git::Transport.for_url("git@github.com:x/y.git", ssh_command: ["ssh"]).should be_a(Git::Transport::SSH)
     Git::Transport.for_url("git://example.invalid/x", ssh_command: ["ssh"]).should be_a(Git::Transport::Daemon)

@@ -29,7 +29,8 @@ describe "P17 native Git tree writing" do
         expected_oid = GitOracle.run(root, "mktree", "-z", "--missing", input: expected_input).stdout.strip
         oid = repo.write_tree(entries)
         oid.should eq(expected_oid)
-        type, raw = repo.object(oid, 4096) { nil }
+        stored = repo.read_object(oid, max_bytes: 4096)
+        type, raw = stored.type.to_s, stored.data
         type.should eq("tree")
         GitOracle.assert_bytes!(GitOracle.run(root, "cat-file", "tree", oid).stdout, raw, "P17-O08")
         repo.write_tree(entries.reverse).should eq(oid)
@@ -43,7 +44,7 @@ describe "P17 native Git tree writing" do
       repo = Git::Repository.new(root)
       empty = repo.write_tree([] of Git::Tree::Entry)
       empty.should eq(GitOracle.run(root, "mktree", "--missing", input: "").stdout.strip)
-      repo.object(empty, 512) { nil }.should eq({"tree", ""})
+      repo.read_object(empty, max_bytes: 512).should eq(Git::RawObject.new(Git::ObjectType::Tree, ""))
       missing_oid = "a" * 40
       entry = Git::Tree::Entry.new("gitlink", "160000", missing_oid)
       tree = repo.write_tree([entry])

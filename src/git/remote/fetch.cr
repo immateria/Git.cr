@@ -44,8 +44,11 @@ module Git
   end
 
   class Repository
-    # `git ls-remote`: the remote's references (and HEAD).
-    def ls_remote(transport : Transport, prefixes : Array(String) = [] of String) : Array(Protocol::RemoteRef)
+    # `git ls-remote`: the references (and HEAD) of a configured remote or
+    # a transport, optionally only those under prefixes.
+    def ls_remote(remote : String | Transport = "origin",
+                  prefixes : Array(String) = [] of String) : Array(Protocol::RemoteRef)
+      transport = remote.is_a?(Transport) ? remote : Transport.for_url(remote(remote).url)
       connection = transport.connect(Transport::Service::UploadPack)
       begin
         Protocol::UploadPack::Client.new(connection).ls_refs(prefixes)
@@ -54,39 +57,38 @@ module Git
       end
     end
 
-    # `git fetch <remote> [<refspec>...]`. Refspecs default to the remote's
-    # configured ones. Remote-tracking refs are updated under Git's rules
-    # (fast-forward unless forced; tags are never clobbered unless forced;
-    # the checked-out branch is protected). With an actor, reflog entries
-    # are written. No hooks run and no credentials are looked up.
-    def fetch(remote_name : String = "origin", refspecs : Array(String)? = nil, *,
+    # `git fetch <remote> [<refspec>...]` from a configured remote (by
+    # name) or a transport. For a named remote, refspecs, tags and prune
+    # default to its configuration and transport overrides how it is
+    # reached; a transport needs explicit refspecs. Remote-tracking refs are
+    # updated under Git's rules (fast-forward unless forced; tags are never
+    # clobbered unless forced; the checked-out branch is protected). With an
+    # actor, reflog entries are written. No hooks run and no credentials
+    # are looked up.
+    def fetch(remote : String | Transport = "origin", refspecs : Array(String)? = nil, *,
               transport : Transport? = nil,
               tags : Remote::TagMode? = nil, prune : Bool? = nil,
               depth : Int32? = nil, force : Bool = false,
               actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
               write_fetch_head : Bool = true, update_head_ok : Bool = false,
               check : Proc(Nil)? = nil) : Fetch::Result
-      remote = remote(remote_name)
-      selected = transport || Transport.for_url(remote.url)
-      specs = (refspecs || remote.fetch_refspecs.map(&.to_s))
-      fetch_with(selected, specs, label: remote_name, url: remote.url,
-        tags: tags || remote.tag_mode, prune: prune.nil? ? (remote.prune || false) : prune,
+      if remote.is_a?(Transport)
+        raise ArgumentError.new("transport: applies to a named Git remote") if transport
+        specs = refspecs || raise ArgumentError.new("Git fetch from a transport needs refspecs")
+        return fetch_with(remote, specs, label: remote.url, url: remote.url,
+          tags: tags || Remote::TagMode::Auto, prune: prune || false,
+          depth: depth, force: force, actor: actor, progress: progress,
+          write_fetch_head: write_fetch_head, update_head_ok: update_head_ok,
+          explicit: true, check: check)
+      end
+      configured = remote(remote)
+      selected = transport || Transport.for_url(configured.url)
+      specs = (refspecs || configured.fetch_refspecs.map(&.to_s))
+      fetch_with(selected, specs, label: remote, url: configured.url,
+        tags: tags || configured.tag_mode, prune: prune.nil? ? (configured.prune || false) : prune,
         depth: depth, force: force, actor: actor, progress: progress,
         write_fetch_head: write_fetch_head, update_head_ok: update_head_ok,
         explicit: !refspecs.nil?, check: check)
-    end
-
-    # Fetch from a transport without a configured remote.
-    def fetch_from(transport : Transport, refspecs : Array(String), *,
-                   tags : Remote::TagMode = Remote::TagMode::Auto, prune : Bool = false,
-                   depth : Int32? = nil, force : Bool = false,
-                   actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
-                   write_fetch_head : Bool = true, update_head_ok : Bool = false,
-                   check : Proc(Nil)? = nil) : Fetch::Result
-      fetch_with(transport, refspecs, label: transport.url, url: transport.url, tags: tags, prune: prune,
-        depth: depth, force: force, actor: actor, progress: progress,
-        write_fetch_head: write_fetch_head, update_head_ok: update_head_ok,
-        explicit: true, check: check)
     end
 
     protected def fetch_with(transport : Transport, spec_texts : Array(String), *,
@@ -116,7 +118,7 @@ module Git
         outcome = nil.as(Protocol::UploadPack::FetchOutcome?)
         if !wants.empty? || depth
           tips = references("refs/").compact_map(&.oid)
-          head_reference.oid.try { |oid| tips << oid }
+          head.oid.try { |oid| tips << oid }
           negotiator = Protocol::UploadPack::Negotiator.new(self, tips.uniq, check)
           wanted = wants.empty? ? mappings.compact_map(&.ref.oid).uniq : wants
           outcome = client.fetch(wanted, negotiator, include_tag: !tags.none?, depth: depth,
@@ -233,7 +235,7 @@ module Git
       end
       # Mark the configured upstream of the current branch for merge.
       unless explicit
-        if (branch_ref = head[0]) && branch_ref.starts_with?("refs/heads/")
+        if (branch_ref = head_ref_and_oid[0]) && branch_ref.starts_with?("refs/heads/")
           if upstream = branch_upstream(branch_ref.byte_slice(11))
             mappings = mappings.map do |mapping|
               mapping.ref.name == upstream[1] ? mapping.copy_with(for_merge: true) : mapping
@@ -251,7 +253,7 @@ module Git
       existing = references("refs/").compact_map(&.oid).reject { |oid| tips.includes?(oid) }
       items = History::RevisionWalker.new(self, check: check).objects(tips, existing.select { |oid| has_object?(oid) })
       items.each do |item|
-        next unless item.type == "blob"
+        next unless item.type.blob?
         raise Error.new("Git fetch is missing object #{item.oid} (#{item.path})") unless has_object?(item.oid)
       end
     end
@@ -261,7 +263,7 @@ module Git
                                     check : Proc(Nil)?) : Array(Fetch::Update)
       updates = [] of Fetch::Update
       changes = [] of References::Change
-      current_branch = bare? ? nil : head[0]
+      current_branch = bare? ? nil : head_ref_and_oid[0]
       walker = History::RevisionWalker.new(self, check: check)
       mappings.each do |mapping|
         new_oid = mapping.ref.oid.not_nil!
@@ -304,7 +306,7 @@ module Git
 
     private def fast_forward?(walker : History::RevisionWalker, old : String, new_oid : String) : Bool
       return false unless has_object?(old)
-      return false unless object_header(old)[0] == "commit" && object_header(new_oid)[0] == "commit"
+      return false unless object_header(old).type.commit? && object_header(new_oid).type.commit?
       walker.ancestor?(old, new_oid)
     end
 

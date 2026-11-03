@@ -6,7 +6,7 @@ module Git
                            check : Proc(Nil)?) : Rebase::Result
       state = initial
       loop do
-        branch, current = head
+        branch, current = head_ref_and_oid
         raise Error.new("Git rebase branch changed") unless branch == state.branch && current == state.expected_head
         raise Error.new("Git rebase progress changed") unless rebase_state? == state
         if state.next_index >= state.todo.size
@@ -22,7 +22,7 @@ module Git
         # parent; keep_empty only controls replays that become empty on `onto`.
         item = Sequencer.read_source(self, source, max_object_bytes, check)
         originally_empty = if parent = item.parents.first?
-                             item.tree == commit(parent, max_object_bytes) { check.try &.call }.tree
+                             item.tree == read_commit(parent, max_bytes: max_object_bytes, check: check).tree
                            else
                              false
                            end
@@ -31,7 +31,7 @@ module Git
             author: nil, message: nil, mainline: nil, allow_empty: state.keep_empty || originally_empty,
             max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
             max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
-        rescue ex : Sequencer::EmptyResult
+        rescue ex : Sequencer::EmptyCommit
           # Default non-interactive rebase drops a replay that has become empty.
           # The single-item state remains durable until it is explicitly
           # restored, so skip uses the same recovery path as a user request.

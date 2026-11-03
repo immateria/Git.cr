@@ -116,11 +116,11 @@ describe "P06 typed effective configuration and working-tree file modes" do
       store = Git::Repository.new(root)
       invalid = store.config(command_values: [{"core.filemode", "invalid"}])
       GitOracle.run(root, "-c", "core.filemode=invalid", "status", "--porcelain", check: false).success?.should be_false
-      expect_raises(Git::Error) { store.working_changes(16_384, 5, config: invalid, include_untracked: false) { nil } }
-      expect_raises(Git::Error) { store.working_file("script.sh", 16_384, config: invalid) { nil } }
+      expect_raises(Git::Error) { store.working_changes(max_bytes: 16_384, limit: 5, config: invalid, include_untracked: false) }
+      expect_raises(Git::Error) { store.working_file("script.sh", max_bytes: 16_384, config: invalid) }
       # The existing raw default remains unchanged; only an explicitly
       # supplied, resolved configuration can change how modes are compared.
-      raw, _, _ = store.working_changes(16_384, 5, include_untracked: false) { nil }
+      raw = store.working_changes(max_bytes: 16_384, limit: 5, include_untracked: false)
       raw.map(&.status).should eq(["modified"])
     end
   end
@@ -136,18 +136,18 @@ describe "P06 typed effective configuration and working-tree file modes" do
       store = Git::Repository.new(root)
       config_true = store.config(command_values: [{"core.filemode", "true"}])
       config_false = store.config(command_values: [{"core.filemode", "false"}])
-      with_mode, _, _ = store.working_changes(128 * 1024, 20, include_untracked: false, config: config_true) { nil }
-      without_mode, _, _ = store.working_changes(128 * 1024, 20, include_untracked: false, config: config_false) { nil }
+      with_mode = store.working_changes(max_bytes: 128 * 1024, limit: 20, include_untracked: false, config: config_true)
+      without_mode = store.working_changes(max_bytes: 128 * 1024, limit: 20, include_untracked: false, config: config_false)
       with_mode.map(&.path).should eq(["script.sh"])
       without_mode.should be_empty
-      store.working_file("script.sh", 128 * 1024, config: config_true) { nil }.should_not be_nil
-      store.working_file("script.sh", 128 * 1024, config: config_false) { nil }.should be_nil
+      store.working_file("script.sh", max_bytes: 128 * 1024, config: config_true).should_not be_nil
+      store.working_file("script.sh", max_bytes: 128 * 1024, config: config_false).should be_nil
       GitOracle.run(root, "-c", "core.filemode=true", "status", "--porcelain=v1", "--untracked-files=no").stdout.should contain("script.sh")
       GitOracle.run(root, "-c", "core.filemode=false", "status", "--porcelain=v1", "--untracked-files=no").stdout.should be_empty
       File.write(file, "echo changed\n")
-      changed, _, _ = store.working_changes(128 * 1024, 20, include_untracked: false, config: config_false) { nil }
+      changed = store.working_changes(max_bytes: 128 * 1024, limit: 20, include_untracked: false, config: config_false)
       changed.map(&.status).should eq(["modified"])
-      store.working_file("script.sh", 128 * 1024, config: config_false) { nil }.should_not be_nil
+      store.working_file("script.sh", max_bytes: 128 * 1024, config: config_false).should_not be_nil
     end
   end
 

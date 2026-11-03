@@ -1,9 +1,9 @@
 module Git
-  module Merge
+  struct Merge
     # A resolved merge has only stages 0; a conflicted merge records each
     # available base/ours/theirs side at stages 1/2/3 respectively.
-    def self.conflict(path : String, base : Checkout::FileState?, ours : Checkout::FileState?,
-                      theirs : Checkout::FileState?) : Index::PutStages
+    protected def self.conflict(path : String, base : Checkout::FileState?, ours : Checkout::FileState?,
+                                theirs : Checkout::FileState?) : Index::PutStages
       entries = [] of Index::Entry
       {base, ours, theirs}.each_with_index do |state, index|
         entries << Index::Entry.new(path, state.mode, state.oid, index + 1, false, false) if state
@@ -11,9 +11,9 @@ module Git
       Index::PutStages.new(path, entries)
     end
 
-    def self.markers(repository : Repository, ours : Checkout::FileState?,
-                     theirs : Checkout::FileState?, label : String,
-                     max_bytes : Int32, check : Proc(Nil)?) : String?
+    protected def self.markers(repository : Repository, ours : Checkout::FileState?,
+                               theirs : Checkout::FileState?, label : String,
+                               max_bytes : Int32, check : Proc(Nil)?) : String?
       return nil unless ours && theirs && ours.mode == theirs.mode
       return nil unless {"100644", "100755"}.includes?(ours.mode)
       left_kind, left = repository.object(ours.oid, max_bytes) { check.try &.call }

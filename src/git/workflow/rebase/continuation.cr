@@ -1,11 +1,11 @@
 module Git
   class Repository
-    def rebase_continue(*, committer : Signature,
-                        max_object_bytes : Int32 = 8_388_608,
-                        max_index_bytes : Int32 = 8_388_608,
-                        max_total_bytes : Int64 = 67_108_864,
-                        max_entries : Int32 = 10_000,
-                        check : Proc(Nil)? = nil) : Rebase::Result
+    protected def rebase_continue(*, committer : Signature,
+                                  max_object_bytes : Int32 = 8_388_608,
+                                  max_index_bytes : Int32 = 8_388_608,
+                                  max_total_bytes : Int64 = 67_108_864,
+                                  max_entries : Int32 = 10_000,
+                                  check : Proc(Nil)? = nil) : Rebase::Result
       state = rebase_state? || raise Error.new("no Git rebase in progress")
       item = sequencer_state? || raise Error.new("Git rebase has no stopped replay to continue")
       rebase_validate_item!(state, item)
@@ -22,12 +22,12 @@ module Git
         max_entries: max_entries, check: check)
     end
 
-    def rebase_skip(*, committer : Signature,
-                    max_object_bytes : Int32 = 8_388_608,
-                    max_index_bytes : Int32 = 8_388_608,
-                    max_total_bytes : Int64 = 67_108_864,
-                    max_entries : Int32 = 10_000,
-                    check : Proc(Nil)? = nil) : Rebase::Result
+    protected def rebase_skip(*, committer : Signature,
+                              max_object_bytes : Int32 = 8_388_608,
+                              max_index_bytes : Int32 = 8_388_608,
+                              max_total_bytes : Int64 = 67_108_864,
+                              max_entries : Int32 = 10_000,
+                              check : Proc(Nil)? = nil) : Rebase::Result
       state = rebase_state? || raise Error.new("no Git rebase in progress")
       item = sequencer_state? || raise Error.new("Git rebase has no stopped replay to skip")
       rebase_validate_item!(state, item)
@@ -43,12 +43,12 @@ module Git
     # item is conflicted, its single-item state is first restored to the last
     # successfully replayed HEAD; then the branch/index/worktree are restored
     # to the original pre-rebase commit.
-    def rebase_abort(*, committer : Signature,
-                     max_object_bytes : Int32 = 8_388_608,
-                     max_index_bytes : Int32 = 8_388_608,
-                     max_total_bytes : Int64 = 67_108_864,
-                     max_entries : Int32 = 10_000,
-                     check : Proc(Nil)? = nil) : Array(String)
+    protected def rebase_abort(*, committer : Signature,
+                               max_object_bytes : Int32 = 8_388_608,
+                               max_index_bytes : Int32 = 8_388_608,
+                               max_total_bytes : Int64 = 67_108_864,
+                               max_entries : Int32 = 10_000,
+                               check : Proc(Nil)? = nil) : Array(String)
       state = rebase_state? || raise Error.new("no Git rebase in progress")
       changed = [] of String
       if item = sequencer_state?
@@ -57,7 +57,7 @@ module Git
           max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
           max_entries: max_entries, check: check))
       end
-      branch, current = head
+      branch, current = head_ref_and_oid
       raise Error.new("Git rebase abort branch changed") unless branch == state.branch && current
       if current != state.original_head
         raise Error.new("Git rebase abort HEAD changed") unless current == state.expected_head

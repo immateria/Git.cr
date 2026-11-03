@@ -1,4 +1,5 @@
 module Git
+  # :nodoc:
   # Repository identity, linked worktree metadata, and ref/HEAD resolution.
   # Does not read object payloads, indexes or current working files.
   class Metadata
@@ -21,7 +22,7 @@ module Git
                    work_tree : String? = nil, follow_gitfile : Bool = true,
                    discover : Bool = false,
                    discovery_ceiling : String? = nil,
-                   before_config : Proc(Location::AdmissionSite, Nil)? = nil,
+                   before_config : Proc(Repository::Admission::Site, Nil)? = nil,
                    before_implicit_bare : Proc(Nil)? = nil,
                    @max_scan_bytes : Int32 = 8_388_608, @max_search_entries : Int32 = 10_000)
       raise ArgumentError.new("invalid Git read budgets") if @max_scan_bytes < 128 || @max_search_entries < 1
@@ -136,52 +137,6 @@ module Git
         return ObjectId.valid!(raw, @object_format)
       end
       local ? nil : read_packed_refs[ref]?
-    end
-
-    def refs(scope : String, max_entries : Int32) : {Array({String, String}), Bool}
-      prefixes = case scope
-                 when "heads"   then ["refs/heads"]
-                 when "tags"    then ["refs/tags"]
-                 when "remotes" then ["refs/remotes"]
-                 when "all"     then ["refs/heads", "refs/tags", "refs/remotes"]
-                 else                raise ArgumentError.new("invalid Git reference scope")
-                 end
-      # Scan the packed table once. There is an explicit byte bound because
-      # this is metadata supplied by the repository, not an infinite stream.
-      found = {} of String => String
-      read_packed_refs.each do |name, oid|
-        found[name] = oid if prefixes.any? { |prefix| name.starts_with?(prefix + "/") }
-      end
-      entries_seen = 0
-      prefixes.each do |prefix|
-        tree = File.join(@common, prefix)
-        next unless Dir.exists?(tree)
-        raise Git::Error.new("Git ref directory redirected") unless safe_metadata_dir?(tree)
-        queue = [{tree, 0}]
-        cursor = 0
-        while cursor < queue.size
-          directory, depth = queue[cursor]
-          cursor += 1
-          raise Git::Error.new("Git reference traversal too deep") if depth > MAX_DEPTH
-          Dir.each_child(directory) do |entry|
-            entries_seen += 1
-            raise Git::Error.new("Git reference entry budget exceeded") if entries_seen > @max_search_entries
-            path = File.join(directory, entry)
-            raise Git::Error.new("Git symbolic reference entry refused") if File.symlink?(path)
-            if Dir.exists?(path)
-              queue << {path, depth + 1}
-            elsif File.file?(path)
-              name = path.byte_slice(@common.bytesize + 1, path.bytesize - @common.bytesize - 1)
-              next unless safe_ref?(name)
-              raw = read_pointer(path)
-              # Do not follow arbitrary symbolic refs from repository data.
-              found[name] = ObjectId.valid!(raw, @object_format)
-            end
-          end
-        end
-      end
-      sorted = found.to_a.sort_by(&.[0])
-      {sorted.first(max_entries), sorted.size > max_entries}
     end
 
     # Ref files and packed refs share one namespace: a packed parent/child

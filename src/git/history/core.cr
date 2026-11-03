@@ -1,60 +1,28 @@
 module Git
-  # A native bounded commit-DAG traversal, not a Git log CLI emulation.
-  # Roots are exact OIDs, HEAD, or fully qualified refs. Revision operators,
-  # reflog selectors, path filters, and commit-date ordering are not inferred.
+  # Commit history: the revision walk behind log, rev-list and ancestry
+  # queries.
   module History
-    record Result, commits : Array(Commit), truncated : Bool, scanned : Int32
-
-    def self.walk(repository : Repository, starts : Array(String) = ["HEAD"], *,
-                  limit : Int32 = 100, max_nodes : Int32 = 4_096,
-                  max_commit_bytes : Int32 = 8_388_608,
-                  check : Proc(Nil)? = nil) : Result
-      raise ArgumentError.new("invalid Git history budgets") if limit < 0 || max_nodes < 1 ||
-                                                                max_commit_bytes < 128 || starts.size > 64
-      repository.check!
-      roots = [] of String
-      starts.each do |start|
-        check.try &.call
-        next if start == "HEAD" && repository.head[1].nil?
-        root = resolve_commit(repository, start, max_commit_bytes, check)
-        roots << root unless roots.includes?(root)
-      end
-      # Explicit exit frames keep the traversal bounded in stack usage and
-      # produce a child-before-parent topological order, including merges.
-      # Visit secondary parents first so reversing postorder gives the first
-      # parent preference. No wall-clock/date sorting is implied.
-      stack = [] of {String, Bool}
-      roots.reverse_each { |oid| stack << {oid, false} }
-      active = Set(String).new
-      visited = Set(String).new
-      postorder = [] of Commit
-      loaded = {} of String => Commit
-      discovered = 0
-      until stack.empty?
-        check.try &.call
-        oid, finish = stack.pop
-        if finish
-          raise Error.new("invalid Git history traversal state") unless active.delete(oid)
-          visited.add(oid)
-          postorder << loaded[oid]
-          next
-        end
-        next if visited.includes?(oid)
-        raise Error.new("Git commit history contains a cycle") if active.includes?(oid)
-        discovered += 1
-        raise Error.new("Git history node budget exceeded") if discovered > max_nodes
-        active.add(oid)
-        commit = repository.commit(oid, max_commit_bytes) { check.try &.call }
-        loaded[oid] = commit
-        stack << {oid, true}
-        # Exact parent sequence from the commit body is preserved; a second
-        # reference to a completed ancestor is skipped by visited.
-        commit.parents.each { |parent| stack << {parent, false} }
-      end
-      ordered = postorder.reverse
-      Result.new(ordered.first(limit), ordered.size > limit, ordered.size)
+    # How Repository#log orders commits.
+    enum Order
+      # Newest committer date first (`git log`).
+      Date
+      # Every commit before its parents, otherwise newest first
+      # (`git log --topo-order`).
+      Topological
     end
 
+    # Commits from Repository#log: at most the requested number, whether
+    # the range held more, and how many commits it held.
+    struct Result
+      getter commits : Array(Commit)
+      getter? truncated : Bool
+      getter scanned : Int32
+
+      def initialize(@commits : Array(Commit), @truncated : Bool, @scanned : Int32)
+      end
+    end
+
+    # :nodoc:
     def self.resolve_commit(repository : Repository, source : String,
                             max_bytes : Int32, check : Proc(Nil)?,
                             max_hops : Int32 = 4_096) : String
@@ -63,7 +31,7 @@ module Git
         return Revision.resolve_commit(repository, source, max_bytes, check, max_hops: max_hops)
       end
       oid = if source == "HEAD"
-              repository.head[1]
+              repository.head_ref_and_oid[1]
             elsif source.starts_with?("refs/")
               repository.resolve_ref?(source)
             elsif source.bytesize == repository.object_format.hexsize
@@ -100,20 +68,6 @@ module Git
         expected_kind = target_type
       end
       raise Error.new("Git annotated tag nesting limit exceeded")
-    end
-  end
-
-  class Repository
-    # Traverse all parents of commits reachable from the supplied exact roots.
-    # The result is topological (child before all parents), deterministic for
-    # fixed commit objects and root order, and bounded by max_nodes. A smaller
-    # limit truncates output but still validates the reachable DAG.
-    def history(starts : Array(String) = ["HEAD"], *, limit : Int32 = 100,
-                max_nodes : Int32 = 4_096,
-                max_commit_bytes : Int32 = 8_388_608,
-                check : Proc(Nil)? = nil) : History::Result
-      History.walk(self, starts, limit: limit, max_nodes: max_nodes,
-        max_commit_bytes: max_commit_bytes, check: check)
     end
   end
 end

@@ -2,13 +2,12 @@ module Git
   # Encoding for annotated tag objects. Tag references and reference
   # transactions are a separate Git layer, not a host permission.
   module Tag
-    def self.encode(*, object : String, type : String, name : String,
+    def self.encode(*, object : String, type : ObjectType, name : String,
                     message : String, tagger : Signature? = nil,
                     format : ObjectId::Format = ObjectId::Format::SHA1,
                     max_bytes : Int64 = Int64::MAX) : String
       raise ArgumentError.new("invalid Git tag byte budget") if max_bytes < 0
       ObjectId.valid!(object, format)
-      raise Error.new("invalid Git tag target type") unless {"blob", "tree", "commit", "tag"}.includes?(type)
       raise Error.new("invalid Git tag name") unless RefName.valid?("refs/tags/#{name}")
       lines = ["object #{object}\n", "type #{type}\n", "tag #{name}\n"]
       if tagger

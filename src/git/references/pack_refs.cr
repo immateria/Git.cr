@@ -3,7 +3,7 @@ module Git
     # `git pack-refs --all` (or, without all, tags and already-packed refs):
     # write every direct ref with peeled tag values into packed-refs, then
     # remove the loose files that still hold the packed values.
-    def pack_refs(*, all : Bool = true, prune : Bool = true, check : Proc(Nil)? = nil) : Int32
+    protected def pack_refs(*, all : Bool = true, prune : Bool = true, check : Proc(Nil)? = nil) : Int32
       check!
       path = File.join(@common, "packed-refs")
       lock = path + ".lock"
@@ -29,7 +29,7 @@ module Git
             check.try &.call
             oid = ref.oid.not_nil!
             io << oid << ' ' << ref.name << '\n'
-            if has_object?(oid) && object_header(oid)[0] == "tag"
+            if has_object?(oid) && object_header(oid).type.tag?
               io << '^' << walker.peel(oid)[1] << '\n'
             end
             loose << ref if File.file?(File.join(@common, ref.name))
