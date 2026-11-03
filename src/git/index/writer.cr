@@ -69,36 +69,39 @@ module Git
       raise Error.new("Git index changed while preparing") unless observed_raw == initial_raw
       version = observed_raw ? writable_index_version?(observed_raw) : 2_u32
       raise Error.new("unsupported Git index flags or extension for mutation") unless version
-      output = current.dup
+      by_path = {} of String => Array(Entry)
+      current.each { |entry| (by_path[entry.path] ||= [] of Entry) << entry }
       seen = Set(String).new
       changes.each do |change|
         check.try &.call
         path = change.path
         PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH)
         raise Error.new("duplicate Git index change") unless seen.add?(path)
-        original_size = output.size
-        output.reject! { |entry| entry.path == path }
+        existed = by_path.delete(path)
         case change
         when Put
           raise Error.new("unsupported Git staging mode") unless {"100644", "100755", "120000", "160000"}.includes?(change.mode)
           ObjectId.valid!(change.oid, @object_format)
-          output << Entry.new(path, change.mode, change.oid, 0, false, false)
+          by_path[path] = [Entry.new(path, change.mode, change.oid, 0, false, false)]
         when PutStages
           raise Error.new("empty Git conflict stages") if change.stages.empty? || change.stages.size > 3
           last_stage = 0
+          staged = [] of Entry
           change.stages.each do |entry|
             raise Error.new("invalid Git conflict stage") unless entry.path == path && entry.stage > last_stage &&
                                                                  entry.stage <= 3 && !entry.intent && !entry.skip_worktree &&
                                                                  !entry.assume_unchanged &&
                                                                  {"100644", "100755", "120000", "160000"}.includes?(entry.mode)
             ObjectId.valid!(entry.oid, @object_format)
-            output << entry
+            staged << entry
             last_stage = entry.stage
           end
+          by_path[path] = staged
         when Remove
-          raise Error.new("Git index path not staged") if output.size == original_size
+          raise Error.new("Git index path not staged") unless existed
         end
       end
+      output = by_path.values.flatten
       raise Error.new("Git index entry budget exceeded") if output.size > max_entries || output.size > @max_search_entries
       output.sort_by! { |entry| {entry.path, entry.stage} }
       previous = ""

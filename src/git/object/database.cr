@@ -110,7 +110,7 @@ module Git
     end
 
     def object(oid : String, max_bytes : Int32, depth : Int32 = 0, seen = Set(String).new, &check : -> Nil) : {String, String}
-      raise Git::Error.new("Git object reference depth exceeded") if depth >= 24 || seen.includes?(oid)
+      raise Git::Error.new("Git object reference depth exceeded") if depth >= PackFiles::MAX_DELTA_DEPTH || seen.includes?(oid)
       seen.add(oid)
       ObjectId.valid!(oid, @object_format)
       check.call
@@ -136,6 +136,95 @@ module Git
       {type, content}
     ensure
       seen.delete(oid)
+    end
+
+    # Type and size of an object from its stored headers, without
+    # inflating or hashing its contents. Not verified against the ID.
+    def object_header(oid : String, depth : Int32 = 0, &check : -> Nil) : {String, Int64}
+      raise Git::Error.new("Git object reference depth exceeded") if depth >= PackFiles::MAX_DELTA_DEPTH
+      ObjectId.valid!(oid, @object_format)
+      check.call
+      loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
+      if File.file?(loose)
+        raise Git::Error.new("Git object file redirected") if File.symlink?(loose)
+        header = File.open(loose) do |file|
+          Compress::Zlib::Reader.open(file) do |zlib|
+            buffer = IO::Memory.new
+            while (byte = zlib.read_byte) && byte != 0
+              buffer.write_byte(byte)
+              raise Git::Error.new("invalid loose Git object") if buffer.size > 64
+            end
+            buffer.to_s
+          end
+        end
+        type, length = parse_object_header(header)
+        return {type, length.to_i64}
+      end
+      location = @pack_files.locate(oid) || raise Git::Error.new("Git object not available locally (no alternates/promisor support)")
+      resolver = ->(base : String) { object_header(base, depth + 1) { check.call }[0] }
+      @pack_files.entry_info(location[0], location[1], resolver)
+    rescue ex : Compress::Zlib::Error | IO::Error
+      raise Git::Error.new("Git object header unreadable: #{ex.class}")
+    end
+
+    # Whether the object is stored loose or in a pack, without reading or
+    # verifying its contents.
+    def has_object?(oid : String) : Bool
+      ObjectId.valid!(oid, @object_format)
+      loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
+      return true if File.file?(loose)
+      @pack_files.contains?(oid)
+    end
+
+    # Object IDs (loose or packed) that start with a lowercase hex prefix,
+    # up to limit of them.
+    def prefix_matches(prefix : String, limit : Int32 = 16) : Array(String)
+      raise Git::Error.new("invalid Git object ID prefix") unless prefix.bytesize >= 1 && prefix.bytesize <= @object_format.hexsize &&
+                                                                  prefix.each_char.all? { |c| c.ascii_number? || ('a'..'f').includes?(c) }
+      found = [] of String
+      if prefix.bytesize >= 2
+        directory = File.join(@common, "objects", prefix.byte_slice(0, 2))
+        if Dir.exists?(directory) && !File.symlink?(directory)
+          rest = prefix.byte_slice(2)
+          Dir.each_child(directory) do |name|
+            next unless name.bytesize == @object_format.hexsize - 2 && name.starts_with?(rest)
+            found << prefix.byte_slice(0, 2) + name
+            break if found.size >= limit
+          end
+        end
+      end
+      @pack_files.prefix_matches(prefix, limit).each do |oid|
+        break if found.size >= limit
+        found << oid unless found.includes?(oid)
+      end
+      found.sort
+    end
+
+    # Every loose and packed object ID, each once, in no particular order.
+    def each_oid(& : String ->) : Nil
+      seen = Set(String).new
+      objects = File.join(@common, "objects")
+      if Dir.exists?(objects)
+        Dir.each_child(objects) do |fanout|
+          next unless fanout.bytesize == 2 && fanout.each_char.all? { |c| c.ascii_number? || ('a'..'f').includes?(c) }
+          directory = File.join(objects, fanout)
+          next if File.symlink?(directory) || !Dir.exists?(directory)
+          Dir.each_child(directory) do |rest|
+            next unless rest.bytesize == @object_format.hexsize - 2 && rest.each_char.all? { |c| c.ascii_number? || ('a'..'f').includes?(c) }
+            oid = fanout + rest
+            yield oid if seen.add?(oid)
+          end
+        end
+      end
+      @pack_files.each_oid { |oid| yield oid if seen.add?(oid) }
+    end
+
+    # The pack directory and its cached indexes.
+    getter pack_files : PackFiles
+
+    # Drop cached pack listings after a pack was added or removed.
+    def refresh_packs : Nil
+      @pack_files.refresh
     end
 
     private def parse_object_header(header : String) : {String, Int32}

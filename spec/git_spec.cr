@@ -330,6 +330,35 @@ describe "Git storage component boundaries" do
   end
 end
 
+describe "Git packed storage with deep delta chains" do
+  it "reads objects at the end of a Git-written chain deeper than 50" do
+    git_fixture do |root|
+      versions = [] of String
+      120.times do |i|
+        text = (1..200).map { |n| "row #{n}: #{n <= i ? "edited-#{n}" : "base"}\n" }.join
+        versions << text
+        File.write(File.join(root, "payload.txt"), text)
+        git_fixture_git(root, "add", "payload.txt")
+        git_fixture_git(root, "commit", "-qm", "revision-#{i}")
+      end
+      git_fixture_git(root, "repack", "-adf", "--depth=200", "--window=250")
+      idx = Dir.glob(File.join(root, ".git", "objects", "pack", "*.idx")).first
+      depths = git_fixture_git(root, "verify-pack", "-v", idx).lines.compact_map do |line|
+        fields = line.split
+        fields.size == 7 && fields[1] == "blob" ? fields[5].to_i : nil
+      end
+      depths.max.should be > 50
+      store = Git::Repository.new(root)
+      versions.each_with_index do |text, i|
+        oid = git_fixture_git(root, "rev-parse", "HEAD~#{119 - i}:payload.txt")
+        store.object(oid, 128 * 1024) { nil }.should eq({"blob", text})
+      end
+      history = store.history(limit: 200, max_nodes: 200)
+      history.commits.size.should eq(120)
+    end
+  end
+end
+
 describe "Git linked-worktree metadata component" do
   it "requires an explicitly selected admin path and resolves the linked HEAD" do
     git_fixture do |root|
@@ -572,8 +601,10 @@ describe "Git packed storage corruption boundaries" do
       end
       resolver = ->(_oid : String, _depth : Int32, _seen : Set(String)) { {"blob", ""} }
       expect_raises(Git::Error, /delta chain too deep/) do
-        Git::ObjectDatabase::PackFiles.new(root, Git::ObjectId::Format::SHA1).decode_pack(pack, last, 1024, 0, Set(String).new, resolver) { nil }
+        Git::ObjectDatabase::PackFiles.new(root, Git::ObjectId::Format::SHA1, max_delta_depth: 24).decode_pack(pack, last, 1024, 0, Set(String).new, resolver) { nil }
       end
+      # The default budget follows Git, whose packs carry chains of up to 4095.
+      Git::ObjectDatabase::PackFiles.new(root, Git::ObjectId::Format::SHA1).decode_pack(pack, last, 1024, 0, Set(String).new, resolver) { nil }.should eq({"blob", ""})
     end
   end
 
