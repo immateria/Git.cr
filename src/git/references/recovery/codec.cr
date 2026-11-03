@@ -1,6 +1,6 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
       private def self.encode(metadata : Metadata, format : ObjectId::Format,
                               changes : Array(Change), logs : Array(LogIntent),
                               index_image : Index::Image? = nil) : String

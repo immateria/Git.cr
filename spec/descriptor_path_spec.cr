@@ -13,7 +13,7 @@ if root = ENV["CR_GIT_DESCRIPTOR_RECEIPT_CHILD"]?
   changes << Git::References::Update.new("refs/heads/main", desired, old)
   Git::References::Recovery.run(meta, repo.object_format, "confined-final", changes,
     after_journal_unlink: -> { LibC._exit(89); nil }) do |pending|
-    repo.change_refs(pending)
+    repo.refs.apply(pending)
   end
   LibC._exit(88)
 end
@@ -135,7 +135,7 @@ describe "P20 descriptor-confined Git mutation" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: actor, committer: actor, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: actor, committer: actor, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         parent = File.join(root, ".git", "refs", "heads")
         moved = parent + "-moved"
         changed = false
@@ -153,7 +153,7 @@ describe "P20 descriptor-confined Git mutation" do
         }
         begin
           expect_raises(Git::Error, /parent replaced/) do
-            repo.update_ref("refs/heads/main", desired, expected_oid: old, check: check)
+            repo.refs.update("refs/heads/main", desired, expected_oid: old, check: check)
           end
           File.read(File.join(parent, "main.lock")).should eq("foreign")
           File.read(File.join(moved, "main")).should eq("#{old}\n")
@@ -166,7 +166,7 @@ describe "P20 descriptor-confined Git mutation" do
           end
           File.rename(moved, parent) if Dir.exists?(moved)
         end
-        repo.resolve_ref?("refs/heads/main").should eq(old)
+        repo.refs.resolve?("refs/heads/main").should eq(old)
       end
     end
 
@@ -209,13 +209,13 @@ describe "P20 descriptor-confined Git mutation" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: actor, committer: actor, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: actor, committer: actor, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         status = Process.run(Process.executable_path.not_nil!, [] of String,
           env: {"CR_GIT_DESCRIPTOR_RECEIPT_CHILD" => root, "CR_GIT_DESCRIPTOR_OLD" => old,
                 "CR_GIT_DESCRIPTOR_NEW" => desired},
           output: Process::Redirect::Close, error: Process::Redirect::Close)
         status.exit_code.should eq(89)
-        repo.pending_ref_finalizations.should eq(["confined-final"])
+        repo.recovery.pending_finalizations.should eq(["confined-final"])
         parent = File.join(root, ".git", "refs", "heads")
         moved = parent + "-moved"
         outside = File.join(root, "outside")
@@ -233,14 +233,14 @@ describe "P20 descriptor-confined Git mutation" do
           end
           File.read(File.join(outside, "main.lock")).should eq("foreign")
           File.file?(File.join(moved, "main.lock")).should be_true
-          repo.pending_ref_finalizations.should eq(["confined-final"])
+          repo.recovery.pending_finalizations.should eq(["confined-final"])
         ensure
           File.delete(parent) if File.symlink?(parent)
           File.rename(moved, parent) if Dir.exists?(moved)
         end
-        repo.finish_ref_finalization("confined-final")
-        repo.pending_ref_finalizations.should be_empty
-        repo.resolve_ref?("refs/heads/main").should eq(desired)
+        repo.recovery.finish_finalization("confined-final")
+        repo.recovery.pending_finalizations.should be_empty
+        repo.refs.resolve?("refs/heads/main").should eq(desired)
       end
     end
 

@@ -3,7 +3,7 @@ module Git
     # Read a strictly bounded in-progress Git MERGE_HEAD, if present. The
     # companion state records the original ref and commit for fail-closed
     # continuation/abort after somebody switches branches externally.
-    def merge_state? : {String, String, String}?
+    protected def merge_state? : {String, String, String}?
       check!
       admin = DescriptorPath::Directory.open(@git_dir)
       begin
@@ -25,8 +25,8 @@ module Git
 
     # Expose unmerged stages without requiring the system Git executable.
     # A missing side is nil, not a synthesized zero OID or a stage-zero file.
-    def merge_conflicts(*, max_index_bytes : Int32 = 8_388_608,
-                        check : Proc(Nil)? = nil) : Array(Merge::Conflict)
+    protected def merge_conflicts(*, max_index_bytes : Int32 = 8_388_608,
+                                  check : Proc(Nil)? = nil) : Array(Merge::Conflict)
       raise Error.new("no Git merge in progress") unless merge_state?
       staged = @index.entries(max_index_bytes) { check.try &.call }
       Merge.conflicts_from_entries(staged)

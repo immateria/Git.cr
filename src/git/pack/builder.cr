@@ -170,7 +170,7 @@ module Git
         list = all.select { |candidate| (candidate.type == "tree" || candidate.type == "blob") && !candidate.reused_delta }
         list.each do |candidate|
           @check.try &.call
-          _, size = @repository.object_header(candidate.oid) { @check.try &.call }
+          size = @repository.object_header(candidate.oid, check: @check).size
           candidate.size = size.clamp(0_i64, Int32::MAX.to_i64).to_i32
         end
         list.sort! do |a, b|

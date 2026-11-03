@@ -19,7 +19,7 @@ describe "P28 native fast-forward-only merge" do
         target = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         GitOracle.run(root, "checkout", "-q", "main")
         repo = Git::Repository.new(root)
-        result = repo.merge_fast_forward("topic")
+        result = repo.fast_forward("topic")
         result.previous_oid.should eq(base)
         result.target_oid.should eq(target)
         result.changed_paths.to_set.should eq(["existing", "new"].to_set)
@@ -27,7 +27,7 @@ describe "P28 native fast-forward-only merge" do
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
         File.read(File.join(root, "existing")).should eq("later\n")
         File.read(File.join(root, "new")).should eq("new\n")
-        repo.merge_fast_forward("topic").changed_paths.should be_empty
+        repo.fast_forward("topic").changed_paths.should be_empty
       end
     end
 
@@ -40,9 +40,9 @@ describe "P28 native fast-forward-only merge" do
         GitOracle.run(root, "branch", "topic")
         repo = Git::Repository.new(root)
         File.write(File.join(root, "one"), "dirty\n")
-        expect_raises(Git::Error, /dirty tracked/) { repo.merge_fast_forward("topic") }
+        expect_raises(Git::Error, /dirty tracked/) { repo.fast_forward("topic") }
         GitOracle.run(root, "add", "one")
-        expect_raises(Git::Error, /index equal to HEAD/) { repo.merge_fast_forward("topic") }
+        expect_raises(Git::Error, /index equal to HEAD/) { repo.fast_forward("topic") }
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(base)
       end
     end
@@ -62,7 +62,7 @@ describe "P28 native fast-forward-only merge" do
         GitOracle.run(root, "commit", "-qm", "main")
         main = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         repo = Git::Repository.new(root)
-        expect_raises(Git::Error, /not a fast-forward/) { repo.merge_fast_forward("topic") }
+        expect_raises(Git::Error, /not a fast-forward/) { repo.fast_forward("topic") }
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(main)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end

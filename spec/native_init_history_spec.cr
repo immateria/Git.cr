@@ -32,22 +32,22 @@ describe "P22 native Git initialization" do
           File.read(File.join(admin, "HEAD")).should eq(File.read(File.join(other, "HEAD")))
           native.object_format.should eq(selected)
           native.bare?.should eq(bare)
-          native.head.should eq({"refs/heads/main", nil})
+          native.head.should eq(Git::References::Ref.new("HEAD", nil, "refs/heads/main"))
           GitOracle.run(root, "rev-parse", "--is-bare-repository").stdout.strip.should eq(bare.to_s)
           GitOracle.run(root, "symbolic-ref", "HEAD").stdout.strip.should eq("refs/heads/main")
           sig = Git::Signature.new("Writer", "writer@example.invalid", 1_700_000_000_i64, 0)
           if bare
             tree = native.write_tree([] of Git::Tree::Entry)
             oid = native.write_commit(tree: tree, author: sig, committer: sig, message: "bare\n")
-            native.update_ref("refs/heads/main", oid, expected_oid: nil)
+            native.refs.update("refs/heads/main", oid, expected_oid: nil)
             GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(oid)
           else
             native.stage_file("hello.txt")
-            oid = native.commit_staged(author: sig, committer: sig, message: "initial\n")
+            oid = native.commit(author: sig, committer: sig, message: "initial\n")
             GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(oid)
             GitOracle.run(root, "ls-tree", "-r", "HEAD").stdout.should contain("hello.txt")
           end
-          native.check!
+          native.revalidate!
         ensure
           FileUtils.rm_rf(base)
         end
@@ -168,26 +168,26 @@ describe "P22 create-only native branch and tag operations" do
         GitOracle.run(root, "commit", "-qm", "initial")
         old = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         repo = Git::Repository.new(root)
-        repo.create_branch("topic/nested").should eq(old)
+        repo.branches.create("topic/nested").should eq(old)
         GitOracle.run(root, "rev-parse", "refs/heads/topic/nested").stdout.strip.should eq(old)
-        repo.head[0].should eq("refs/heads/main")
-        repo.create_tag("v1").should eq(old)
+        repo.head.symref_target.should eq("refs/heads/main")
+        repo.tags.create("v1").should eq(old)
         GitOracle.run(root, "rev-parse", "refs/tags/v1").stdout.strip.should eq(old)
         sig = Git::Signature.new("Tagger", "tagger@example.invalid", 1_700_000_000_i64, 0)
-        annotated = repo.create_tag("v2", from: "refs/heads/topic/nested", message: "Release\n", tagger: sig)
+        annotated = repo.tags.create("v2", from: "refs/heads/topic/nested", message: "Release\n", tagger: sig)
         GitOracle.run(root, "cat-file", "-t", annotated).stdout.strip.should eq("tag")
         GitOracle.run(root, "rev-parse", "refs/tags/v2^{}").stdout.strip.should eq(old)
         repo.history(["refs/tags/v2"]).commits.first.oid.should eq(old)
-        repo.create_branch("from-tag", from: "refs/tags/v2").should eq(old)
+        repo.branches.create("from-tag", from: "refs/tags/v2").should eq(old)
         bad = repo.write_tag(object: old, type: "tag", name: "bad", tagger: sig, message: "bad type\n")
-        repo.update_ref("refs/tags/bad", bad, expected_oid: nil)
+        repo.refs.update("refs/tags/bad", bad, expected_oid: nil)
         expect_raises(Git::Error, /target type mismatch/) { repo.history(["refs/tags/bad"]) }
-        expect_raises(Git::Error, /compare-and-swap/) { repo.create_branch("topic/nested") }
-        expect_raises(Git::Error, /compare-and-swap/) { repo.create_tag("v1") }
-        expect_raises(Git::Error, /branch name/) { repo.create_branch("-force") }
-        expect_raises(Git::Error, /tag name/) { repo.create_tag("../wrong") }
-        expect_raises(Git::Error, /both tagger and message/) { repo.create_tag("v3", message: "message") }
-        repo.head[1].should eq(old)
+        expect_raises(Git::Error, /compare-and-swap/) { repo.branches.create("topic/nested") }
+        expect_raises(Git::Error, /compare-and-swap/) { repo.tags.create("v1") }
+        expect_raises(Git::Error, /branch name/) { repo.branches.create("-force") }
+        expect_raises(Git::Error, /tag name/) { repo.tags.create("../wrong") }
+        expect_raises(Git::Error, /both tagger and message/) { repo.tags.create("v3", message: "message") }
+        repo.head.oid.should eq(old)
       end
     end
   end

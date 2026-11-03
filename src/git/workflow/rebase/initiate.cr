@@ -24,7 +24,7 @@ module Git
       raise Error.new("Git rebase refuses in-progress merge") if merge_state?
       raise Error.new("Git rebase refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git rebase already in progress") if rebase_state?
-      branch, original_head = head
+      branch, original_head = head_ref_and_oid
       raise Error.new("Git rebase requires an existing symbolic branch") unless branch &&
                                                                                 branch.starts_with?("refs/heads/") && original_head
       upstream_oid = History.resolve_commit(self, upstream, max_object_bytes, check, max_hops: max_graph_nodes)
@@ -58,7 +58,7 @@ module Git
           # No publication began: do not strand an otherwise untouched branch
           # in synthetic rebase state because, for example, a foreign index
           # lock prevented the base move from starting.
-          if head == {branch, original_head} && rebase_state? == state && sequencer_state?.nil?
+          if head_ref_and_oid == {branch, original_head} && rebase_state? == state && sequencer_state?.nil?
             rebase_clear_state!(state)
           end
           raise ex
@@ -71,7 +71,7 @@ module Git
 
     # Durable outer rebase plan/progress. Per-item conflict state is exposed by
     # `sequencer_state?` and must have kind Rebase while a replay is stopped.
-    def rebase_state? : Rebase::State?
+    protected def rebase_state? : Rebase::State?
       check!
       parent = DescriptorPath::Directory.open(@git_dir)
       child = nil.as(DescriptorPath::Directory?)

@@ -75,7 +75,7 @@ module Git
       repository = init(target, bare: bare, initial_branch: initial, object_format: format, check: check)
       repository = new(target, max_search_entries: max_search_entries)
       if bare
-        Config::FileEditor.set(File.join(repository.common_directory, "config"), "remote.#{remote_name}.url", stored_url)
+        Config::FileEditor.set(File.join(repository.common_dir, "config"), "remote.#{remote_name}.url", stored_url)
       else
         repository.add_remote(remote_name, stored_url, tag_mode: tags)
       end
@@ -110,7 +110,7 @@ module Git
       if commit = detached
         repository.detach_head(commit)
       end
-      if checkout && !bare && (commit = repository.head[1])
+      if checkout && !bare && (commit = repository.head_ref_and_oid[1])
         repository.populate_worktree(commit, max_files: max_files, check: check)
       end
       repository

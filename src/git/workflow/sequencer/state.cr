@@ -3,7 +3,7 @@ module Git
     # Return the durable single-item sequencer state. Companion metadata binds
     # the operation to its original branch/HEAD and selected source parent so
     # continue/abort fail closed after external repository mutation.
-    def sequencer_state? : Sequencer::State?
+    protected def sequencer_state? : Sequencer::State?
       check!
       admin = DescriptorPath::Directory.open(@git_dir)
       begin
@@ -52,8 +52,8 @@ module Git
       end
     end
 
-    def sequencer_conflicts(*, max_index_bytes : Int32 = 8_388_608,
-                            check : Proc(Nil)? = nil) : Array(Merge::Conflict)
+    protected def sequencer_conflicts(*, max_index_bytes : Int32 = 8_388_608,
+                                      check : Proc(Nil)? = nil) : Array(Merge::Conflict)
       raise Error.new("no Git sequencer operation in progress") unless sequencer_state?
       staged = @index.entries(max_index_bytes) { check.try &.call }
       Merge.conflicts_from_entries(staged)

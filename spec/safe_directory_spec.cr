@@ -153,7 +153,7 @@ describe "P06 owner-path and checked-opening coverage" do
       owner = File.info(root).owner_id
       foreign_id = owner == "0" ? "54321" : "999991"
       identity = Git::Repository::Admission::Identity.new(owner)
-      Git::Repository.open_with_ownership_check(root, identity: identity).head[0].should eq("refs/heads/main")
+      Git::Repository.open_with_ownership_check(root, identity: identity).head.symref_target.should eq("refs/heads/main")
       expect_raises(Git::Error, /ownership/) do
         Git::Repository.open_with_ownership_check(root, identity: Git::Repository::Admission::Identity.new(foreign_id))
       end
@@ -383,12 +383,12 @@ describe "P06 checked-selection traversal and revalidation" do
       owner = File.info(root).owner_id
       checked = Git::Repository.open_with_ownership_check(root,
         identity: Git::Repository::Admission::Identity.new(owner))
-      checked.check!
+      checked.revalidate!
       if owner == "0"
         status = Process.run("/usr/bin/chown", ["54321:54321", root])
         raise "fixture chown failed" unless status.success?
         begin
-          expect_raises(Git::Error, /ownership/) { checked.check! }
+          expect_raises(Git::Error, /ownership/) { checked.revalidate! }
         ensure
           status = Process.run("/usr/bin/chown", ["0:0", root])
           raise "fixture chown restore failed" unless status.success?

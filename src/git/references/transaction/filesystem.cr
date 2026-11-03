@@ -1,5 +1,5 @@
 module Git
-  module References
+  struct References
     class Transaction
       private def self.read_small_ref(path : String) : String
         bytes = IO::Memory.new

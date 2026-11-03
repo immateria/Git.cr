@@ -23,7 +23,7 @@ describe "P31 native Git file/directory transitions" do
 
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         result.commit_oid.should_not be_nil
         File.directory?(File.join(root, "node")).should be_true
@@ -51,7 +51,7 @@ describe "P31 native Git file/directory transitions" do
 
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         File.file?(File.join(root, "node")).should be_true
         File.read(File.join(root, "node")).should eq("replacement\n")
@@ -80,7 +80,7 @@ describe "P31 native Git file/directory transitions" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /untracked/) do
-          repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+          repo.merge("topic", author: sig, committer: sig, message: "merge")
         end
         File.read(File.join(root, "node", "child")).should eq("child\n")
         File.read(File.join(root, "node", "untracked")).should eq("keep me\n")
@@ -107,7 +107,7 @@ describe "P31 native Git file/directory transitions" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /file\/directory conflict unsupported/) do
-          repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+          repo.merge("topic", author: sig, committer: sig, message: "merge")
         end
         File.read(File.join(root, "node")).should eq("ours changed\n")
         File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false

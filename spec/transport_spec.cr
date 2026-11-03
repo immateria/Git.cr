@@ -37,10 +37,10 @@ private def round_trip(transport : Git::Transport, bare : String, clone : String
   repo = Git::Repository.clone(transport, clone, url: transport.url)
   GitOracle.run(clone, "fsck", "--strict", "--no-dangling")
   GitOracle.run(clone, "status", "--porcelain").stdout.should eq("")
-  repo.resolve_ref?("refs/tags/v1").should eq(GitOracle.run(bare, "rev-parse", "v1").stdout.strip)
+  repo.refs.resolve?("refs/tags/v1").should eq(GitOracle.run(bare, "rev-parse", "v1").stdout.strip)
   File.write(File.join(clone, "c.txt"), "c\n")
   repo.stage_file("c.txt")
-  commit = repo.commit_staged(author: SIGNATURE, committer: SIGNATURE, message: "third\n")
+  commit = repo.commit(author: SIGNATURE, committer: SIGNATURE, message: "third\n")
   repo.push("origin", ["main", "main:refs/heads/copy"], transport: transport).success?.should be_true
   GitOracle.run(bare, "rev-parse", "main", "copy").stdout.lines.should eq([commit, commit])
   GitOracle.run(bare, "fsck", "--strict", "--no-dangling")

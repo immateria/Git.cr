@@ -85,7 +85,7 @@ module Git
           unborn = arguments.includes?("unborn")
           prefixes = arguments.compact_map { |argument| argument.starts_with?("ref-prefix ") ? argument.byte_slice(11) : nil }
           selected = ->(name : String) { prefixes.empty? || prefixes.any? { |prefix| name.starts_with?(prefix) } }
-          head = @repository.head_reference
+          head = @repository.head
           if selected.call("HEAD")
             if oid = head.oid
               line = "#{oid} HEAD"
@@ -108,8 +108,7 @@ module Git
         end
 
         private def peeled_suffix(oid : String) : String
-          type, _ = @repository.object_header(oid)
-          return "" unless type == "tag"
+          return "" unless @repository.object_header(oid).type.tag?
           _, target, _ = History::RevisionWalker.new(@repository, check: @check).peel(oid)
           " peeled:#{target}"
         end
@@ -188,7 +187,7 @@ module Git
             @repository.references("refs/tags/").each do |ref|
               oid = ref.oid || next
               next if present.includes?(oid)
-              next unless @repository.object_header(oid)[0] == "tag"
+              next unless @repository.object_header(oid).type.tag?
               tags, target, _ = walker.peel(oid)
               next unless present.includes?(target)
               tags.each do |tag|
@@ -221,14 +220,14 @@ module Git
         end
 
         private def commit?(oid : String) : Bool
-          @repository.object_header(oid)[0] == "commit"
+          @repository.object_header(oid).type.commit?
         end
 
         private def admit_want!(oid : String) : Nil
           raise RemoteFailure.new("upload-pack: not our ref #{oid}") unless @repository.has_object?(oid)
           return if @want_policy.any?
           tips = [] of String
-          @repository.head_reference.oid.try { |head| tips << head }
+          @repository.head.oid.try { |head| tips << head }
           @repository.references("refs/").each { |ref| ref.oid.try { |tip| tips << tip } }
           return if tips.includes?(oid)
           walker = History::RevisionWalker.new(@repository, check: @check)

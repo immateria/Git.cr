@@ -3,11 +3,11 @@ module Git
     private def stash_entry_from_record(position : Int32, record : Stash::LogRecord, *,
                                         max_object_bytes : Int32,
                                         check : Proc(Nil)?) : Stash::Entry
-      stored = commit(record.new_oid, max_object_bytes) { check.try &.call }
+      stored = read_commit(record.new_oid, max_bytes: max_object_bytes, check: check)
       raise Error.new("Git stash commit shape unsupported") unless stored.parents.size == 2 || stored.parents.size == 3
       base_oid = stored.parents[0]
       index_oid = stored.parents[1]
-      index_commit = commit(index_oid, max_object_bytes) { check.try &.call }
+      index_commit = read_commit(index_oid, max_bytes: max_object_bytes, check: check)
       raise Error.new("Git stash index commit shape invalid") unless index_commit.parents == [base_oid]
       Stash::Entry.new(position, stored.oid, base_oid, index_oid, stored.tree,
         index_commit.tree, record.message, stored.parents[2]?)
@@ -29,7 +29,7 @@ module Git
       raise Error.new("Git stash reflog top does not match refs/stash") unless records.last.new_oid == current
       # Resolve the top commit now so a dangling/corrupt stack is rejected
       # before push/drop extends or rewrites it.
-      commit(current, max_object_bytes) { check.try &.call }
+      read_commit(current, max_bytes: max_object_bytes, check: check)
       records
     end
 

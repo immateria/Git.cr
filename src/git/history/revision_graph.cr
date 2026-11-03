@@ -41,13 +41,13 @@ module Git
         if op == '~'.ord
           count.times do
             check.try &.call
-            parent = repository.commit(oid, max_bytes) { check.try &.call }.parents.first?
+            parent = repository.read_commit(oid, max_bytes: max_bytes, check: check).parents.first?
             raise Error.new("Git revision first parent missing") unless parent
             oid = parent
           end
         elsif op == '^'.ord
           if count > 0
-            commit = repository.commit(oid, max_bytes) { check.try &.call }
+            commit = repository.read_commit(oid, max_bytes: max_bytes, check: check)
             parent = commit.parents[count.to_i - 1]?
             raise Error.new("Git revision parent missing") unless parent
             oid = parent
@@ -75,7 +75,7 @@ module Git
         next unless seen.add?(oid)
         commit = cache[oid]? || begin
           raise Error.new("Git merge-base node budget exceeded") if cache.size >= max_nodes
-          loaded = repository.commit(oid, max_bytes) { check.try &.call }
+          loaded = repository.read_commit(oid, max_bytes: max_bytes, check: check)
           cache[oid] = loaded
           loaded
         end

@@ -1,6 +1,6 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
       def self.list(metadata : Metadata) : Array(String)
         directory = directory?(metadata)
         return [] of String unless directory

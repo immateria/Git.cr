@@ -1,5 +1,5 @@
 module Git
-  module Merge
+  struct Merge
     # A resolved merge has only stages 0; a conflicted merge records each
     # available base/ours/theirs side at stages 1/2/3 respectively.
     def self.conflict(path : String, base : Checkout::FileState?, ours : Checkout::FileState?,

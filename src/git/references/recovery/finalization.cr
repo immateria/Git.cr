@@ -1,6 +1,6 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
       private def self.verify_published!(metadata : Metadata, changes : Array(Change),
                                          image : Index::Image?, index_store : Index?) : Nil
         raise Conflict.new("Git recovery incomplete: refs changed after publication") unless remaining_changes(metadata, changes).empty?

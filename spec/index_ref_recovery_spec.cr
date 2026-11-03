@@ -11,7 +11,7 @@ module GitIndexRefOracle
     old_oid = repo.write_commit(tree: empty, author: actor, committer: actor, message: "old")
     tree = repo.write_tree([Git::Tree::Entry.new("joint.txt", "100644", blob)])
     new_oid = repo.write_commit(tree: tree, parents: [old_oid], author: actor, committer: actor, message: "new")
-    repo.update_ref("refs/heads/main", old_oid, expected_oid: nil)
+    repo.refs.update("refs/heads/main", old_oid, expected_oid: nil)
     {repo: repo, actor: actor, blob: blob, old_oid: old_oid, new_oid: new_oid, tree: tree}
   end
 
@@ -44,9 +44,9 @@ if root = ENV["CR_GIT_INDEX_REF_CRASH"]?
       LibC._exit(77) if File.exists?(File.join(root, ".git", "index.lock"))
       nil
     end
-    repo.change_index_and_refs_recoverably(edits, refs, id: "crashed-locked", check: check)
+    repo.recovery.apply(edits, refs, id: "crashed-locked", check: check)
   else
-    repo.change_index_and_refs_recoverably(edits, refs, id: "crashed-published",
+    repo.recovery.apply(edits, refs, id: "crashed-published",
       after_index_publish: -> { LibC._exit(78) })
   end
   LibC._exit(76)
@@ -61,17 +61,16 @@ describe "P18/P19 coordinated index and references forward recovery" do
         edits = GitIndexRefOracle.edits(fixture[:blob])
         refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor], with_log: true)
         expect_raises(Git::References::PartialPublication) do
-          repo.change_index_and_refs_recoverably(edits, refs, id: "index-main-#{format}",
+          repo.recovery.apply(edits, refs, id: "index-main-#{format}",
             after_index_publish: -> { raise Git::Error.new("stop after index rename") })
         end
-        repo.resolve_ref?("refs/heads/main").should eq(fixture[:old_oid])
+        repo.refs.resolve?("refs/heads/main").should eq(fixture[:old_oid])
         repo.write_index_tree.should eq(fixture[:tree])
         GitOracle.run(root, "ls-files", "--stage").stdout.should contain("#{fixture[:blob]} 0\tjoint.txt")
-        repo.pending_ref_recoveries.should eq(["index-main-#{format}"])
-        expect_raises(Git::Error, /index publisher required/) { repo.recover_refs("index-main-#{format}") }
-        repo.recover_index_and_refs("index-main-#{format}")
-        repo.pending_ref_recoveries.should be_empty
-        repo.resolve_ref?("refs/heads/main").should eq(fixture[:new_oid])
+        repo.recovery.pending.should eq(["index-main-#{format}"])
+        repo.recovery.resume("index-main-#{format}")
+        repo.recovery.pending.should be_empty
+        repo.refs.resolve?("refs/heads/main").should eq(fixture[:new_oid])
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(fixture[:new_oid])
         line = Git::References::LogEntry.new(fixture[:actor], "joint recovery").encode(fixture[:old_oid], fixture[:new_oid])
         [File.join(root, ".git", "logs", "HEAD"), File.join(root, ".git", "logs", "refs", "heads", "main")].each do |path|
@@ -88,14 +87,14 @@ describe "P18/P19 coordinated index and references forward recovery" do
         refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
         refs << Git::References::Update.new("refs/heads/z", fixture[:new_oid], nil)
         expect_raises(Git::References::PartialPublication) do
-          repo.change_index_and_refs_recoverably(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "mixed-#{format}",
+          repo.recovery.apply(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "mixed-#{format}",
             after_publish: ->(_name : String) { raise "stop after first ref" })
         end
-        repo.pending_ref_recoveries.should eq(["mixed-#{format}"])
-        repo.recover_index_and_refs("mixed-#{format}")
-        repo.resolve_ref?("refs/heads/z").should eq(fixture[:new_oid])
+        repo.recovery.pending.should eq(["mixed-#{format}"])
+        repo.recovery.resume("mixed-#{format}")
+        repo.refs.resolve?("refs/heads/z").should eq(fixture[:new_oid])
         repo.write_index_tree.should eq(fixture[:tree])
-        repo.pending_ref_recoveries.should be_empty
+        repo.recovery.pending.should be_empty
       end
     end
   end
@@ -110,11 +109,11 @@ describe "P18/P19 coordinated index and references forward recovery" do
         GitOracle.run(root, "update-index", "--index-version", version.to_s)
         GitOracle.run(root, "update-index", "--skip-worktree", "existing.txt") if version > 2
         refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
-        repo.change_index_and_refs_recoverably(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "v#{version}")
+        repo.recovery.apply(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "v#{version}")
         GitOracle.run(root, "ls-files", "-v").stdout.should contain(version > 2 ? "s existing.txt" : "h existing.txt")
         File.read(File.join(root, ".git", "index")).byte_at(7).should eq(version)
         GitOracle.run(root, "ls-files", "--stage").stdout.should contain("joint.txt")
-        repo.pending_ref_recoveries.should be_empty
+        repo.recovery.pending.should be_empty
       end
     end
   end
@@ -127,17 +126,17 @@ describe "P18/P19 coordinated index and references forward recovery" do
       index = File.join(root, ".git", "index")
       refs = GitIndexRefOracle.refs(fixture[:new_oid], fixture[:old_oid], fixture[:actor])
       expect_raises(Git::Error, /compare-and-swap/) do
-        repo.change_index_and_refs_recoverably(edits, refs, id: "stale")
+        repo.recovery.apply(edits, refs, id: "stale")
       end
       File.exists?(index).should be_false
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.pending.should be_empty
       correct_refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
       File.write(File.join(root, ".git", "refs", "heads", "main.lock"), "foreign")
       expect_raises(Git::Error, /blocked by ref lock/) do
-        repo.change_index_and_refs_recoverably(edits, correct_refs, id: "locked")
+        repo.recovery.apply(edits, correct_refs, id: "locked")
       end
       File.exists?(index).should be_false
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.pending.should be_empty
     end
   end
 
@@ -147,16 +146,16 @@ describe "P18/P19 coordinated index and references forward recovery" do
       repo = fixture[:repo]
       refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
       expect_raises(Git::References::PartialPublication) do
-        repo.change_index_and_refs_recoverably(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "diverged-index",
+        repo.recovery.apply(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "diverged-index",
           after_index_publish: -> { raise "stop" })
       end
-      before_ref = repo.resolve_ref?("refs/heads/main")
+      before_ref = repo.refs.resolve?("refs/heads/main")
       repo.stage_blob("foreign.txt", "foreign")
       expected_index = File.read(File.join(root, ".git", "index"))
-      expect_raises(Git::Error, /index recovery conflict/) { repo.recover_index_and_refs("diverged-index") }
+      expect_raises(Git::Error, /index recovery conflict/) { repo.recovery.resume("diverged-index") }
       File.read(File.join(root, ".git", "index")).should eq(expected_index)
-      repo.resolve_ref?("refs/heads/main").should eq(before_ref)
-      repo.pending_ref_recoveries.should eq(["diverged-index"])
+      repo.refs.resolve?("refs/heads/main").should eq(before_ref)
+      repo.recovery.pending.should eq(["diverged-index"])
     end
   end
 
@@ -166,16 +165,16 @@ describe "P18/P19 coordinated index and references forward recovery" do
       repo = fixture[:repo]
       refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
       expect_raises(Git::References::PartialPublication) do
-        repo.change_index_and_refs_recoverably(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "abandoned-index",
+        repo.recovery.apply(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "abandoned-index",
           after_index_publish: -> { raise "stop" })
       end
       lock = File.join(root, ".git", "index.lock")
       File.write(lock, "abandoned")
-      expect_raises(Git::Error, /blocked by index lock/) { repo.recover_index_and_refs("abandoned-index") }
+      expect_raises(Git::Error, /blocked by index lock/) { repo.recovery.resume("abandoned-index") }
       File.read(lock).should eq("abandoned")
-      repo.recover_index_and_refs("abandoned-index", clear_abandoned_locks: true)
+      repo.recovery.resume("abandoned-index", clear_abandoned_locks: true)
       File.exists?(lock).should be_false
-      repo.resolve_ref?("refs/heads/main").should eq(fixture[:new_oid])
+      repo.refs.resolve?("refs/heads/main").should eq(fixture[:new_oid])
     end
   end
 
@@ -190,14 +189,14 @@ describe "P18/P19 coordinated index and references forward recovery" do
           output: Process::Redirect::Close, error: Process::Redirect::Close)
         child.exit_code.should eq(phase == "locked" ? 77 : 78)
         repo = fixture[:repo]
-        repo.pending_ref_recoveries.should eq(["crashed-#{phase}"])
+        repo.recovery.pending.should eq(["crashed-#{phase}"])
         if phase == "locked"
-          expect_raises(Git::Error, /blocked by index lock/) { repo.recover_index_and_refs("crashed-locked") }
+          expect_raises(Git::Error, /blocked by index lock/) { repo.recovery.resume("crashed-locked") }
         end
-        repo.recover_index_and_refs("crashed-#{phase}", clear_abandoned_locks: phase == "locked")
-        repo.resolve_ref?("refs/heads/main").should eq(fixture[:new_oid])
+        repo.recovery.resume("crashed-#{phase}", clear_abandoned_locks: phase == "locked")
+        repo.refs.resolve?("refs/heads/main").should eq(fixture[:new_oid])
         repo.write_index_tree.should eq(fixture[:tree])
-        repo.pending_ref_recoveries.should be_empty
+        repo.recovery.pending.should be_empty
       end
     end
   end
@@ -208,14 +207,14 @@ describe "P18/P19 coordinated index and references forward recovery" do
       repo = fixture[:repo]
       refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
       expect_raises(Git::References::PartialPublication) do
-        repo.change_index_and_refs_recoverably(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "tampered",
+        repo.recovery.apply(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "tampered",
           after_index_publish: -> { raise "stop" })
       end
       journal = File.join(root, ".git", "crystal-git-recovery", "tampered.redo")
       File.open(journal, "a") { |io| io << "junk" }
-      expect_raises(Git::Error, /checksum|envelope/) { repo.recover_index_and_refs("tampered") }
-      repo.resolve_ref?("refs/heads/main").should eq(fixture[:old_oid])
-      repo.pending_ref_recoveries.should eq(["tampered"])
+      expect_raises(Git::Error, /checksum|envelope/) { repo.recovery.resume("tampered") }
+      repo.refs.resolve?("refs/heads/main").should eq(fixture[:old_oid])
+      repo.recovery.pending.should eq(["tampered"])
     end
   end
 end
@@ -226,12 +225,12 @@ describe "P18/P19 native staged commit with recoverable index and branch" do
       GitOracle.with_repo(format: format) do |root|
         fixture = GitIndexRefOracle.fixture(root)
         repo = fixture[:repo]
-        oid = repo.commit_index_changes_recoverably(GitIndexRefOracle.edits(fixture[:blob]),
+        oid = repo.recovery.commit(GitIndexRefOracle.edits(fixture[:blob]),
           id: "commit-#{format}", author: fixture[:actor], committer: fixture[:actor], message: "joint commit")
         oid.should_not eq(fixture[:new_oid])
-        repo.pending_ref_recoveries.should be_empty
-        repo.resolve_ref?("refs/heads/main").should eq(oid)
-        commit = repo.commit(oid, 8192) { nil }
+        repo.recovery.pending.should be_empty
+        repo.refs.resolve?("refs/heads/main").should eq(oid)
+        commit = repo.read_commit(oid, max_bytes: 8192)
         commit.parents.should eq([fixture[:old_oid]])
         commit.tree.should eq(repo.write_index_tree)
         GitOracle.run(root, "show", "--format=", "--name-only", "HEAD").stdout.should contain("joint.txt")
@@ -244,15 +243,15 @@ describe "P18/P19 native staged commit with recoverable index and branch" do
         fixture = GitIndexRefOracle.fixture(root)
         repo = fixture[:repo]
         expect_raises(Git::References::PartialPublication) do
-          repo.commit_index_changes_recoverably(GitIndexRefOracle.edits(fixture[:blob]),
+          repo.recovery.commit(GitIndexRefOracle.edits(fixture[:blob]),
             id: "interrupted-commit-#{format}", author: fixture[:actor], committer: fixture[:actor],
             message: "recover this commit", after_index_publish: -> { raise "interrupted" })
         end
-        repo.resolve_ref?("refs/heads/main").should eq(fixture[:old_oid])
+        repo.refs.resolve?("refs/heads/main").should eq(fixture[:old_oid])
         repo.write_index_tree.should eq(fixture[:tree])
-        repo.recover_index_and_refs("interrupted-commit-#{format}")
-        head = repo.resolve_ref?("refs/heads/main").not_nil!
-        repo.commit(head, 8192) { nil }.tree.should eq(fixture[:tree])
+        repo.recovery.resume("interrupted-commit-#{format}")
+        head = repo.refs.resolve?("refs/heads/main").not_nil!
+        repo.read_commit(head, max_bytes: 8192).tree.should eq(fixture[:tree])
         GitOracle.run(root, "log", "-1", "--format=%s").stdout.strip.should eq("recover this commit")
         GitOracle.run(root, "fsck", "--no-reflogs")
       end
@@ -266,10 +265,10 @@ describe "P18/P19 native staged commit with recoverable index and branch" do
       blob = repo.write_blob("initial\n")
       edits = [] of Git::Index::Edit
       edits << Git::Index::Put.new("initial.txt", "100644", blob)
-      commit_oid = repo.commit_index_changes_recoverably(edits, id: "initial", author: actor,
+      commit_oid = repo.recovery.commit(edits, id: "initial", author: actor,
         committer: actor, message: "initial commit")
-      repo.head[1].should eq(commit_oid)
-      repo.commit(commit_oid, 8192) { nil }.parents.should be_empty
+      repo.head.oid.should eq(commit_oid)
+      repo.read_commit(commit_oid, max_bytes: 8192).parents.should be_empty
       GitOracle.run(root, "ls-tree", "HEAD").stdout.should contain("initial.txt")
       GitOracle.run(root, "fsck", "--no-reflogs")
     end
@@ -286,10 +285,10 @@ describe "P18/P19 coordinated index recovery failure boundaries" do
       File.symlink(original_index + ".original", original_index)
       refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
       expect_raises(Git::Error) do
-        repo.change_index_and_refs_recoverably(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "redirected-index")
+        repo.recovery.apply(GitIndexRefOracle.edits(fixture[:blob]), refs, id: "redirected-index")
       end
-      repo.pending_ref_recoveries.should be_empty
-      repo.resolve_ref?("refs/heads/main").should eq(fixture[:old_oid])
+      repo.recovery.pending.should be_empty
+      repo.refs.resolve?("refs/heads/main").should eq(fixture[:old_oid])
       File.read(original_index + ".original").should eq("not an index")
     end
   end
@@ -302,10 +301,10 @@ describe "P18/P19 coordinated index recovery failure boundaries" do
       edits << Git::Index::Remove.new("joint.txt")
       refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
       expect_raises(Git::Error, /duplicate Git index change/) do
-        repo.change_index_and_refs_recoverably(edits, refs, id: "duplicate-edit")
+        repo.recovery.apply(edits, refs, id: "duplicate-edit")
       end
-      repo.pending_ref_recoveries.should be_empty
-      repo.resolve_ref?("refs/heads/main").should eq(fixture[:old_oid])
+      repo.recovery.pending.should be_empty
+      repo.refs.resolve?("refs/heads/main").should eq(fixture[:old_oid])
       File.exists?(File.join(root, ".git", "index")).should be_false
     end
   end
@@ -319,10 +318,10 @@ describe "P18/P19 coordinated index recovery failure boundaries" do
       edits << Git::Index::Remove.new("old.txt")
       refs = GitIndexRefOracle.refs(fixture[:old_oid], fixture[:new_oid], fixture[:actor])
       expect_raises(Git::References::PartialPublication) do
-        repo.change_index_and_refs_recoverably(edits, refs, id: "remove-and-add",
+        repo.recovery.apply(edits, refs, id: "remove-and-add",
           after_index_publish: -> { raise "stop" })
       end
-      repo.recover_index_and_refs("remove-and-add")
+      repo.recovery.resume("remove-and-add")
       repo.write_index_tree.should eq(fixture[:tree])
       GitOracle.run(root, "ls-files", "--stage").stdout.should_not contain("old.txt")
       GitOracle.run(root, "fsck", "--no-reflogs")
@@ -338,17 +337,17 @@ it "P18/19-O15 refuses missing or wrong-type staged objects before durable branc
     bad = [] of Git::Index::Edit
     bad << Git::Index::Put.new("dangling.txt", "100644", nil_oid)
     expect_raises(Git::Error, /not available/) do
-      repo.commit_index_changes_recoverably(bad, id: "missing-blob", author: actor,
+      repo.recovery.commit(bad, id: "missing-blob", author: actor,
         committer: actor, message: "would dangle")
     end
     tree = repo.write_tree([] of Git::Tree::Entry)
     bad[0] = Git::Index::Put.new("not-blob.txt", "100644", tree)
     expect_raises(Git::Error, /does not name a blob/) do
-      repo.commit_index_changes_recoverably(bad, id: "wrong-kind", author: actor,
+      repo.recovery.commit(bad, id: "wrong-kind", author: actor,
         committer: actor, message: "wrong kind")
     end
-    repo.pending_ref_recoveries.should be_empty
-    repo.head[1].should be_nil
+    repo.recovery.pending.should be_empty
+    repo.head.oid.should be_nil
     File.exists?(File.join(root, ".git", "index")).should be_false
   end
 end

@@ -15,7 +15,7 @@ module Git
       roots = [] of String
       starts.each do |start|
         check.try &.call
-        next if start == "HEAD" && repository.head[1].nil?
+        next if start == "HEAD" && repository.head_ref_and_oid[1].nil?
         root = resolve_commit(repository, start, max_commit_bytes, check)
         roots << root unless roots.includes?(root)
       end
@@ -44,7 +44,7 @@ module Git
         discovered += 1
         raise Error.new("Git history node budget exceeded") if discovered > max_nodes
         active.add(oid)
-        commit = repository.commit(oid, max_commit_bytes) { check.try &.call }
+        commit = repository.read_commit(oid, max_bytes: max_commit_bytes, check: check)
         loaded[oid] = commit
         stack << {oid, true}
         # Exact parent sequence from the commit body is preserved; a second
@@ -63,7 +63,7 @@ module Git
         return Revision.resolve_commit(repository, source, max_bytes, check, max_hops: max_hops)
       end
       oid = if source == "HEAD"
-              repository.head[1]
+              repository.head_ref_and_oid[1]
             elsif source.starts_with?("refs/")
               repository.resolve_ref?(source)
             elsif source.bytesize == repository.object_format.hexsize

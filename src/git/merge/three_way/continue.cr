@@ -3,13 +3,13 @@ module Git
     # Create a two-parent merge commit only after all conflicts have been
     # resolved into stage-zero index entries. The branch remains unchanged
     # while conflicts are present; a stale HEAD or rewritten MERGE_HEAD fails.
-    def merge_continue(*, author : Signature, committer : Signature,
-                       message : String? = nil, max_object_bytes : Int32 = 8_388_608,
-                       max_index_bytes : Int32 = 8_388_608,
-                       check : Proc(Nil)? = nil) : String
+    protected def merge_continue(*, author : Signature, committer : Signature,
+                                 message : String? = nil, max_object_bytes : Int32 = 8_388_608,
+                                 max_index_bytes : Int32 = 8_388_608,
+                                 check : Proc(Nil)? = nil) : String
       require_worktree!
       branch, ours, theirs = merge_state? || raise Error.new("no Git merge in progress")
-      raise Error.new("Git merge HEAD changed since start") unless head == {branch, ours}
+      raise Error.new("Git merge HEAD changed since start") unless head_ref_and_oid == {branch, ours}
       snapshot = @index.snapshot_checksum(max_index_bytes)
       raise Error.new("Git merge has unresolved paths") if @index.entries(max_index_bytes) { check.try &.call }.any? { |entry| entry.stage != 0 }
       admin = DescriptorPath::Directory.open(@git_dir)
@@ -22,7 +22,7 @@ module Git
           committer: committer, message: text, max_bytes: max_object_bytes, check: check)
         checked = -> do
           check.try &.call
-          raise Error.new("Git merge changed during commit") unless head == {branch, ours} &&
+          raise Error.new("Git merge changed during commit") unless head_ref_and_oid == {branch, ours} &&
                                                                     merge_state? == {branch, ours, theirs} &&
                                                                     @index.snapshot_checksum(max_index_bytes) == snapshot
         end
@@ -32,7 +32,7 @@ module Git
             log: References::LogEntry.new(committer, "merge #{theirs}: #{text.lines.first? || ""}"),
             max_object_bytes: max_object_bytes, check: checked)
         rescue ex
-          raise Merge::PartialCommit.new(oid, ex) if head == {branch, oid}
+          raise Merge::PartialCommit.new(oid, ex) if head_ref_and_oid == {branch, oid}
           raise ex
         end
         # A late error leaves merge metadata in place. Manual inspection is

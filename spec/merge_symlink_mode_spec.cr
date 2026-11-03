@@ -21,7 +21,7 @@ describe "P30 native Git symlink and independent mode merges" do
         GitOracle.run(root, "commit", "-qm", "ours")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         result.commit_oid.should_not be_nil
         File.symlink?(File.join(root, "link")).should be_true
@@ -48,13 +48,13 @@ describe "P30 native Git symlink and independent mode merges" do
         GitOracle.run(root, "commit", "-qm", "ours")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should eq(["link"])
-        repo.merge_conflicts.first.base.not_nil!.mode.should eq("120000")
+        repo.merge.conflicts.first.base.not_nil!.mode.should eq("120000")
         GitOracle.run(root, "ls-files", "-u", "link").stdout.lines.size.should eq(3)
         File.symlink?(File.join(root, "link")).should be_true
         File.readlink(File.join(root, "link")).should eq("ours")
-        repo.merge_abort
+        repo.merge.abort
         File.readlink(File.join(root, "link")).should eq("ours")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
@@ -75,10 +75,10 @@ describe "P30 native Git symlink and independent mode merges" do
         GitOracle.run(root, "commit", "-qm", "ours")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        repo.merge_three_way("topic", author: sig, committer: sig, message: "merge").conflicts.should eq(["link"])
+        repo.merge("topic", author: sig, committer: sig, message: "merge").conflicts.should eq(["link"])
         GitOracle.run(root, "ls-files", "-u", "link").stdout.lines.size.should eq(2)
         File.readlink(File.join(root, "link")).should eq("theirs")
-        repo.merge_abort
+        repo.merge.abort
         File.symlink?(File.join(root, "link")).should be_false
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
@@ -108,7 +108,7 @@ describe "P30 native Git symlink and independent mode merges" do
         GitOracle.run(root, "merge", "--abort")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         result.commit_oid.should_not be_nil
         File.read(path).should eq(oracle_content)
@@ -128,7 +128,8 @@ describe "P30 native Git symlink safety and staging" do
         repo = Git::Repository.new(root)
         oid = repo.stage_file("link")
         GitOracle.run(root, "ls-files", "--stage", "link").stdout.should eq("120000 #{oid} 0\tlink\n")
-        kind, raw = repo.object(oid, 8_388_608) { }
+        stored = repo.read_object(oid, max_bytes: 8_388_608)
+        kind, raw = stored.type.to_s, stored.data
         kind.should eq("blob")
         raw.should eq("missing-and-never-followed")
         File.symlink?(link).should be_true
@@ -151,7 +152,7 @@ describe "P30 native Git symlink safety and staging" do
         GitOracle.run(root, "commit", "-qm", "ours")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         File.symlink?(File.join(root, "leaf")).should be_true
         File.readlink(File.join(root, "leaf")).should eq("destination")
@@ -178,7 +179,7 @@ describe "P30 native Git symlink safety and staging" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error, /dirty/) do
-          repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+          repo.merge("topic", author: sig, committer: sig, message: "merge")
         end
         File.readlink(File.join(root, "link")).should eq("dirty")
         File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false

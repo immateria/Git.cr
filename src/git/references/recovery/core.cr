@@ -1,6 +1,6 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
       # Durable, caller-initiated forward recovery for the files-reference backend.
       # This is a redo journal, NOT a claim of globally atomic filesystem writes.
       # The original mixed-ref writer remains the only publisher of Git refs.

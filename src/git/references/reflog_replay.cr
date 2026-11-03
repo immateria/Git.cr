@@ -1,6 +1,6 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
       # A reflog replay step is tied to the exact previous file prefix and
       # complete encoded entry. The journal stores only a digest of the
       # previous bytes, not their potentially large or private content.

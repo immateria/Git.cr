@@ -1,5 +1,5 @@
 module Git
-  module Merge
+  struct Merge
     # One edit against the base's half-open line interval. Replacement lines
     # are byte-exact; no newline conversion or Git attribute filtering.
     record LineEdit, start : Int32, stop : Int32, replacement : Array(String)

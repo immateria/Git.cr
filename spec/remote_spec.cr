@@ -71,8 +71,8 @@ describe "Git remote operations" do
         File.readlink(File.join(native, "link")).should eq("src/main.cr")
         Dir.exists?(File.join(native, "vendor", "sub")).should be_true
         File.read(File.join(native, "src", "deep", "data.bin")).should eq(File.read(File.join(source, "src", "deep", "data.bin")))
-        repo.remote("origin").url.should eq(source)
-        repo.branch_upstream("main").should eq({"origin", "refs/heads/main"})
+        repo.remotes["origin"].url.should eq(source)
+        repo.branches.upstream("main").should eq(Git::Branch::Upstream.new("origin", "refs/heads/main"))
       end
     end
   end
@@ -210,15 +210,15 @@ describe "Git remote operations" do
           repo = Git::Repository.new(native)
           File.write(File.join(native, "native.txt"), "from native\n")
           repo.stage_file("native.txt")
-          commit = repo.commit_staged(author: SIG, committer: SIG, message: "native commit\n")
-          repo.create_tag("native-tag", message: "tagged natively\n", tagger: SIG)
+          commit = repo.commit(author: SIG, committer: SIG, message: "native commit\n")
+          repo.tags.create("native-tag", message: "tagged natively\n", tagger: SIG)
           pushed = repo.push("origin", ["main", "main:refs/heads/native-branch", "refs/tags/native-tag"], actor: SIG)
           pushed.success?.should be_true
           pushed.pack_objects.should be > 0
           GitOracle.run(served, "rev-parse", "main", "native-branch").stdout.lines.should eq([commit, commit])
           GitOracle.run(served, "cat-file", "-t", "native-tag").stdout.strip.should eq("tag")
           GitOracle.run(served, "fsck", "--strict", "--no-dangling")
-          repo.resolve_ref?("refs/remotes/origin/main").should eq(commit)
+          repo.refs.resolve?("refs/remotes/origin/main").should eq(commit)
 
           # The remote moves on; a non-fast-forward push is refused locally,
           # fetch picks the change up, and a forced push wins.
@@ -229,7 +229,7 @@ describe "Git remote operations" do
           GitOracle.run(oracle, "push", "-q", "origin", "main")
           File.write(File.join(native, "native2.txt"), "again\n")
           repo.stage_file("native2.txt")
-          local = repo.commit_staged(author: SIG, committer: SIG, message: "native again\n")
+          local = repo.commit(author: SIG, committer: SIG, message: "native again\n")
           refused = repo.push("origin")
           refused.success?.should be_false
           refused.rejected.first.reason.should eq("fetch first")
@@ -242,7 +242,7 @@ describe "Git remote operations" do
           # Delete over HTTP.
           repo.push("origin", [":native-branch"]).updates.first.status.should eq(Git::Push::Update::Status::Deleted)
           GitOracle.run(served, "rev-parse", "--verify", "-q", "refs/heads/native-branch", check: false).success?.should be_false
-          repo.resolve_ref?("refs/remotes/origin/native-branch").should be_nil
+          repo.refs.resolve?("refs/remotes/origin/native-branch").should be_nil
 
           # Shallow native clone.
           shallow = File.join(base, "shallow")
@@ -265,26 +265,26 @@ describe "Git remote operations" do
       repo = Git::Repository.clone(bare, native)
       File.write(File.join(native, "a.txt"), "a\n")
       repo.stage_file("a.txt")
-      first = repo.commit_staged(author: SIG, committer: SIG, message: "a\n")
+      first = repo.commit(author: SIG, committer: SIG, message: "a\n")
       result = repo.push
       result.success?.should be_true
       GitOracle.run(bare, "rev-parse", "main").stdout.strip.should eq(first)
       repo.push.updates.first.status.should eq(Git::Push::Update::Status::UpToDate)
 
       # Tags are not moved without force.
-      repo.create_tag("moving")
+      repo.tags.create("moving")
       repo.push("origin", ["refs/tags/moving"]).success?.should be_true
       File.write(File.join(native, "b.txt"), "b\n")
       repo.stage_file("b.txt")
-      second = repo.commit_staged(author: SIG, committer: SIG, message: "b\n")
-      repo.update_ref("refs/tags/moving", second, expected_oid: first)
+      second = repo.commit(author: SIG, committer: SIG, message: "b\n")
+      repo.refs.update("refs/tags/moving", second, expected_oid: first)
       repo.push("origin", ["refs/tags/moving"]).rejected.first.reason.should eq("already exists")
       repo.push("origin", ["+refs/tags/moving"]).success?.should be_true
       GitOracle.run(bare, "rev-parse", "moving").stdout.strip.should eq(second)
 
       # Atomic pushes fail as a whole.
       repo.push("origin", ["main"]).success?.should be_true
-      repo.update_ref("refs/heads/main", first, expected_oid: second)
+      repo.refs.update("refs/heads/main", first, expected_oid: second)
       atomic = repo.push("origin", ["main", "main:refs/heads/fresh"], atomic: true)
       atomic.success?.should be_false
       GitOracle.run(bare, "rev-parse", "--verify", "-q", "refs/heads/fresh", check: false).success?.should be_false
@@ -294,7 +294,7 @@ describe "Git remote operations" do
       other = Git::Repository.clone(native, worktree_clone)
       File.write(File.join(worktree_clone, "c.txt"), "c\n")
       other.stage_file("c.txt")
-      other.commit_staged(author: SIG, committer: SIG, message: "c\n")
+      other.commit(author: SIG, committer: SIG, message: "c\n")
       denied = other.push("origin", ["main"])
       denied.updates.first.status.should eq(Git::Push::Update::Status::RemoteRejected)
       denied.updates.first.reason.should eq("branch is currently checked out")
@@ -306,30 +306,30 @@ describe "Git remote operations" do
     GitOracle.with_repo do |root|
       remote_source(root)
       repo = Git::Repository.new(root)
-      repo.add_remote("upstream", "https://example.invalid/upstream.git")
-      repo.add_remote("mirror", "/srv/mirror.git", fetch: ["+refs/*:refs/mirror/*"], tag_mode: Git::Remote::TagMode::None)
+      repo.remotes.add("upstream", "https://example.invalid/upstream.git")
+      repo.remotes.add("mirror", "/srv/mirror.git", fetch: ["+refs/*:refs/mirror/*"], tag_mode: Git::Remote::TagMode::None)
       GitOracle.run(root, "remote", "-v").stdout.lines.sort.should eq([
         "mirror\t/srv/mirror.git (fetch)", "mirror\t/srv/mirror.git (push)",
         "upstream\thttps://example.invalid/upstream.git (fetch)", "upstream\thttps://example.invalid/upstream.git (push)",
       ])
       GitOracle.run(root, "config", "remote.mirror.tagOpt").stdout.strip.should eq("--no-tags")
-      repo.remote_names.should eq(["upstream", "mirror"])
-      repo.remote("upstream").fetch_refspecs.map(&.to_s).should eq(["+refs/heads/*:refs/remotes/upstream/*"])
+      repo.remotes.names.should eq(["upstream", "mirror"])
+      repo.remotes["upstream"].fetch_refspecs.map(&.to_s).should eq(["+refs/heads/*:refs/remotes/upstream/*"])
       head = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
-      repo.update_ref("refs/remotes/upstream/main", head, expected_oid: nil)
-      repo.set_symbolic_ref("refs/remotes/upstream/HEAD", "refs/remotes/upstream/main")
-      repo.set_branch_upstream("main", "upstream", "refs/heads/main")
-      repo.rename_remote("upstream", "origin")
+      repo.refs.update("refs/remotes/upstream/main", head, expected_oid: nil)
+      repo.refs.set_symbolic("refs/remotes/upstream/HEAD", "refs/remotes/upstream/main")
+      repo.branches.set_upstream("main", Git::Branch::Upstream.new("upstream", "refs/heads/main"))
+      repo.remotes.rename("upstream", "origin")
       GitOracle.run(root, "config", "--get", "remote.origin.fetch").stdout.strip.should eq("+refs/heads/*:refs/remotes/origin/*")
       GitOracle.run(root, "config", "--get", "branch.main.remote").stdout.strip.should eq("origin")
       GitOracle.run(root, "rev-parse", "refs/remotes/origin/main").stdout.strip.should eq(head)
       GitOracle.run(root, "symbolic-ref", "refs/remotes/origin/HEAD").stdout.strip.should eq("refs/remotes/origin/main")
-      repo.remove_remote("origin")
+      repo.remotes.remove("origin")
       GitOracle.run(root, "config", "--get", "branch.main.remote", check: false).success?.should be_false
       refs_of(root, "refs/remotes/").should eq("")
       GitOracle.run(root, "remote").stdout.should eq("mirror\n")
-      expect_raises(Git::Error, /invalid Git remote name/) { repo.add_remote("bad name", "x") }
-      expect_raises(Git::Error, /already exists/) { repo.add_remote("mirror", "x") }
+      expect_raises(Git::Error, /invalid Git remote name/) { repo.remotes.add("bad name", "x") }
+      expect_raises(Git::Error, /already exists/) { repo.remotes.add("mirror", "x") }
     end
   end
 

@@ -25,13 +25,13 @@ describe "native Git differential fixture infrastructure" do
       GitOracle.run(root, "pack-refs", "--all", "--prune")
       git_head = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
       store = Git::Repository.new(root)
-      store.head[1].should eq(git_head)
-      store.resolve_ref?("refs/heads/side").should eq(git_head)
-      store.resolve_ref?("refs/tags/start").should eq(git_head)
+      store.head.oid.should eq(git_head)
+      store.refs.resolve?("refs/heads/side").should eq(git_head)
+      store.refs.resolve?("refs/tags/start").should eq(git_head)
       blob_oid = GitOracle.run(root, "rev-parse", "HEAD:blob.txt").stdout.strip
-      store.read_head_file("blob.txt", 16 * 1024) { nil }.should eq({blob_oid, "one\n"})
+      store.read_head_file("blob.txt", max_bytes: 16 * 1024).should eq("one\n")
       GitOracle.run(root, "checkout", "-q", "--detach", "HEAD")
-      Git::Repository.new(root).head.should eq({nil, git_head})
+      Git::Repository.new(root).head.should eq(Git::References::Ref.new("HEAD", git_head, nil))
     end
   end
 
@@ -42,7 +42,7 @@ describe "native Git differential fixture infrastructure" do
       staged = GitOracle.run(root, "ls-files", "--stage", "-z").stdout
       oid = GitOracle.run(root, "hash-object", "a.txt").stdout.strip
       GitOracle.assert_bytes!(staged, "100644 #{oid} 0\ta.txt\0", "P01-O03")
-      Git::Repository.new(root).staged_changes(32 * 1024, 4) { nil }[0].map(&.path).should eq(["a.txt"])
+      Git::Repository.new(root).staged_changes(max_bytes: 32 * 1024, limit: 4).map(&.path).should eq(["a.txt"])
     end
   end
 
@@ -53,14 +53,15 @@ describe "native Git differential fixture infrastructure" do
       File.write(File.join(root, "cache", "file.txt"), "ignore\n")
       GitOracle.run(root, "check-ignore", "-q", "cache/file.txt")
       store = Git::Repository.new(root)
-      changes, _, ignored = store.working_changes(32 * 1024, 30) { nil }
+      changes = store.working_changes(max_bytes: 32 * 1024, limit: 30)
+      ignored = changes.ignored
       changes.map(&.path).should_not contain("cache/file.txt")
       ignored.should be > 0
       File.write(File.join(root, "file.txt"), "staged\n")
       GitOracle.run(root, "add", "file.txt")
       raw = File.read(File.join(root, ".git", "index"))
       File.write(File.join(root, ".git", "index"), raw + "broken")
-      expect_raises(Git::Error) { store.staged_changes(32 * 1024, 30) { nil } }
+      expect_raises(Git::Error) { store.staged_changes(max_bytes: 32 * 1024, limit: 30) }
     end
   end
 
@@ -73,9 +74,9 @@ describe "native Git differential fixture infrastructure" do
       GitOracle.run(root, "worktree", "add", "-q", "-b", "linked", linked)
       pointer = File.read(File.join(linked, ".git")).strip
       admin = File.expand_path(pointer.sub("gitdir: ", ""), linked)
-      Git::Repository.new(linked, linked_worktree_admin_dir: admin).head[1].should eq(
+      Git::Repository.new(linked, linked_worktree_admin_dir: admin).head.oid.should eq(
         GitOracle.run(linked, "rev-parse", "HEAD").stdout.strip)
-      Git::Repository.new(linked).head[1].should eq(GitOracle.run(linked, "rev-parse", "HEAD").stdout.strip)
+      Git::Repository.new(linked).head.oid.should eq(GitOracle.run(linked, "rev-parse", "HEAD").stdout.strip)
       expect_raises(Git::Error) { Git::Repository.new(linked, follow_gitfile: false) }
     end
   end
@@ -90,10 +91,10 @@ describe "SHA-256 Git object-format parity" do
       store = Git::Repository.new(root)
       head = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
       blob = GitOracle.run(root, "rev-parse", "HEAD:a.txt").stdout.strip
-      store.head[1].should eq(head)
-      store.commit(head, 128 * 1024) { nil }.subject.should eq("sha256 base")
-      store.read_head_file("a.txt", 128 * 1024) { nil }.should eq({blob, "sha256 content\n"})
-      store.staged_changes(128 * 1024, 20) { nil }[0].should be_empty
+      store.head.oid.should eq(head)
+      store.read_commit(head, max_bytes: 128 * 1024).subject.should eq("sha256 base")
+      store.read_head_file("a.txt", max_bytes: 128 * 1024).should eq("sha256 content\n")
+      store.staged_changes(max_bytes: 128 * 1024, limit: 20).should be_empty
     end
   end
 
@@ -110,15 +111,15 @@ describe "SHA-256 Git object-format parity" do
       GitOracle.run(root, "gc", "--prune=now")
       store = Git::Repository.new(root)
       oid = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
-      store.commit(oid, 128 * 1024) { nil }.parents.size.should eq(1)
-      store.resolve_ref?("refs/heads/side").should eq(oid)
+      store.read_commit(oid, max_bytes: 128 * 1024).parents.size.should eq(1)
+      store.refs.resolve?("refs/heads/side").should eq(oid)
       File.write(File.join(root, "a.txt"), "staged\n")
       GitOracle.run(root, "add", "a.txt")
       File.write(File.join(root, "a.txt"), "working\n")
-      staged, _ = store.staged_changes(128 * 1024, 20) { nil }
+      staged = store.staged_changes(max_bytes: 128 * 1024, limit: 20)
       staged.map(&.path).should eq(["a.txt"])
       staged[0].index_oid.should eq(GitOracle.run(root, "rev-parse", ":a.txt").stdout.strip)
-      working, _, _ = store.working_changes(128 * 1024, 20) { nil }
+      working = store.working_changes(max_bytes: 128 * 1024, limit: 20)
       working.find { |entry| entry.path == "a.txt" }.not_nil!.worktree_oid.should eq(
         GitOracle.run(root, "hash-object", "a.txt").stdout.strip)
     end
@@ -143,7 +144,8 @@ describe "SHA-256 Git interoperability negatives and index variants" do
         raw.byte_slice(4, 4).to_slice.hexstring.should eq("%08x" % version)
         native = Git::Repository.new(root)
         native.object_format.should eq(Git::ObjectId::Format::SHA256)
-        staged, truncated = native.staged_changes(128 * 1024, 10) { nil }
+        staged = native.staged_changes(max_bytes: 128 * 1024, limit: 10)
+        truncated = staged.truncated?
         truncated.should be_false
         staged.map(&.path).should eq(["one.txt"])
         staged[0].index_oid.should eq(GitOracle.run(root, "rev-parse", ":one.txt").stdout.strip)
@@ -162,9 +164,9 @@ describe "SHA-256 Git interoperability negatives and index variants" do
       store = Git::Repository.new(root)
       store.object_format.should eq(Git::ObjectId::Format::SHA256)
       ["0" * 40, "a" * 63, "f" * 65, "F" * 64, "../" + "a" * 61].each do |bad|
-        expect_raises(Git::Error, /unsupported Git OID/) { store.object(bad, 4096) { nil } }
+        expect_raises(Git::Error, /unsupported Git OID/) { store.read_object(bad, max_bytes: 4096) }
       end
-      expect_raises(Git::Error, /not available/) { store.object("0" * 64, 4096) { nil } }
+      expect_raises(Git::Error, /not available/) { store.read_object("0" * 64, max_bytes: 4096) }
     end
   end
 
@@ -176,7 +178,7 @@ describe "SHA-256 Git interoperability negatives and index variants" do
       GitOracle.run(root, "gc", "--prune=now")
       oid = GitOracle.run(root, "rev-parse", "HEAD:blob.txt").stdout.strip
       store = Git::Repository.new(root)
-      store.object(oid, 4096) { nil }[1].should eq("packed sha256\n")
+      store.read_object(oid, max_bytes: 4096).data.should eq("packed sha256\n")
       packdir = File.join(root, ".git", "objects", "pack")
       idx = Dir.glob(File.join(packdir, "*.idx")).first
       pack = idx.sub(/\.idx\z/, ".pack")
@@ -188,7 +190,7 @@ describe "SHA-256 Git interoperability negatives and index variants" do
         tampered = index_contents.dup
         tampered[tampered.size - 1] ^= 1
         File.write(idx, tampered)
-        expect_raises(Git::Error, /checksum/) { store.object(oid, 4096) { nil } }
+        expect_raises(Git::Error, /checksum/) { store.read_object(oid, max_bytes: 4096) }
       ensure
         File.write(idx, index_contents)
       end
@@ -197,7 +199,7 @@ describe "SHA-256 Git interoperability negatives and index variants" do
         tampered = pack_contents.dup
         tampered[tampered.size - 1] ^= 1
         File.write(pack, tampered)
-        expect_raises(Git::Error, /checksum differs/) { store.object(oid, 4096) { nil } }
+        expect_raises(Git::Error, /checksum differs/) { store.read_object(oid, max_bytes: 4096) }
       ensure
         File.write(pack, pack_contents)
       end
@@ -213,13 +215,13 @@ describe "SHA-256 Git interoperability negatives and index variants" do
         File.write(config, original.sub(/repositoryformatversion = 1/i, "repositoryformatversion = 0"))
         expect_raises(Git::Error, /requires format version 1/) { Git::Repository.new(root) }
         File.write(config, original.sub(/objectformat = sha256/i, "objectformat = sha1"))
-        expect_raises(Git::Error, /format changed/) { store.check! }
+        expect_raises(Git::Error, /format changed/) { store.revalidate! }
         File.write(config, original + "\n[extensions]\nrefStorage = reftable\n")
         expect_raises(Git::Error, /unsupported Git repository extension/) { Git::Repository.new(root) }
       ensure
         File.write(config, original)
       end
-      store.check!
+      store.revalidate!
     end
   end
 end
@@ -250,7 +252,8 @@ describe "SHA-256 Git REF_DELTA objects" do
       GitOracle.run(root, "prune-packed")
       native = Git::Repository.new(root)
       delta_ids.each do |oid|
-        kind, data = native.object(oid, 128 * 1024) { nil }
+        stored = native.read_object(oid, max_bytes: 128 * 1024)
+        kind, data = stored.type.to_s, stored.data
         kind.should eq("blob")
         data.should eq(GitOracle.run(root, "cat-file", "blob", oid).stdout)
       end

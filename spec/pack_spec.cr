@@ -53,7 +53,8 @@ describe "Git::Pack" do
         checksum = File.open(target, "wb") do |io|
           writer = Git::Pack::Writer.new(io, format_of(format), oids.size)
           oids.each do |oid|
-            kind, data = repo.object(oid, 1 << 20) { nil }
+            stored = repo.read_object(oid, max_bytes: 1 << 20)
+            kind, data = stored.type.to_s, stored.data
             offset, crc = writer.write_object(kind, data.to_slice)
             entries << Git::Pack::IndexEntry.new(oid, offset, crc)
           end
@@ -88,11 +89,11 @@ describe "Git::Pack" do
         published.appended_bases.should be > 0
         published.object_count.should eq(published.entries.size)
         File.exists?(published.index_path.not_nil!).should be_true
-        repo.update_ref("refs/heads/main", head, expected_oid: old)
+        repo.refs.update("refs/heads/main", head, expected_oid: old)
         GitOracle.run(clone, "fsck", "--strict", "--no-dangling").success?.should be_true
         GitOracle.run(clone, "verify-pack", published.index_path.not_nil!).success?.should be_true
         GitOracle.run(clone, "cat-file", "-p", "#{head}:notes.txt").stdout.should end_with("appended\n")
-        repo.object(head, 1 << 20) { nil }[0].should eq("commit")
+        repo.read_object(head, max_bytes: 1 << 20).type.should eq(Git::ObjectType::Commit)
 
         # Receiving the same objects again publishes nothing new.
         again = repo.index_pack(IO::Memory.new(thin))
@@ -213,7 +214,7 @@ describe "Git object headers" do
       check = ->(label : String) do
         GitOracle.run(root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype) %(objectsize)").stdout.lines.each do |line|
           oid, type, size = line.split
-          {label, oid, repo.object_header(oid)}.should eq({label, oid, {type, size.to_i64}})
+          {label, oid, repo.object_header(oid)}.should eq({label, oid, Git::ObjectHeader.new(Git::ObjectType.parse(type), size.to_i64)})
         end
       end
       check.call("loose")

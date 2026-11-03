@@ -5,14 +5,14 @@ module Git
     # refuses untracked target collisions, D/F transitions, symlinks,
     # gitlinks, sparse paths and a linked-worktree configuration. Changes
     # to worktree, ref and index are NOT an atomic Git transaction.
-    def reset_head_hard(source : String = "HEAD", *,
-                        log : References::LogEntry? = nil,
-                        max_object_bytes : Int32 = 8_388_608,
-                        max_index_bytes : Int32 = 8_388_608,
-                        max_total_bytes : Int64 = 67_108_864,
-                        max_entries : Int32 = 10_000,
-                        clean_only : Bool = false,
-                        check : Proc(Nil)? = nil) : Reset::Result
+    protected def reset_head_hard(source : String = "HEAD", *,
+                                  log : References::LogEntry? = nil,
+                                  max_object_bytes : Int32 = 8_388_608,
+                                  max_index_bytes : Int32 = 8_388_608,
+                                  max_total_bytes : Int64 = 67_108_864,
+                                  max_entries : Int32 = 10_000,
+                                  clean_only : Bool = false,
+                                  check : Proc(Nil)? = nil) : Reset::Result
       require_worktree!
       raise Error.new("Git hard reset refuses in-progress merge") if merge_state?
       raise Error.new("Git hard reset refuses in-progress sequencer operation") if sequencer_state?
@@ -23,12 +23,12 @@ module Git
       check!
       raise Error.new("Git hard reset unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                  (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
-      reference, previous = head
+      reference, previous = head_ref_and_oid
       raise Error.new("Git hard reset requires a symbolic branch HEAD") unless reference &&
                                                                                reference.starts_with?("refs/heads/") && previous
       target = History.resolve_commit(self, source, max_object_bytes, check)
-      old_tree = commit(previous, max_object_bytes) { check.try &.call }.tree
-      target_tree = commit(target, max_object_bytes) { check.try &.call }.tree
+      old_tree = read_commit(previous, max_bytes: max_object_bytes, check: check).tree
+      target_tree = read_commit(target, max_bytes: max_object_bytes, check: check).tree
       old = Checkout.tree_files(self, old_tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check)
       desired = Checkout.tree_files(self, target_tree, max_object_bytes: max_object_bytes,
@@ -112,7 +112,7 @@ module Git
         locked = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
-          raise Error.new("Git hard reset HEAD changed") unless head == {reference, previous}
+          raise Error.new("Git hard reset HEAD changed") unless head_ref_and_oid == {reference, previous}
           raise Error.new("Git hard reset index changed") unless @index.snapshot_checksum(max_index_bytes) == checksum
         end
         guard.call

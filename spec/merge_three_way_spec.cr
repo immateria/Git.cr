@@ -23,7 +23,7 @@ describe "P29 native Git three-way merge and recovery" do
         previous = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "Merge topic\n")
+        result = repo.merge("topic", author: sig, committer: sig, message: "Merge topic\n")
         result.ours.should eq(previous)
         result.theirs.should eq(topic)
         result.base.should eq(base)
@@ -60,29 +60,29 @@ describe "P29 native Git three-way merge and recovery" do
         our_blob = GitOracle.run(root, "rev-parse", "HEAD:shared").stdout.strip
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "Merge topic\n")
+        result = repo.merge("topic", author: sig, committer: sig, message: "Merge topic\n")
         result.conflicts.should eq(["shared"])
-        repo.merge_conflicts.should eq([Git::Merge::Conflict.new("shared",
+        repo.merge.conflicts.should eq([Git::Merge::Conflict.new("shared",
           Git::Checkout::FileState.new("100644", base_blob),
           Git::Checkout::FileState.new("100644", our_blob),
           Git::Checkout::FileState.new("100644", their_blob))])
         result.commit_oid.should be_nil
         result.changed_paths.should eq(["shared"])
-        repo.head[1].should eq(ours)
+        repo.head.oid.should eq(ours)
         GitOracle.run(root, "ls-files", "--stage", "shared").stdout.lines.map(&.strip).should eq([
           "100644 #{base_blob} 1\tshared", "100644 #{our_blob} 2\tshared", "100644 #{their_blob} 3\tshared",
         ])
         File.read(File.join(root, "shared")).should eq("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n")
-        repo.merge_state?.should eq({"refs/heads/main", ours, theirs})
-        expect_raises(Git::Error, /unresolved/) { repo.merge_continue(author: sig, committer: sig) }
+        repo.merge.state?.should eq(Git::Merge::State.new("refs/heads/main", ours, theirs))
+        expect_raises(Git::Error, /unresolved/) { repo.merge.continue(author: sig, committer: sig) }
         File.write(File.join(root, "shared"), "resolved\n")
         repo.stage_file("shared")
-        commit = repo.merge_continue(author: sig, committer: sig)
+        commit = repo.merge.continue(author: sig, committer: sig)
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(commit)
         GitOracle.run(root, "rev-list", "--parents", "-n", "1", "HEAD").stdout.strip.split(' ').should eq([commit, ours, theirs])
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
         File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false
-        repo.merge_state?.should be_nil
+        repo.merge.state?.should be_nil
         GitOracle.run(root, "merge-base", "HEAD^1", "HEAD^2").stdout.strip.should eq(base)
       end
     end
@@ -104,14 +104,14 @@ describe "P29 native Git three-way merge and recovery" do
         ours = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        repo.merge_three_way("topic", author: sig, committer: sig, message: "Merge topic\n").conflicts.should eq(["shared"])
+        repo.merge("topic", author: sig, committer: sig, message: "Merge topic\n").conflicts.should eq(["shared"])
         File.write(File.join(root, "shared"), "interim\n")
-        repo.merge_abort.to_set.should eq(["shared", "extra"].to_set)
+        repo.merge.abort.to_set.should eq(["shared", "extra"].to_set)
         File.read(File.join(root, "shared")).should eq("ours\n")
         File.exists?(File.join(root, "extra")).should be_false
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(ours)
-        repo.merge_state?.should be_nil
+        repo.merge.state?.should be_nil
       end
     end
 
@@ -131,11 +131,11 @@ describe "P29 native Git three-way merge and recovery" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "main"), "dirty\n")
-        expect_raises(Git::Error, /dirty/) { repo.merge_three_way("topic", author: sig, committer: sig, message: "m") }
+        expect_raises(Git::Error, /dirty/) { repo.merge("topic", author: sig, committer: sig, message: "m") }
         File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false
         GitOracle.run(root, "checkout", "--", "main")
         File.write(File.join(root, ".git", "index.lock"), "foreign")
-        expect_raises(Git::Error) { repo.merge_three_way("topic", author: sig, committer: sig, message: "m") }
+        expect_raises(Git::Error) { repo.merge("topic", author: sig, committer: sig, message: "m") }
         File.read(File.join(root, ".git", "index.lock")).should eq("foreign")
         File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false
       end
@@ -157,7 +157,7 @@ describe "P29 native Git three-way merge and recovery" do
         expected = "ONE\ntwo\nthree\nfour\nFIVE\n"
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         result.changed_paths.should eq(["shared"])
         result.commit_oid.should_not be_nil
@@ -181,13 +181,13 @@ describe "P29 native Git three-way merge and recovery" do
         GitOracle.run(root, "commit", "-qm", "ours")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should eq(["shared"])
         GitOracle.run(root, "ls-files", "--stage", "shared").stdout.lines.size.should eq(2)
         GitOracle.run(root, "ls-files", "--stage", "shared").stdout.should contain(" 1\tshared")
         GitOracle.run(root, "ls-files", "--stage", "shared").stdout.should contain(" 3\tshared")
         File.read(File.join(root, "shared")).should eq("theirs\n")
-        repo.merge_abort
+        repo.merge.abort
         File.exists?(File.join(root, "shared")).should be_false
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
@@ -208,14 +208,14 @@ describe "P29 native Git three-way merge and recovery" do
         GitOracle.run(root, "commit", "-qm", "ours")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
-        expect_raises(Git::Error, /in-progress merge/) { repo.reset_head(mode: Git::Reset::Mode::Mixed) }
-        expect_raises(Git::Error, /in-progress merge/) { repo.checkout_branch("topic") }
-        expect_raises(Git::Error, /in-progress merge/) { repo.commit_staged(author: sig, committer: sig, message: "bad") }
+        repo.merge("topic", author: sig, committer: sig, message: "merge")
+        expect_raises(Git::Error, /in-progress merge/) { repo.reset(mode: Git::Reset::Mode::Mixed) }
+        expect_raises(Git::Error, /in-progress merge/) { repo.switch("topic") }
+        expect_raises(Git::Error, /in-progress merge/) { repo.commit(author: sig, committer: sig, message: "bad") }
         expect_raises(Git::Error, /already in progress/) do
-          repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+          repo.merge("topic", author: sig, committer: sig, message: "merge")
         end
-        repo.merge_abort
+        repo.merge.abort
         File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false
       end
     end
@@ -236,13 +236,13 @@ describe "P29 native Git three-way merge and recovery" do
         GitOracle.run(root, "update-index", "--index-version", "4")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        repo.merge_three_way("topic", author: sig, committer: sig, message: "merge").conflicts.should eq(["shared"])
+        repo.merge("topic", author: sig, committer: sig, message: "merge").conflicts.should eq(["shared"])
         GitOracle.run(root, "ls-files", "--stage", "shared").stdout.lines.size.should eq(3)
         File.open(File.join(root, ".git", "index")) do |io|
           io.read_bytes(UInt32, IO::ByteFormat::BigEndian).should eq(0x44495243_u32)
           io.read_bytes(UInt32, IO::ByteFormat::BigEndian).should eq(4_u32)
         end
-        repo.merge_abort
+        repo.merge.abort
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
     end
@@ -266,13 +266,13 @@ describe "P29 native Git three-way merge and recovery" do
           raise Git::Error.new("injected failure") if File.exists?(File.join(root, ".git", "MERGE_HEAD"))
         end
         expect_raises(Git::Merge::PartialPublication, /partially published/) do
-          repo.merge_three_way("topic", author: sig, committer: sig, message: "merge", check: injected)
+          repo.merge("topic", author: sig, committer: sig, message: "merge", check: injected)
         end
         File.exists?(File.join(root, ".git", "index.lock")).should be_false
-        repo.merge_state?.should_not be_nil
-        repo.merge_abort.should be_empty
+        repo.merge.state?.should_not be_nil
+        repo.merge.abort.should be_empty
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.merge_state?.should be_nil
+        repo.merge.state?.should be_nil
       end
     end
 
@@ -291,15 +291,15 @@ describe "P29 native Git three-way merge and recovery" do
         GitOracle.run(root, "commit", "-qm", "ours")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        repo.merge("topic", author: sig, committer: sig, message: "merge")
         File.write(File.join(root, "user-added"), "keep\n")
         repo.stage_file("user-added")
-        expect_raises(Git::Error, /unrelated staged/) { repo.merge_abort }
+        expect_raises(Git::Error, /unrelated staged/) { repo.merge.abort }
         File.read(File.join(root, "user-added")).should eq("keep\n")
         repo.remove_from_index("user-added")
-        repo.merge_abort
+        repo.merge.abort
         File.read(File.join(root, "user-added")).should eq("keep\n")
-        repo.merge_state?.should be_nil
+        repo.merge.state?.should be_nil
       end
     end
 
@@ -322,7 +322,7 @@ describe "P29 native Git three-way merge and recovery" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         expect_raises(Git::Error) do
-          repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+          repo.merge("topic", author: sig, committer: sig, message: "merge")
         end
         File.read(File.join(root, "private")).should eq("private\n")
         File.symlink?(File.join(admin, "MERGE_HEAD")).should be_true
@@ -352,7 +352,7 @@ describe "P29 native Git three-way merge and recovery" do
         GitOracle.run(root, "merge", "--abort")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        result = repo.merge_three_way("topic", author: sig, committer: sig, message: "merge")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
         result.conflicts.should be_empty
         File.read(File.join(root, "shared")).should eq(expected)
         GitOracle.run(root, "show", "HEAD:shared").stdout.should eq(expected)

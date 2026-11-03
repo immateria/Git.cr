@@ -1,5 +1,5 @@
 module Git
-  module Merge
+  struct Merge
     private def self.rename_identity(state : Checkout::FileState) : {String, String}
       kind = {"100644", "100755"}.includes?(state.mode) ? "regular" : state.mode
       {kind, state.oid}

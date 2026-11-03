@@ -34,14 +34,15 @@ describe "independent git shard" do
       git_fixture_git(root, "add", "file.txt")
       File.write(File.join(root, "file.txt"), "not staged\n")
       store = Git::Repository.new(root)
-      store.head[1].should eq(git_fixture_git(root, "rev-parse", "HEAD"))
-      stage, truncated = store.staged_changes(128 * 1024, 20) { nil }
+      store.head.oid.should eq(git_fixture_git(root, "rev-parse", "HEAD"))
+      stage = store.staged_changes(max_bytes: 128 * 1024, limit: 20)
+      truncated = stage.truncated?
       truncated.should be_false
       stage.map(&.path).should eq(["file.txt"])
-      file = store.staged_file("file.txt", 128 * 1024) { nil }.not_nil!
+      file = store.staged_file("file.txt", max_bytes: 128 * 1024).not_nil!
       file.old_text.should eq("before\n")
       file.new_text.should eq("after\n")
-      working, _, _ = store.working_changes(128 * 1024, 20) { nil }
+      working = store.working_changes(max_bytes: 128 * 1024, limit: 20)
       working.map(&.status).should contain("modified")
     end
   end
@@ -62,7 +63,8 @@ describe "independent git shard" do
       File.write(File.join(root, "new.txt"), "new\n")
       File.write(File.join(root, ".git", "info", "exclude"), "excluded.tmp\n")
       File.write(File.join(root, "excluded.tmp"), "ignore\n")
-      changes, _, ignored = Git::Repository.new(root).working_changes(128 * 1024, 60) { nil }
+      changes = Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 60)
+      ignored = changes.ignored
       unknown = changes.select(&.status.==("untracked")).map(&.path).sort
       unknown.should eq([".gitignore", "nested/.gitignore", "nested/keep.bak", "new.txt"])
       ignored.should be >= 3
@@ -80,7 +82,7 @@ describe "independent git shard" do
       git_fixture_git(root, "add", "file.txt")
       File.write(File.join(root, "file.txt"), "unstaged only\n")
       store = Git::Repository.new(root)
-      file = store.staged_file("file.txt", 128 * 1024) { nil }.not_nil!
+      file = store.staged_file("file.txt", max_bytes: 128 * 1024).not_nil!
       patch = Git::TextDiff.unified(file.old_text, file.new_text, file.path, file.old_mode, file.new_mode)
       patch.should contain("+B")
       patch.should_not contain("unstaged only")
@@ -96,7 +98,7 @@ describe "independent git shard" do
       git_fixture_git(root, "add", "file.txt")
       original = File.read(File.join(root, ".git", "index"))
       File.write(File.join(root, ".git", "index"), original + "garbage")
-      expect_raises(Git::Error) { Git::Repository.new(root).working_changes(128 * 1024, 3) { nil } }
+      expect_raises(Git::Error) { Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 3) }
     end
     a = (1..600).map { |i| "old #{i}\n" }.join
     b = (1..600).map { |i| "new #{i}\n" }.join
@@ -112,7 +114,7 @@ describe "native Git staging patch edge cases" do
       git_fixture_git(root, "commit", "-qm", "base")
       File.write(File.join(root, "new.txt"), "without newline")
       git_fixture_git(root, "add", "new.txt")
-      staged = Git::Repository.new(root).staged_file("new.txt", 128 * 1024) { nil }.not_nil!
+      staged = Git::Repository.new(root).staged_file("new.txt", max_bytes: 128 * 1024).not_nil!
       patch = Git::TextDiff.unified(staged.old_text, staged.new_text, staged.path, staged.old_mode, staged.new_mode)
       patch.should contain("No newline at end of file")
       File.write(File.join(root, "patch.bin"), patch)
@@ -133,7 +135,7 @@ describe "native Git staging patch edge cases" do
       git_fixture_git(root, "add", "-A")
       store = Git::Repository.new(root)
       ["file.txt", "deleted.txt"].each do |path|
-        staged = store.staged_file(path, 128 * 1024) { nil }.not_nil!
+        staged = store.staged_file(path, max_bytes: 128 * 1024).not_nil!
         patch = Git::TextDiff.unified(staged.old_text, staged.new_text, path, staged.old_mode, staged.new_mode)
         patch.includes?("@@").should be_true
         File.write(File.join(root, "patch.bin"), patch)
@@ -152,7 +154,7 @@ describe "native Git staging patch edge cases" do
       begin
         File.write(File.join(outside, "secret.txt"), "protected\n")
         File.symlink(outside, File.join(root, "alias"))
-        changes, _, _ = Git::Repository.new(root).working_changes(128 * 1024, 10) { nil }
+        changes = Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 10)
         changes.map(&.path).should contain("alias")
         changes.map(&.path).should_not contain("alias/secret.txt")
       ensure
@@ -190,7 +192,7 @@ describe "Git working-tree scope checks" do
         File.rename(File.join(root, "safe"), File.join(root, "former-safe"))
         File.symlink(outside, File.join(root, "safe"))
         expect_raises(Git::Error) do
-          Git::Repository.new(root).working_changes(128 * 1024, 20, include_untracked: false) { nil }
+          Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 20, include_untracked: false)
         end
       ensure
         FileUtils.rm_rf(outside)
@@ -208,7 +210,7 @@ describe "Git working-tree unified diff" do
       File.write(File.join(root, "file.txt"), "staged\n")
       git_fixture_git(root, "add", "file.txt")
       File.write(File.join(root, "file.txt"), "working\n")
-      file = Git::Repository.new(root).working_file("file.txt", 128 * 1024) { nil }.not_nil!
+      file = Git::Repository.new(root).working_file("file.txt", max_bytes: 128 * 1024).not_nil!
       file.old_text.should eq("staged\n")
       file.new_text.should eq("working\n")
       patch = Git::TextDiff.unified(file.old_text, file.new_text, file.path, file.old_mode, file.new_mode)
@@ -226,9 +228,9 @@ describe "Git working-tree unified diff" do
       git_fixture_git(root, "add", "file.txt")
       git_fixture_git(root, "commit", "-qm", "baseline")
       store = Git::Repository.new(root)
-      store.working_file("file.txt", 128 * 1024) { nil }.should be_nil
+      store.working_file("file.txt", max_bytes: 128 * 1024).should be_nil
       File.delete(File.join(root, "file.txt"))
-      deleted = store.working_file("file.txt", 128 * 1024) { nil }.not_nil!
+      deleted = store.working_file("file.txt", max_bytes: 128 * 1024).not_nil!
       deleted.new_mode.should be_nil
       Git::TextDiff.unified(deleted.old_text, deleted.new_text, deleted.path, deleted.old_mode, deleted.new_mode).should contain("-unchanged")
     end
@@ -241,7 +243,7 @@ describe "Git working-tree unified diff" do
       git_fixture_git(root, "add", "file.txt")
       git_fixture_git(root, "commit", "-qm", "base")
       File.chmod(target, 0o755)
-      work = Git::Repository.new(root).working_file("file.txt", 128 * 1024) { nil }.not_nil!
+      work = Git::Repository.new(root).working_file("file.txt", max_bytes: 128 * 1024).not_nil!
       work.new_mode.should eq("100755")
       patch = Git::TextDiff.unified(work.old_text, work.new_text, work.path, work.old_mode, work.new_mode)
       patch.should contain("new mode 100755")
@@ -260,10 +262,10 @@ describe "Git working-tree unified diff" do
       begin
         File.delete(File.join(root, "file.txt"))
         File.symlink(outside, File.join(root, "file.txt"))
-        expect_raises(Git::Error) { Git::Repository.new(root).working_file("file.txt", 128 * 1024) { nil } }
+        expect_raises(Git::Error) { Git::Repository.new(root).working_file("file.txt", max_bytes: 128 * 1024) }
         File.delete(File.join(root, "file.txt"))
         File.write(File.join(root, "file.txt"), "binary\0content")
-        expect_raises(Git::Error) { Git::Repository.new(root).working_file("file.txt", 128 * 1024) { nil } }
+        expect_raises(Git::Error) { Git::Repository.new(root).working_file("file.txt", max_bytes: 128 * 1024) }
       ensure
         File.delete(outside) if File.exists?(outside)
       end
@@ -276,7 +278,7 @@ describe "Git storage component boundaries" do
     git_fixture do |root|
       store = Git::Repository.new(root)
       ["../../escape", "F" * 40, "a" * 39, "../" + "b" * 37].each do |bad|
-        expect_raises(Git::Error, /unsupported Git OID/) { store.object(bad, 4096) { nil } }
+        expect_raises(Git::Error, /unsupported Git OID/) { store.read_object(bad, max_bytes: 4096) }
       end
       File.write(File.join(root, "probe.txt"), "content\n")
       Git::ObjectId.digest("blob", "content\n").should eq(git_fixture_git(root, "hash-object", "probe.txt"))
@@ -294,14 +296,12 @@ describe "Git storage component boundaries" do
       git_fixture_git(root, "pack-refs", "--all", "--prune")
       store = Git::Repository.new(root)
       head = git_fixture_git(root, "rev-parse", "HEAD")
-      store.resolve_ref?("refs/heads/topic").should eq(head)
-      store.resolve_ref?("refs/tags/v1").should eq(head)
-      refs, truncated = store.refs("all", 10)
-      truncated.should be_false
-      refs.map(&.[0]).should contain("refs/tags/v1")
-      store.commit(head, 128 * 1024) { nil }.subject.should eq("base")
-      store.head_directory("src", 128 * 1024) { nil }.map(&.[0]).should eq(["code.cr"])
-      store.read_head_file("src/code.cr", 128 * 1024) { nil }[1].should eq("puts 123\n")
+      store.refs.resolve?("refs/heads/topic").should eq(head)
+      store.refs.resolve?("refs/tags/v1").should eq(head)
+      store.refs.list.map(&.name).should contain("refs/tags/v1")
+      store.read_commit(head, max_bytes: 128 * 1024).subject.should eq("base")
+      store.head_directory("src", max_bytes: 128 * 1024).map(&.name).should eq(["code.cr"])
+      store.read_head_file("src/code.cr", max_bytes: 128 * 1024).should eq("puts 123\n")
     end
   end
 
@@ -322,7 +322,8 @@ describe "Git storage component boundaries" do
       store = Git::Repository.new(root)
       versions.each_with_index do |text, i|
         oid = git_fixture_git(root, "rev-parse", "HEAD~#{6 - i}:payload.txt")
-        kind, contents = store.object(oid, 128 * 1024) { nil }
+        stored = store.read_object(oid, max_bytes: 128 * 1024)
+        kind, contents = stored.type.to_s, stored.data
         kind.should eq("blob")
         contents.should eq(text)
       end
@@ -351,7 +352,7 @@ describe "Git packed storage with deep delta chains" do
       store = Git::Repository.new(root)
       versions.each_with_index do |text, i|
         oid = git_fixture_git(root, "rev-parse", "HEAD~#{119 - i}:payload.txt")
-        store.object(oid, 128 * 1024) { nil }.should eq({"blob", text})
+        store.read_object(oid, max_bytes: 128 * 1024).should eq(Git::RawObject.new(Git::ObjectType::Blob, text))
       end
       history = store.history(limit: 200, max_nodes: 200)
       history.commits.size.should eq(120)
@@ -368,14 +369,14 @@ describe "Git linked-worktree metadata component" do
       linked = File.tempname("git-metadata-worktree", dir: File.realpath(Dir.tempdir))
       begin
         git_fixture_git(root, "worktree", "add", "-qb", "review", linked)
-        Git::Repository.new(linked).head[0].should eq("refs/heads/review")
+        Git::Repository.new(linked).head.symref_target.should eq("refs/heads/review")
         expect_raises(Git::Error) { Git::Repository.new(linked, follow_gitfile: false) }
         admin = File.join(root, ".git", "worktrees", File.basename(linked))
         store = Git::Repository.new(linked, linked_worktree_admin_dir: admin)
-        store.head[0].should eq("refs/heads/review")
-        store.head[1].should eq(git_fixture_git(root, "rev-parse", "HEAD"))
-        store.read_head_file("file.txt", 128 * 1024) { nil }[1].should eq("committed\n")
-        store.check!
+        store.head.symref_target.should eq("refs/heads/review")
+        store.head.oid.should eq(git_fixture_git(root, "rev-parse", "HEAD"))
+        store.read_head_file("file.txt", max_bytes: 128 * 1024).should eq("committed\n")
+        store.revalidate!
       ensure
         git_fixture_git(root, "worktree", "remove", "--force", linked) if Dir.exists?(linked)
       end
@@ -420,7 +421,7 @@ describe "Git ignore wildcard compatibility" do
       Dir.mkdir_p(File.join(root, "logs", "deep"))
       File.write(File.join(root, "logs", "deep", "old.log"), "visible\n")
       File.write(File.join(root, "logs", "xxold.log"), "ignored\n")
-      actual, _, _ = Git::Repository.new(root).working_changes(128 * 1024, 20) { nil }
+      actual = Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 20)
       visible = actual.select(&.status.==("untracked")).map(&.path).sort
       expected = git_fixture_git(root, "ls-files", "--others", "--exclude-standard").lines.map(&.strip).sort
       visible.should eq(expected)
@@ -466,14 +467,14 @@ describe "Git packed storage corruption boundaries" do
       corrupt = original.dup
       corrupt[corrupt.size - 1] ^= 1
       git_fixture_write_bytes(idx, corrupt)
-      expect_raises(Git::Error) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
 
       bad_fanout = original.dup
       # No valid index can have more objects in bucket 0 than in bucket 1.
       git_fixture_uint32!(bad_fanout, 8, 0xffff_ffff_u32)
       git_fixture_rechecksum!(bad_fanout)
       git_fixture_write_bytes(idx, bad_fanout)
-      expect_raises(Git::Error) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
     end
   end
 
@@ -488,7 +489,7 @@ describe "Git packed storage corruption boundaries" do
       git_fixture_uint32!(bytes, offset_table + row * 4, 0x8000_0000_u32)
       git_fixture_rechecksum!(bytes)
       git_fixture_write_bytes(idx, bytes)
-      expect_raises(Git::Error) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
     end
   end
 
@@ -499,12 +500,12 @@ describe "Git packed storage corruption boundaries" do
       changed_trailer = original.dup
       changed_trailer[changed_trailer.size - 1] ^= 1
       git_fixture_write_bytes(pack, changed_trailer)
-      expect_raises(Git::Error) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
 
       bad_count = original.dup
       git_fixture_uint32!(bad_count, 8, 1_000_u32)
       git_fixture_write_bytes(pack, bad_count)
-      expect_raises(Git::Error) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
     end
   end
 
@@ -519,7 +520,7 @@ describe "Git packed storage corruption boundaries" do
       bytes[crc_table + row * 4] ^= 1
       git_fixture_rechecksum!(bytes)
       git_fixture_write_bytes(idx, bytes)
-      expect_raises(Git::Error, /CRC/) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error, /CRC/) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
     end
   end
 
@@ -532,7 +533,7 @@ describe "Git packed storage corruption boundaries" do
       forged[bytes.size - 39, 40].copy_from(bytes[bytes.size - 40, 40])
       git_fixture_rechecksum!(forged)
       git_fixture_write_bytes(idx, forged)
-      expect_raises(Git::Error) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
     end
   end
 
@@ -548,7 +549,7 @@ describe "Git packed storage corruption boundaries" do
       bytes = File.read(pack).to_slice.dup
       bytes[entry_offset + 2] ^= 1
       git_fixture_write_bytes(pack, bytes)
-      expect_raises(Git::Error, /CRC/) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error, /CRC/) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
     end
   end
 
@@ -569,12 +570,12 @@ describe "Git packed storage corruption boundaries" do
       git_fixture_uint32!(forged, pos, 0x8000_0000_u32)
       git_fixture_rechecksum!(forged)
       git_fixture_write_bytes(idx, forged)
-      Git::Repository.new(root).object(oid, 4096) { nil }[1].should eq("packed Git fixture\n")
+      Git::Repository.new(root).read_object(oid, max_bytes: 4096).data.should eq("packed Git fixture\n")
 
       8.times { |i| forged[body_end + i] = 0xff_u8 }
       git_fixture_rechecksum!(forged)
       git_fixture_write_bytes(idx, forged)
-      expect_raises(Git::Error, /large offset/) { Git::Repository.new(root).object(oid, 4096) { nil } }
+      expect_raises(Git::Error, /large offset/) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
     end
   end
 

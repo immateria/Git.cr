@@ -3,16 +3,16 @@ module Git
     # Abort an incomplete native merge by restoring ordinary tracked content
     # and the entire index to the still-current original HEAD. This is an
     # explicitly destructive operation on merge-touched tracked paths.
-    def merge_abort(*, max_object_bytes : Int32 = 8_388_608,
-                    max_index_bytes : Int32 = 8_388_608,
-                    max_total_bytes : Int64 = 67_108_864,
-                    max_entries : Int32 = 10_000,
-                    check : Proc(Nil)? = nil) : Array(String)
+    protected def merge_abort(*, max_object_bytes : Int32 = 8_388_608,
+                              max_index_bytes : Int32 = 8_388_608,
+                              max_total_bytes : Int64 = 67_108_864,
+                              max_entries : Int32 = 10_000,
+                              check : Proc(Nil)? = nil) : Array(String)
       require_worktree!
       branch, ours_oid, theirs_oid = merge_state? || raise Error.new("no Git merge in progress")
-      raise Error.new("Git merge abort HEAD changed") unless head == {branch, ours_oid}
-      ours_tree = commit(ours_oid, max_object_bytes) { check.try &.call }.tree
-      theirs_tree = commit(theirs_oid, max_object_bytes) { check.try &.call }.tree
+      raise Error.new("Git merge abort HEAD changed") unless head_ref_and_oid == {branch, ours_oid}
+      ours_tree = read_commit(ours_oid, max_bytes: max_object_bytes, check: check).tree
+      theirs_tree = read_commit(theirs_oid, max_bytes: max_object_bytes, check: check).tree
       ours = Checkout.tree_files(self, ours_tree, max_object_bytes: max_object_bytes, max_files: max_entries, check: check, allow_symlinks: true)
       theirs = Checkout.tree_files(self, theirs_tree, max_object_bytes: max_object_bytes, max_files: max_entries, check: check, allow_symlinks: true)
       current = @index.entries(max_index_bytes) { check.try &.call }
@@ -75,7 +75,7 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
-          raise Error.new("Git merge abort state changed") unless head == {branch, ours_oid} &&
+          raise Error.new("Git merge abort state changed") unless head_ref_and_oid == {branch, ours_oid} &&
                                                                   merge_state? == {branch, ours_oid, theirs_oid} &&
                                                                   @index.snapshot_checksum(max_index_bytes) == snapshot
         end

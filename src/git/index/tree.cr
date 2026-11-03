@@ -61,16 +61,16 @@ module Git
     # expected-old-oid branch CAS. This is NOT a multi-file atomic transaction:
     # object writes can survive a CAS conflict; independent index changes
     # between snapshot and ref update remain outside this first slice.
-    def commit_staged(*, author : Signature, committer : Signature,
-                      message : String, allow_empty : Bool = false,
-                      max_index_bytes : Int32 = 8_388_608,
-                      max_object_bytes : Int64 = Int64::MAX,
-                      check : Proc(Nil)? = nil) : String
+    def commit(*, author : Signature, committer : Signature,
+               message : String, allow_empty : Bool = false,
+               max_index_bytes : Int32 = 8_388_608,
+               max_object_bytes : Int64 = Int64::MAX,
+               check : Proc(Nil)? = nil) : String
       check!
       raise Error.new("Git first-parent commit refuses in-progress merge") if merge_state?
       raise Error.new("Git first-parent commit refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git first-parent commit refuses in-progress rebase") if rebase_state?
-      branch, previous = head
+      branch, previous = head_ref_and_oid
       raise Error.new("native commit requires a symbolic branch HEAD") unless branch && branch.starts_with?("refs/heads/")
       index_snapshot = @index.snapshot_checksum(max_index_bytes)
       if previous.nil? && !allow_empty && @index.entries(max_index_bytes) { check.try &.call }.empty?
@@ -79,7 +79,7 @@ module Git
       tree = write_index_tree(max_index_bytes: max_index_bytes,
         max_tree_bytes: max_object_bytes, check: check)
       if previous && !allow_empty
-        original = commit(previous, max_index_bytes) { check.try &.call }
+        original = read_commit(previous, max_bytes: max_index_bytes, check: check)
         raise Error.new("nothing staged to commit") if original.tree == tree
       end
       parents = previous ? [previous] : [] of String

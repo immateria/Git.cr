@@ -23,12 +23,13 @@ describe "P17 native Git commit and annotated-tag writing" do
         }
         expected = GitOracle.run(root, "commit-tree", tree, "-F", "-", input: message, extra_env: env).stdout.strip
         oid.should eq(expected)
-        kind, raw = repo.object(oid, 1024) { nil }
+        stored = repo.read_object(oid, max_bytes: 1024)
+        kind, raw = stored.type.to_s, stored.data
         kind.should eq("commit")
         GitOracle.assert_bytes!(raw, GitOracle.run(root, "cat-file", "commit", oid).stdout, "P17-O14")
-        repo.commit(oid, 1024) { nil }.subject.should eq("subject")
+        repo.read_commit(oid, max_bytes: 1024).subject.should eq("subject")
         repo.write_commit(tree: tree, author: author, committer: committer, message: message).should eq(oid)
-        repo.head[1].should be_nil
+        repo.head.oid.should be_nil
         GitOracle.run(root, "fsck", "--no-reflogs", "--unreachable")
       end
     end
@@ -50,7 +51,7 @@ describe "P17 native Git commit and annotated-tag writing" do
         expected = GitOracle.run(root, "commit-tree", tree, "-p", parent1, "-p", parent2, "-F", "-",
           input: body, extra_env: env).stdout.strip
         oid.should eq(expected)
-        repo.commit(oid, 1024) { nil }.parents.should eq([parent1, parent2])
+        repo.read_commit(oid, max_bytes: 1024).parents.should eq([parent1, parent2])
         tagger = Git::Signature.new("Tag Person", "tag@example.invalid", 1_700_000_099_i64, -90)
         message = "release\n\nannotation\n"
         tag_oid = repo.write_tag(object: oid, type: "commit", name: "v1.2.3", tagger: tagger, message: message)
@@ -59,9 +60,9 @@ describe "P17 native Git commit and annotated-tag writing" do
         env["GIT_COMMITTER_DATE"] = "@1700000099 -0130"
         GitOracle.run(root, "tag", "-a", "v1.2.3", oid, "-F", "-", input: message, extra_env: env)
         tag_oid.should eq(GitOracle.run(root, "rev-parse", "refs/tags/v1.2.3").stdout.strip)
-        repo.object(tag_oid, 1024) { nil }.should eq({"tag", GitOracle.run(root, "cat-file", "tag", tag_oid).stdout})
+        repo.read_object(tag_oid, max_bytes: 1024).should eq(Git::RawObject.new(Git::ObjectType::Tag, GitOracle.run(root, "cat-file", "tag", tag_oid).stdout))
         chained = repo.write_tag(object: tag_oid, type: "tag", name: "nested", tagger: tagger, message: "nested\n")
-        repo.object(chained, 1024) { nil }[0].should eq("tag")
+        repo.read_object(chained, max_bytes: 1024).type.should eq(Git::ObjectType::Tag)
         GitOracle.run(root, "fsck", "--no-reflogs", "--unreachable")
       end
     end
@@ -80,7 +81,7 @@ describe "P17 native Git commit and annotated-tag writing" do
       oid = repo.write_commit(tree: tree, author: signature, committer: signature,
         message: "structured\n", extra_headers: headers)
       oid.should eq(GitOracle.run(root, "hash-object", "-t", "commit", "--stdin", input: raw).stdout.strip)
-      GitOracle.assert_bytes!(repo.object(oid, 4096) { nil }[1], raw, "P17-O16")
+      GitOracle.assert_bytes!(repo.read_object(oid, max_bytes: 4096).data, raw, "P17-O16")
     end
   end
 
@@ -115,7 +116,7 @@ describe "P17 native Git commit and annotated-tag writing" do
       tag = repo.write_tag(object: "a" * 40, type: "blob", name: "low-level", message: "raw tag", tagger: nil)
       expected = "object #{"a" * 40}\ntype blob\ntag low-level\n\nraw tag"
       tag.should eq(GitOracle.run(root, "hash-object", "--literally", "-t", "tag", "--stdin", input: expected).stdout.strip)
-      repo.object(tag, 1024) { nil }.should eq({"tag", expected})
+      repo.read_object(tag, max_bytes: 1024).should eq(Git::RawObject.new(Git::ObjectType::Tag, expected))
     end
   end
 

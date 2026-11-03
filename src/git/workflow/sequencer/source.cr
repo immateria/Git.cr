@@ -1,5 +1,5 @@
 module Git
-  module Sequencer
+  struct Sequencer
     def self.head_name(kind : Kind) : String
       case kind
       when .cherry_pick? then "CHERRY_PICK_HEAD"

@@ -12,7 +12,7 @@ describe "P17 native Git loose-object writes" do
         expected = GitOracle.run(root, "hash-object", "--stdin", input: payload).stdout.strip
         oid = repo.write_blob(payload.to_slice)
         oid.should eq(expected)
-        repo.object(oid, 4096) { nil }.should eq({"blob", payload})
+        repo.read_object(oid, max_bytes: 4096).should eq(Git::RawObject.new(Git::ObjectType::Blob, payload))
         GitOracle.assert_bytes!(GitOracle.run(root, "cat-file", "blob", oid).stdout, payload, "P17-O01")
         path = File.join(root, ".git", "objects", oid.byte_slice(0, 2), oid.byte_slice(2, oid.bytesize - 2))
         File.file?(path).should be_true

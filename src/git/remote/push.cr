@@ -35,40 +35,46 @@ module Git
   end
 
   class Repository
-    # `git push <remote> [<refspec>...]`. Without refspecs the remote's
-    # push refspecs are used, else the current branch is pushed to its
-    # upstream (or the same name), as push.default=simple does.
-    # Non-fast-forward updates are refused unless forced. With
-    # update_tracking, remote-tracking refs follow successful updates.
-    def push(remote_name : String = "origin", refspecs : Array(String)? = nil, *,
+    # `git push <remote> [<refspec>...]` to a configured remote (by name)
+    # or a transport. For a named remote without refspecs, its push
+    # refspecs are used, else the current branch is pushed to its upstream
+    # (or the same name), as push.default=simple does; transport overrides
+    # how it is reached and, with update_tracking, remote-tracking refs
+    # follow successful updates. A transport needs explicit refspecs.
+    # Non-fast-forward updates are refused unless forced.
+    def push(remote : String | Transport = "origin", refspecs : Array(String)? = nil, *,
              transport : Transport? = nil, force : Bool = false,
              atomic : Bool = false, update_tracking : Bool = true,
              actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
              check : Proc(Nil)? = nil) : Push::Result
-      remote = remote(remote_name)
-      selected = transport || Transport.for_url(remote.push_url)
+      if remote.is_a?(Transport)
+        raise ArgumentError.new("transport: applies to a named Git remote") if transport
+        specs = refspecs || raise ArgumentError.new("Git push to a transport needs refspecs")
+        return push_to(remote, specs, url: remote.url, force: force, atomic: atomic,
+          progress: progress, check: check)
+      end
+      configured = remote(remote)
+      selected = transport || Transport.for_url(configured.push_url)
       specs = refspecs || begin
-        if !remote.push_refspecs.empty?
-          remote.push_refspecs.map(&.to_s)
+        if !configured.push_refspecs.empty?
+          configured.push_refspecs.map(&.to_s)
         else
-          branch = head[0]
+          branch = head_ref_and_oid[0]
           raise Error.new("Git push needs a refspec when HEAD is detached") unless branch && branch.starts_with?("refs/heads/")
           upstream = branch_upstream(branch.byte_slice(11))
-          destination = upstream && upstream[0] == remote_name ? upstream[1] : branch
+          destination = upstream && upstream[0] == remote ? upstream[1] : branch
           ["#{branch}:#{destination}"]
         end
       end
-      result = push_to(selected, specs, url: remote.push_url, force: force, atomic: atomic,
+      result = push_to(selected, specs, url: configured.push_url, force: force, atomic: atomic,
         progress: progress, check: check)
-      update_tracking_after_push(remote, result, actor) if update_tracking
+      update_tracking_after_push(configured, result, actor) if update_tracking
       result
     end
 
-    # Push to a transport without a configured remote.
-    def push_to(transport : Transport, refspecs : Array(String), *, url : String = transport.url,
-                force : Bool = false, atomic : Bool = false,
-                progress : Proc(String, Nil)? = nil,
-                check : Proc(Nil)? = nil) : Push::Result
+    protected def push_to(transport : Transport, refspecs : Array(String), *, url : String,
+                          force : Bool, atomic : Bool, progress : Proc(String, Nil)?,
+                          check : Proc(Nil)?) : Push::Result
       check!
       specs = refspecs.map { |text| Remote::Refspec.parse(text, fetch: false) }
       connection = transport.connect(Transport::Service::ReceivePack, 0)
@@ -104,7 +110,7 @@ module Git
               reason = "already exists"
             elsif !has_object?(old)
               reason = "fetch first"
-            elsif !(object_header(old)[0] == "commit" && object_header(new_oid)[0] == "commit" && walker.ancestor?(old, new_oid))
+            elsif !(object_header(old).type.commit? && object_header(new_oid).type.commit? && walker.ancestor?(old, new_oid))
               reason = "non-fast-forward"
             end
           end
@@ -130,7 +136,7 @@ module Git
           haves = remote_refs.values.uniq.select { |oid| has_object?(oid) }
           items = reachable_objects(tips, haves, exclude_have_trees: true, check: check)
           bases = [] of History::ReachableObject
-          commands.compact_map(&.old_oid).uniq.select { |oid| has_object?(oid) && object_header(oid)[0] == "commit" }.first(4).each do |oid|
+          commands.compact_map(&.old_oid).uniq.select { |oid| has_object?(oid) && object_header(oid).type.commit? }.first(4).each do |oid|
             bases.concat(reachable_objects([walker.commit_node(oid).tree], check: check))
           end
           objects = Pack::Builder.new(self, ofs_delta: client.capability?("ofs-delta"), check: check).write(io, items, bases).objects
@@ -181,7 +187,7 @@ module Git
         local_ref, oid = if Remote::Refspec.object_id?(source)
                            {nil, ObjectId.valid!(source, @object_format)}
                          elsif source == "HEAD" || source == "@"
-                           {head[0], head[1] || raise(Error.new("Git HEAD is unborn"))}
+                           {head_ref_and_oid[0], head_ref_and_oid[1] || raise(Error.new("Git HEAD is unborn"))}
                          else
                            full = source.starts_with?("refs/") ? source : RefName.expand(source, local_names)
                            raise Error.new("Git source ref #{source} does not match any") unless full && (resolved = resolve_ref?(full))

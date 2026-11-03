@@ -20,7 +20,8 @@ describe "Git raw pathname compatibility" do
           index_output.includes?(name).should be_true
         end
         store = Git::Repository.new(root)
-        staged, truncated = store.staged_changes(128 * 1024, 20) { nil }
+        staged = store.staged_changes(max_bytes: 128 * 1024, limit: 20)
+        truncated = staged.truncated?
         truncated.should be_false
         staged.size.should eq(names.size)
         names.each do |name|
@@ -28,11 +29,11 @@ describe "Git raw pathname compatibility" do
         end
         GitOracle.run(root, "commit", "-qm", "add unusual names")
         tree_output = GitOracle.run(root, "ls-tree", "-z", "HEAD").stdout
-        tree = Git::Repository.new(root).head_directory(".", 128 * 1024) { nil }
+        tree = Git::Repository.new(root).head_directory(".", max_bytes: 128 * 1024)
         names.each do |name|
-          tree.any? { |entry| entry[0].to_slice == name.to_slice }.should be_true
+          tree.any? { |entry| entry.name.to_slice == name.to_slice }.should be_true
           tree_output.includes?(name).should be_true
-          Git::Repository.new(root).read_head_file(name, 128 * 1024) { nil }[1].should start_with("content")
+          Git::Repository.new(root).read_head_file(name, max_bytes: 128 * 1024).should start_with("content")
         end
       end
     end
@@ -56,7 +57,8 @@ describe "Git raw pathname compatibility" do
       # file system takes the name.
       if GitOracle::RAW_NAMES
         File.write(File.join(root, second), "changed\n")
-        changes, truncated, _ = Git::Repository.new(root).working_changes(128 * 1024, 20, include_untracked: false) { nil }
+        changes = Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 20, include_untracked: false)
+        truncated = changes.truncated?
         truncated.should be_false
         changes.size.should eq(1)
         changes.first.path.to_slice.should eq(second.to_slice)
@@ -70,7 +72,7 @@ describe "Git raw pathname compatibility" do
         io.skip(4)
         io.read_bytes(UInt32, IO::ByteFormat::BigEndian).should eq(4)
       end
-      staged, _ = Git::Repository.new(root).staged_changes(128 * 1024, 20) { nil }
+      staged = Git::Repository.new(root).staged_changes(max_bytes: 128 * 1024, limit: 20)
       staged.map(&.path).should eq([first])
       GitOracle.assert_bytes!(GitOracle.run(root, "ls-files", "--stage", "-z").stdout,
         "100644 #{GitOracle.run(root, "rev-parse", ":#{first}").stdout.strip} 0\t#{first}\0" +
@@ -97,7 +99,7 @@ describe "Git reference-name and text-patch byte parity" do
       Git::RefName.valid?("refs/heads/x\0z").should be_false
       GitOracle.run(root, "commit", "--allow-empty", "-qm", "base")
       GitOracle.run(root, "branch", "feature+one")
-      Git::Repository.new(root).resolve_ref?("refs/heads/feature+one").should eq(GitOracle.run(root, "rev-parse", "HEAD").stdout.strip)
+      Git::Repository.new(root).refs.resolve?("refs/heads/feature+one").should eq(GitOracle.run(root, "rev-parse", "HEAD").stdout.strip)
     end
   end
 
@@ -112,7 +114,7 @@ describe "Git reference-name and text-patch byte parity" do
       end
       store = Git::Repository.new(root)
       names.each do |name|
-        staged = store.staged_file(name, 128 * 1024) { nil }.not_nil!
+        staged = store.staged_file(name, max_bytes: 128 * 1024).not_nil!
         patch = Git::TextDiff.unified(staged.old_text, staged.new_text, staged.path, staged.old_mode, staged.new_mode)
         oracle = GitOracle.run(root, "-c", "core.quotePath=true", "diff", "--cached", "--", name).stdout
         oracle_headers = oracle.lines.select { |line| line.starts_with?("diff --git ") || line.starts_with?("--- ") || line.starts_with?("+++ ") }
@@ -135,11 +137,11 @@ describe "Git path and ref edge conditions" do
       head = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
       GitOracle.run(root, "update-index", "--add", "--cacheinfo", "160000,#{head},gitlink")
       GitOracle.run(root, "commit", "-qm", "add gitlink")
-      tree = Git::Repository.new(root).head_directory(".", 128 * 1024) { nil }.to_h { |name, mode, oid| {name, {mode, oid}} }
+      tree = Git::Repository.new(root).head_directory(".", max_bytes: 128 * 1024).to_h { |entry| {entry.name, {entry.mode, entry.oid}} }
       tree["executable"][0].should eq("100755")
       tree["symlink"][0].should eq("120000")
       tree["gitlink"].should eq({"160000", head})
-      native_staged, _ = Git::Repository.new(root).staged_changes(128 * 1024, 20) { nil }
+      native_staged = Git::Repository.new(root).staged_changes(max_bytes: 128 * 1024, limit: 20)
       native_staged.should be_empty
       GitOracle.run(root, "ls-tree", "-z", "HEAD").stdout.should contain("160000 commit #{head}\tgitlink\0")
     end
@@ -189,11 +191,9 @@ describe "Git path and ref edge conditions" do
         GitOracle.run(root, "rev-parse", "refs/heads/" + opaque).stdout.strip.should eq(expected)
       end
       store = Git::Repository.new(root)
-      store.resolve_ref?("refs/heads/branch+plus").should eq(expected)
-      store.resolve_ref?("refs/heads/" + opaque).should eq(expected)
-      names, truncated = store.refs("heads", 20)
-      truncated.should be_false
-      names.map(&.[0]).should contain("refs/heads/" + opaque)
+      store.refs.resolve?("refs/heads/branch+plus").should eq(expected)
+      store.refs.resolve?("refs/heads/" + opaque).should eq(expected)
+      store.refs.list("refs/heads/").map(&.name).should contain("refs/heads/" + opaque)
     end
   end
 end
@@ -208,14 +208,15 @@ describe "Git byte-exact status and serialization" do
         File.write(File.join(root, name), "new\n")
         output = GitOracle.run(root, "status", "--porcelain=v2", "-z", "--untracked-files=all").stdout
         output.includes?(name + "\0").should be_true
-        changes, truncated, _ = Git::Repository.new(root).working_changes(128 * 1024, 20) { nil }
+        changes = Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 20)
+        truncated = changes.truncated?
         truncated.should be_false
         changes.map(&.path).should eq([name])
         GitOracle.run(root, "add", "--", name)
       else
         GitOracle.stage_blob(root, name, "new\n")
       end
-      staged, _ = Git::Repository.new(root).staged_changes(128 * 1024, 20) { nil }
+      staged = Git::Repository.new(root).staged_changes(max_bytes: 128 * 1024, limit: 20)
       staged.map(&.path).should eq([name])
       raw = GitOracle.run(root, "diff", "--cached", "--raw", "-z").stdout
       raw.includes?(name + "\0").should be_true

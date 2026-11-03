@@ -1,7 +1,7 @@
 require "set"
 
 module Git
-  module Merge
+  struct Merge
     # Shared publication plan for three-way merges and sequencer replay.
     # Blob merging may materialize objects in the repository, but branch refs,
     # operation metadata, index and worktree publication remain with the

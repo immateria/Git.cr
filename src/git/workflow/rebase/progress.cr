@@ -6,7 +6,7 @@ module Git
       raise Error.new("Git rebase stopped source changed") unless item.source == state.todo[state.next_index]
       raise Error.new("Git rebase stopped branch changed") unless item.branch == state.branch
       raise Error.new("Git rebase stopped HEAD changed") unless item.original_head == state.expected_head &&
-                                                                head == {state.branch, state.expected_head}
+                                                                head_ref_and_oid == {state.branch, state.expected_head}
     end
 
     private def rebase_advance_state!(state : Rebase::State, next_index : Int32,

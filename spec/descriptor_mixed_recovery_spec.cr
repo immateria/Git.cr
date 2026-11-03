@@ -13,8 +13,8 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "desired")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
-        repo.update_ref("refs/heads/obsolete", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/obsolete", old, expected_oid: nil)
         heads = File.join(root, ".git", "refs", "heads")
         moved = heads + "-pinned"
         outside = File.join(root, "foreign")
@@ -34,7 +34,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         changes << Git::References::Update.new("refs/heads/main", desired, old)
         changes << Git::References::Delete.new("refs/heads/obsolete", old)
         begin
-          expect_raises(Git::Error) { repo.change_refs(changes, check: check) }
+          expect_raises(Git::Error) { repo.refs.apply(changes, check: check) }
           changed.should be_true
           File.read(File.join(outside, "main.lock")).should eq("foreign")
           File.exists?(File.join(moved, "main.lock")).should be_false
@@ -44,8 +44,8 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
           File.delete(heads) if File.symlink?(heads)
           File.rename(moved, heads) if Dir.exists?(moved)
         end
-        repo.resolve_ref?("refs/heads/main").should eq(old)
-        repo.resolve_ref?("refs/heads/obsolete").should eq(old)
+        repo.refs.resolve?("refs/heads/main").should eq(old)
+        repo.refs.resolve?("refs/heads/obsolete").should eq(old)
       end
     end
 
@@ -56,8 +56,8 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
-        repo.update_ref("refs/heads/obsolete", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/obsolete", old, expected_oid: nil)
         gitdir = File.join(root, ".git")
         moved = File.join(root, ".git-original")
         outside = File.join(root, "outside")
@@ -76,7 +76,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         changes << Git::References::Update.new("refs/heads/main", desired, old)
         changes << Git::References::Delete.new("refs/heads/obsolete", old)
         begin
-          expect_raises(Git::Error) { repo.change_refs(changes, check: check) }
+          expect_raises(Git::Error) { repo.refs.apply(changes, check: check) }
           changed.should be_true
           File.read(File.join(outside, "packed-refs.lock")).should eq("foreign packed lock")
           File.exists?(File.join(moved, "packed-refs.lock")).should be_false
@@ -84,8 +84,8 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
           File.delete(gitdir) if File.symlink?(gitdir)
           File.rename(moved, gitdir) if Dir.exists?(moved)
         end
-        repo.resolve_ref?("refs/heads/main").should eq(old)
-        repo.resolve_ref?("refs/heads/obsolete").should eq(old)
+        repo.refs.resolve?("refs/heads/main").should eq(old)
+        repo.refs.resolve?("refs/heads/obsolete").should eq(old)
       end
     end
 
@@ -96,7 +96,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         lock = File.join(root, ".git", "refs", "heads", "main.lock")
         changed = false
         check = -> do
@@ -110,10 +110,10 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         end
         changes = [] of Git::References::Change
         changes << Git::References::Update.new("refs/heads/main", desired, old)
-        expect_raises(Git::Error, /lock ownership changed/) { repo.change_refs(changes, check: check) }
+        expect_raises(Git::Error, /lock ownership changed/) { repo.refs.apply(changes, check: check) }
         changed.should be_true
         File.exists?(lock).should be_true
-        repo.resolve_ref?("refs/heads/main").should eq(old)
+        repo.refs.resolve?("refs/heads/main").should eq(old)
       end
     end
 
@@ -124,7 +124,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         recovery = File.join(root, ".git", "crystal-git-recovery")
         moved = recovery + "-pinned"
         outside = File.join(root, "outside")
@@ -143,7 +143,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         changes << Git::References::Update.new("refs/heads/main", desired, old)
         begin
           expect_raises(Git::References::PartialPublication) do
-            repo.change_refs_recoverably(changes, id: "moved", after_publish: observer)
+            repo.recovery.apply(changes, id: "moved", after_publish: observer)
           end
           changed.should be_true
           File.file?(File.join(moved, "moved.redo")).should be_true
@@ -152,9 +152,9 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
           File.delete(recovery) if File.symlink?(recovery)
           File.rename(moved, recovery) if Dir.exists?(moved)
         end
-        repo.recover_refs("moved")
-        repo.resolve_ref?("refs/heads/main").should eq(desired)
-        repo.pending_ref_recoveries.should be_empty
+        repo.recovery.resume("moved")
+        repo.refs.resolve?("refs/heads/main").should eq(desired)
+        repo.recovery.pending.should be_empty
       end
     end
 
@@ -165,7 +165,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         redo = File.join(root, ".git", "crystal-git-recovery", "swapped.redo")
         changed = false
         observer = ->(_name : String) do
@@ -178,13 +178,13 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         changes = [] of Git::References::Change
         changes << Git::References::Update.new("refs/heads/main", desired, old)
         expect_raises(Git::References::PartialPublication) do
-          repo.change_refs_recoverably(changes, id: "swapped", after_publish: observer)
+          repo.recovery.apply(changes, id: "swapped", after_publish: observer)
         end
         changed.should be_true
         File.file?(redo).should be_true
-        repo.pending_ref_recoveries.should contain("swapped")
-        repo.recover_refs("swapped")
-        repo.resolve_ref?("refs/heads/main").should eq(desired)
+        repo.recovery.pending.should contain("swapped")
+        repo.recovery.resume("swapped")
+        repo.refs.resolve?("refs/heads/main").should eq(desired)
       end
     end
 
@@ -196,7 +196,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         receipt = File.join(root, ".git", "crystal-git-recovery", "receipt.finish")
         changed = false
         after_unlink = -> do
@@ -210,14 +210,14 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         changes << Git::References::Update.new("refs/heads/main", desired, old)
         Git::References::Recovery.run(meta, repo.object_format, "receipt", changes,
           after_journal_unlink: after_unlink) do |pending|
-          repo.change_refs(pending)
+          repo.refs.apply(pending)
         end
         changed.should be_true
         File.file?(receipt).should be_true
-        repo.pending_ref_finalizations.should contain("receipt")
-        repo.finish_ref_finalization("receipt")
-        repo.pending_ref_finalizations.should be_empty
-        repo.resolve_ref?("refs/heads/main").should eq(desired)
+        repo.recovery.pending_finalizations.should contain("receipt")
+        repo.recovery.finish_finalization("receipt")
+        repo.recovery.pending_finalizations.should be_empty
+        repo.refs.resolve?("refs/heads/main").should eq(desired)
       end
     end
     it "P21-O07 refuses orphan-receipt deletion after its parent is replaced (#{format})" do
@@ -228,7 +228,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         recovery = File.join(root, ".git", "crystal-git-recovery")
         receipt = File.join(recovery, "orphan.finish")
         changes = [] of Git::References::Change
@@ -241,7 +241,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         end
         Git::References::Recovery.run(meta, repo.object_format, "orphan", changes,
           after_journal_unlink: on_unlink) do |pending|
-          repo.change_refs(pending)
+          repo.refs.apply(pending)
         end
         moved = recovery + "-pinned"
         outside = File.join(root, "outside")
@@ -266,8 +266,8 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
           File.delete(recovery) if File.symlink?(recovery)
           File.rename(moved, recovery) if Dir.exists?(moved)
         end
-        repo.finish_ref_finalization("orphan")
-        repo.pending_ref_finalizations.should be_empty
+        repo.recovery.finish_finalization("orphan")
+        repo.recovery.pending_finalizations.should be_empty
       end
     end
     it "P21-O08 rejects replacement of an orphan receipt after state validation (#{format})" do
@@ -278,7 +278,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: sig, committer: sig, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: sig, committer: sig, message: "new")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         receipt = File.join(root, ".git", "crystal-git-recovery", "leaf.finish")
         changes = [] of Git::References::Change
         changes << Git::References::Update.new("refs/heads/main", desired, old)
@@ -289,7 +289,7 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         end
         Git::References::Recovery.run(meta, repo.object_format, "leaf", changes,
           after_journal_unlink: on_unlink) do |pending|
-          repo.change_refs(pending)
+          repo.refs.apply(pending)
         end
         replacement = false
         after_validation = -> do
@@ -304,10 +304,10 @@ describe "P21 descriptor-pinned mixed refs and recovery journals" do
         end
         replacement.should be_true
         File.file?(receipt).should be_true
-        repo.pending_ref_finalizations.should contain("leaf")
-        repo.finish_ref_finalization("leaf")
-        repo.pending_ref_finalizations.should be_empty
-        repo.resolve_ref?("refs/heads/main").should eq(desired)
+        repo.recovery.pending_finalizations.should contain("leaf")
+        repo.recovery.finish_finalization("leaf")
+        repo.recovery.pending_finalizations.should be_empty
+        repo.refs.resolve?("refs/heads/main").should eq(desired)
       end
     end
   end

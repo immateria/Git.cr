@@ -4,9 +4,9 @@ module Git
                                              max_index_bytes : Int32,
                                              max_entries : Int32,
                                              check : Proc(Nil)?) : Nil
-      branch, head_oid = head
+      branch, head_oid = head_ref_and_oid
       raise Error.new("Git stash apply requires an existing symbolic branch") unless branch && branch.starts_with?("refs/heads/") && head_oid
-      tree = commit(head_oid, max_object_bytes) { check.try &.call }.tree
+      tree = read_commit(head_oid, max_bytes: max_object_bytes, check: check).tree
       desired = IndexRestore.source_entries(self, tree, max_object_bytes: max_object_bytes,
         max_entries: max_entries, check: check)
       current = @index.entries(max_index_bytes) { check.try &.call }
@@ -24,7 +24,7 @@ module Git
         max_entries: max_entries, check: check)
       guard = -> do
         check.try &.call
-        raise Error.new("Git stash apply HEAD changed during index normalization") unless head == {branch, head_oid}
+        raise Error.new("Git stash apply HEAD changed during index normalization") unless head_ref_and_oid == {branch, head_oid}
         raise Error.new("Git stash apply sequencer metadata reappeared") if sequencer_state?
       end
       @index.publish_image(image, max_bytes: max_index_bytes, check: guard)
@@ -120,7 +120,7 @@ module Git
                                        max_entries : Int32,
                                        check : Proc(Nil)?) : {Array(Checkout::Write), Int64}
       return {[] of Checkout::Write, 0_i64} unless oid = untracked_oid
-      untracked = commit(oid, max_object_bytes) { check.try &.call }
+      untracked = read_commit(oid, max_bytes: max_object_bytes, check: check)
       raise Error.new("Git stash untracked parent shape invalid") unless untracked.parents.empty?
       files = Checkout.tree_files(self, untracked.tree,
         max_object_bytes: max_object_bytes, max_files: max_entries,

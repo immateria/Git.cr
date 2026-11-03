@@ -5,11 +5,11 @@ module Git
     # worktree files must be unchanged. Clean file/directory transitions are
     # planned explicitly and refuse untracked content before publication.
     # Worktree, index and HEAD are published in that order, not atomically.
-    def checkout_branch(name : String, *, max_blob_bytes : Int32 = 8_388_608,
-                        max_index_bytes : Int32 = 8_388_608,
-                        max_total_bytes : Int64 = 67_108_864,
-                        max_files : Int32 = 10_000,
-                        check : Proc(Nil)? = nil) : Checkout::Result
+    def switch(name : String, *, max_blob_bytes : Int32 = 8_388_608,
+               max_index_bytes : Int32 = 8_388_608,
+               max_total_bytes : Int64 = 67_108_864,
+               max_files : Int32 = 10_000,
+               check : Proc(Nil)? = nil) : Checkout::Result
       require_worktree!
       raise Error.new("Git checkout refuses in-progress merge") if merge_state?
       raise Error.new("Git checkout refuses in-progress sequencer operation") if sequencer_state?
@@ -23,10 +23,10 @@ module Git
       oid = resolve_ref?(target_ref) || raise Error.new("Git checkout branch missing")
       target = History.resolve_commit(self, target_ref, max_blob_bytes, check)
       raise Error.new("Git checkout branch does not resolve to a direct commit") unless target == oid
-      original_ref, original_oid = head
+      original_ref, original_oid = head_ref_and_oid
       return Checkout::Result.new(target_ref, target, [] of String) if original_ref == target_ref
-      old_tree = original_oid ? commit(original_oid, max_blob_bytes) { check.try &.call }.tree : nil
-      next_tree = commit(target, max_blob_bytes) { check.try &.call }.tree
+      old_tree = original_oid ? read_commit(original_oid, max_bytes: max_blob_bytes, check: check).tree : nil
+      next_tree = read_commit(target, max_bytes: max_blob_bytes, check: check).tree
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git checkout index entry budget exceeded") if current.size > max_files
       original = old_tree ? Checkout.tree_files(self, old_tree, max_object_bytes: max_blob_bytes, max_files: max_files, check: check) : {} of String => Checkout::FileState
@@ -86,7 +86,7 @@ module Git
         ensure
           head_original_io.close
         end
-        raise Error.new("Git checkout HEAD changed before publication") unless head == {original_ref, original_oid}
+        raise Error.new("Git checkout HEAD changed before publication") unless head_ref_and_oid == {original_ref, original_oid}
         raise Error.new("Git checkout index changed before publication") unless @index.snapshot_checksum(max_index_bytes) == original_checksum
         raise Error.new("Git checkout target branch changed") unless resolve_ref?(target_ref) == oid
         Checkout.require_clean!(self, current, max_blob_bytes: max_blob_bytes,
@@ -114,7 +114,7 @@ module Git
           changed_paths << path
         end
         check.try &.call
-        raise Error.new("Git checkout HEAD or branch changed") unless head == {original_ref, original_oid} && resolve_ref?(target_ref) == oid
+        raise Error.new("Git checkout HEAD or branch changed") unless head_ref_and_oid == {original_ref, original_oid} && resolve_ref?(target_ref) == oid
         raise Error.new("Git checkout index changed") unless @index.snapshot_checksum(max_index_bytes) == original_checksum
         if selected = image
           raise Error.new("Git checkout index image diverged") unless @index.image_state(selected, max_bytes: max_index_bytes) == :before

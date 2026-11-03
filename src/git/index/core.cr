@@ -22,6 +22,25 @@ module Git
       end
     end
 
+    # Staged changes, at most a caller-chosen number of them.
+    struct ChangeList
+      include Indexable(Change)
+
+      # Whether more changes exist than were listed.
+      getter? truncated : Bool
+
+      def initialize(@changes : Array(Change), @truncated : Bool)
+      end
+
+      def size : Int32
+        @changes.size
+      end
+
+      def unsafe_fetch(index : Int) : Change
+        @changes.unsafe_fetch(index)
+      end
+    end
+
     record FileComparison, path : String, old_oid : String?, new_oid : String?, old_mode : String?, new_mode : String?,
       old_text : String, new_text : String
 
@@ -254,12 +273,18 @@ module Git
   end
 
   class Repository
-    def staged_changes(max_bytes : Int32, limit : Int32, &check : -> Nil) : {Array(Index::Change), Bool}
-      @index.changes(max_bytes, limit) { check.call }
+    # Paths whose staged state differs from HEAD (`git diff --cached
+    # --name-status`), at most limit of them.
+    def staged_changes(*, max_bytes : Int32 = 8_388_608, limit : Int32 = 1_000,
+                       check : Proc(Nil)? = nil) : Index::ChangeList
+      changes, truncated = @index.changes(max_bytes, limit) { check.try &.call }
+      Index::ChangeList.new(changes, truncated)
     end
 
-    def staged_file(path : String, max_bytes : Int32, &check : -> Nil) : Index::FileComparison?
-      @index.file_comparison(path, max_bytes) { check.call }
+    # HEAD's and the index's version of one path, or nil when they agree.
+    def staged_file(path : String, *, max_bytes : Int32 = 8_388_608,
+                    check : Proc(Nil)? = nil) : Index::FileComparison?
+      @index.file_comparison(path, max_bytes) { check.try &.call }
     end
   end
 end

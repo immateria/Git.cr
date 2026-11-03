@@ -18,10 +18,10 @@ describe "P05 repository identity and discovery" do
         store.bare?.should be_true
         store.work_tree.should be_nil
         store.root.should eq(File.realpath(bare))
-        store.head[1].should eq(GitOracle.run(bare, "rev-parse", "HEAD").stdout.strip)
-        store.read_head_file("tracked.txt", 4096) { nil }[1].should eq("bare repository \n")
-        expect_raises(Git::Error, /bare/) { store.working_changes(4096, 20) { nil } }
-        expect_raises(Git::Error, /bare/) { store.working_file("tracked.txt", 4096) { nil } }
+        store.head.oid.should eq(GitOracle.run(bare, "rev-parse", "HEAD").stdout.strip)
+        store.read_head_file("tracked.txt", max_bytes: 4096).should eq("bare repository \n")
+        expect_raises(Git::Error, /bare/) { store.working_changes(max_bytes: 4096, limit: 20) }
+        expect_raises(Git::Error, /bare/) { store.working_file("tracked.txt", max_bytes: 4096) }
       end
     end
   end
@@ -33,20 +33,21 @@ describe "P05 repository identity and discovery" do
       GitOracle.run(root, "commit", "-qm", "base")
       separate = File.join(File.dirname(root), "external-metadata")
       GitOracle.run(root, "init", "-q", "--separate-git-dir", separate)
-      Git::Repository.new(root).head[1].should eq(GitOracle.run(root, "rev-parse", "HEAD").stdout.strip)
+      Git::Repository.new(root).head.oid.should eq(GitOracle.run(root, "rev-parse", "HEAD").stdout.strip)
       expect_raises(Git::Error) { Git::Repository.new(root, follow_gitfile: false) }
       store = Git::Repository.new(root, git_dir: separate)
       store.bare?.should be_false
       store.work_tree.should eq(File.realpath(root))
-      store.head[1].should eq(GitOracle.run(root, "rev-parse", "HEAD").stdout.strip)
-      store.read_head_file("one.txt", 4096) { nil }[1].should eq("one\n")
-      staged, truncated = store.staged_changes(128 * 1024, 20) { nil }
+      store.head.oid.should eq(GitOracle.run(root, "rev-parse", "HEAD").stdout.strip)
+      store.read_head_file("one.txt", max_bytes: 4096).should eq("one\n")
+      staged = store.staged_changes(max_bytes: 128 * 1024, limit: 20)
+      truncated = staged.truncated?
       staged.should be_empty
       truncated.should be_false
-      store.check!
+      store.revalidate!
       File.write(File.join(root, ".git"), "gitdir: #{File.join(File.dirname(root), "wrong")}\n")
       # Explicit GIT_DIR wins over a .git pointer, as in upstream Git.
-      store.check!
+      store.revalidate!
       Git::Repository.new(root, git_dir: separate).head.should eq(store.head)
     end
   end
@@ -61,9 +62,9 @@ describe "P05 repository identity and discovery" do
       expect_raises(Git::Error) { Git::Repository.new(inside) }
       store = Git::Repository.new(inside, discover: true)
       store.root.should eq(File.realpath(root))
-      store.head[1].should eq(GitOracle.run(inside, "rev-parse", "HEAD").stdout.strip)
+      store.head.oid.should eq(GitOracle.run(inside, "rev-parse", "HEAD").stdout.strip)
       expect_raises(Git::Error) { Git::Repository.new(inside, discover: true, discovery_ceiling: inside) }
-      store.check!
+      store.revalidate!
       nested_repo = File.join(root, "deep", "nested", "repo")
       Dir.mkdir_p(nested_repo)
       GitOracle.run(nested_repo, "init", "-q")
@@ -79,28 +80,28 @@ describe "P05 repository identity and discovery" do
       linked = File.join(File.dirname(root), "linked")
       GitOracle.run(root, "worktree", "add", "-q", "-b", "feature", linked)
       admin = File.join(root, ".git", "worktrees", "linked")
-      Git::Repository.new(linked).head[0].should eq("refs/heads/feature")
+      Git::Repository.new(linked).head.symref_target.should eq("refs/heads/feature")
       expect_raises(Git::Error) { Git::Repository.new(linked, follow_gitfile: false) }
       store = Git::Repository.new(linked, linked_worktree_admin_dir: admin)
-      store.head[0].should eq("refs/heads/feature")
-      store.head[1].should eq(GitOracle.run(linked, "rev-parse", "HEAD").stdout.strip)
+      store.head.symref_target.should eq("refs/heads/feature")
+      store.head.oid.should eq(GitOracle.run(linked, "rev-parse", "HEAD").stdout.strip)
       File.write(File.join(linked, "shared.txt"), "new worktree content\n")
       GitOracle.run(linked, "add", "shared.txt")
-      store.staged_changes(128 * 1024, 10) { nil }.first.map(&.path).should eq(["shared.txt"])
-      Git::Repository.new(root).staged_changes(128 * 1024, 10) { nil }.first.should be_empty
+      store.staged_changes(max_bytes: 128 * 1024, limit: 10).map(&.path).should eq(["shared.txt"])
+      Git::Repository.new(root).staged_changes(max_bytes: 128 * 1024, limit: 10).should be_empty
       GitOracle.run(linked, "update-ref", "refs/worktree/private", "HEAD")
-      store.resolve_ref?("refs/worktree/private").should eq(GitOracle.run(linked, "rev-parse", "refs/worktree/private").stdout.strip)
-      Git::Repository.new(root).resolve_ref?("refs/worktree/private").should be_nil
-      store.check!
+      store.refs.resolve?("refs/worktree/private").should eq(GitOracle.run(linked, "rev-parse", "refs/worktree/private").stdout.strip)
+      Git::Repository.new(root).refs.resolve?("refs/worktree/private").should be_nil
+      store.revalidate!
       backlink = File.join(admin, "gitdir")
       original = File.read(backlink)
       begin
         File.write(backlink, File.join(root, ".git") + "\n")
-        expect_raises(Git::Error) { store.check! }
+        expect_raises(Git::Error) { store.revalidate! }
       ensure
         File.write(backlink, original)
       end
-      store.check!
+      store.revalidate!
     end
   end
 
@@ -117,13 +118,13 @@ describe "P05 repository identity and discovery" do
       store = Git::Repository.new(from, git_dir: "../../selected-meta", work_tree: "..")
       store.bare?.should be_false
       store.root.should eq(File.realpath(root))
-      store.check!
-      store.head[0].should eq(GitOracle.run(root, "symbolic-ref", "HEAD").stdout.strip)
+      store.revalidate!
+      store.head.symref_target.should eq(GitOracle.run(root, "symbolic-ref", "HEAD").stdout.strip)
       git_env = {"GIT_DIR" => "../../selected-meta", "GIT_WORK_TREE" => ".."}
       from_env = Git::Repository.from_environment(from, git_env)
       from_env.root.should eq(File.realpath(root))
       from_env.head.should eq(store.head)
-      from_env.check!
+      from_env.revalidate!
       GitOracle.run(from, "rev-parse", "--show-toplevel", extra_env: git_env).stdout.strip.should eq(from_env.root)
     end
   end
@@ -138,7 +139,7 @@ describe "P05 repository identity and discovery" do
       selected = Git::Repository.new(root, work_tree: external)
       selected.work_tree.should eq(external)
       selected.bare?.should be_false
-      selected.check!
+      selected.revalidate!
     end
   end
 
@@ -164,11 +165,11 @@ describe "P05 repository identity and discovery" do
       admin = File.join(root, ".git", "worktrees", "linked-common")
       env = {"GIT_DIR" => admin, "GIT_COMMON_DIR" => "../repo/.git", "GIT_WORK_TREE" => linked}
       actual = Git::Repository.from_environment(linked, env)
-      actual.head[1].should eq(GitOracle.run(linked, "rev-parse", "HEAD", extra_env: env).stdout.strip)
-      actual.read_head_file("shared.txt", 4096) { nil }[1].should eq("from common objects\n")
+      actual.head.oid.should eq(GitOracle.run(linked, "rev-parse", "HEAD", extra_env: env).stdout.strip)
+      actual.read_head_file("shared.txt", max_bytes: 4096).should eq("from common objects\n")
       Git::Location.new(linked, git_dir_option: admin, common_dir_option: "../repo/.git",
         work_tree_option: linked).common.should eq(File.join(root, ".git"))
-      actual.check!
+      actual.revalidate!
       expect_raises(Git::Error) do
         Git::Repository.from_environment(linked, env.merge({"GIT_COMMON_DIR" => "../.."}))
       end
@@ -183,7 +184,7 @@ describe "P05 repository identity and discovery" do
       FileUtils.mv(gitdir, saved)
       begin
         FileUtils.cp_r(saved, gitdir)
-        expect_raises(Git::Error) { store.check! }
+        expect_raises(Git::Error) { store.revalidate! }
       ensure
         FileUtils.rm_rf(gitdir)
         FileUtils.mv(saved, gitdir)
@@ -202,7 +203,7 @@ describe "P05 repository identity and discovery" do
       GitOracle.run(sub, "rev-parse", "--show-toplevel").stdout.strip.should eq(root)
       found = Git::Repository.new(sub, discover: true)
       found.root.should eq(root)
-      found.head[0].should eq(GitOracle.run(sub, "symbolic-ref", "HEAD").stdout.strip)
+      found.head.symref_target.should eq(GitOracle.run(sub, "symbolic-ref", "HEAD").stdout.strip)
       expect_raises(Git::Error) { Git::Repository.new(sub, discover: true, follow_gitfile: false) }
     end
   end
@@ -235,7 +236,7 @@ describe "P05 repository identity and discovery" do
       expect_raises(Git::Error) { Git::Repository.new(root) }
       # Explicit GIT_DIR overrides a dangling gitfile; implicit discovery
       # must not follow it into arbitrary external storage.
-      Git::Repository.new(root, git_dir: File.join(outside, "git-dir")).head[0].should eq("refs/heads/main")
+      Git::Repository.new(root, git_dir: File.join(outside, "git-dir")).head.symref_target.should eq("refs/heads/main")
     end
   end
 end

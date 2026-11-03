@@ -1,5 +1,5 @@
 module Git
-  module References
+  struct References
     class Transaction
       #
       # Git's files backend does not provide cross-file atomic renames. Failed

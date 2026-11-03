@@ -12,7 +12,7 @@ if root = ENV["CR_GIT_FINALIZATION_CRASH"]?
   changes << Git::References::Update.new("refs/heads/main", ENV["CR_GIT_FINALIZATION_NEW"], ENV["CR_GIT_FINALIZATION_OLD"])
   Git::References::Recovery.run(meta, repo.object_format, "killed-finalizer", changes,
     finalization_probe: -> { LibC._exit(79) }) do |pending|
-    repo.change_refs(pending)
+    repo.refs.apply(pending)
   end
   LibC._exit(78)
 end
@@ -26,7 +26,7 @@ describe "P18/P19 recovery coexistence with external Git writers" do
       oid = repo.write_commit(tree: tree, author: actor, committer: actor, message: "guard")
       first = [] of Git::References::Change
       first << Git::References::Update.new("refs/heads/first", oid, nil)
-      repo.change_refs_recoverably(first, id: "guard-first")
+      repo.recovery.apply(first, id: "guard-first")
       guard = File.join(root, ".git", "crystal-git-recovery", "active.lock")
       File.file?(guard).should be_true
       fd = LibC.open(guard, LibC::O_RDWR | LibC::O_NOFOLLOW | LibC::O_CLOEXEC)
@@ -35,9 +35,9 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         (LibC.flock(fd, LibC::FlockOp::EX | LibC::FlockOp::NB) == 0).should be_true
         next_changes = [] of Git::References::Change
         next_changes << Git::References::Update.new("refs/heads/second", oid, nil)
-        expect_raises(Git::Error, /repository is busy/) { repo.change_refs_recoverably(next_changes, id: "guard-second") }
-        repo.resolve_ref?("refs/heads/second").should be_nil
-        repo.pending_ref_recoveries.should be_empty
+        expect_raises(Git::Error, /repository is busy/) { repo.recovery.apply(next_changes, id: "guard-second") }
+        repo.refs.resolve?("refs/heads/second").should be_nil
+        repo.recovery.pending.should be_empty
       ensure
         LibC.close(fd)
       end
@@ -53,16 +53,16 @@ describe "P18/P19 recovery coexistence with external Git writers" do
       first = [] of Git::References::Change
       first << Git::References::Update.new("refs/heads/first", oid, nil)
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(first, id: "unfinished", after_publish: ->(_name : String) { raise "interrupt" })
+        repo.recovery.apply(first, id: "unfinished", after_publish: ->(_name : String) { raise "interrupt" })
       end
       next_changes = [] of Git::References::Change
       next_changes << Git::References::Update.new("refs/heads/second", oid, nil)
-      expect_raises(Git::Error, /pending journal/) { repo.change_refs_recoverably(next_changes, id: "second") }
-      repo.pending_ref_recoveries.should eq(["unfinished"])
-      repo.recover_refs("unfinished")
-      repo.change_refs_recoverably(next_changes, id: "second")
-      repo.pending_ref_recoveries.should be_empty
-      repo.resolve_ref?("refs/heads/second").should eq(oid)
+      expect_raises(Git::Error, /pending journal/) { repo.recovery.apply(next_changes, id: "second") }
+      repo.recovery.pending.should eq(["unfinished"])
+      repo.recovery.resume("unfinished")
+      repo.recovery.apply(next_changes, id: "second")
+      repo.recovery.pending.should be_empty
+      repo.refs.resolve?("refs/heads/second").should eq(oid)
     end
   end
 
@@ -75,13 +75,13 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         old = repo.write_commit(tree: tree, author: actor, committer: actor, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: actor, committer: actor, message: "desired")
         external = repo.write_commit(tree: tree, parents: [desired], author: actor, committer: actor, message: "external")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         log = Git::References::LogEntry.new(actor, "native")
         changes = [] of Git::References::Change
         changes << Git::References::Update.new("refs/heads/main", desired, old, log)
         updated = false
         expect_raises(Git::References::PartialPublication) do
-          repo.change_refs_recoverably(changes, id: "foreign-#{format}", after_reflog: ->(_path : String) do
+          repo.recovery.apply(changes, id: "foreign-#{format}", after_reflog: ->(_path : String) do
             unless updated
               updated = true
               GitOracle.run(root, "update-ref", "refs/heads/main", external, desired)
@@ -90,10 +90,10 @@ describe "P18/P19 recovery coexistence with external Git writers" do
           end)
         end
         updated.should be_true
-        repo.pending_ref_recoveries.should eq(["foreign-#{format}"])
-        repo.resolve_ref?("refs/heads/main").should eq(external)
-        expect_raises(Git::References::Recovery::Conflict) { repo.recover_refs("foreign-#{format}") }
-        repo.resolve_ref?("refs/heads/main").should eq(external)
+        repo.recovery.pending.should eq(["foreign-#{format}"])
+        repo.refs.resolve?("refs/heads/main").should eq(external)
+        expect_raises(Git::References::Recovery::Conflict) { repo.recovery.resume("foreign-#{format}") }
+        repo.refs.resolve?("refs/heads/main").should eq(external)
       end
     end
 
@@ -104,7 +104,7 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         old = repo.write_commit(tree: tree, author: actor, committer: actor, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: actor, committer: actor, message: "desired")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         staged = repo.write_blob("native\n")
         edits = [] of Git::Index::Edit
         edits << Git::Index::Put.new("native.txt", "100644", staged)
@@ -112,13 +112,13 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         changes << Git::References::Update.new("refs/heads/main", desired, old)
         File.write(File.join(root, "external.txt"), "external\n")
         expect_raises(Git::References::PartialPublication) do
-          repo.change_index_and_refs_recoverably(edits, changes, id: "foreign-index-#{format}",
+          repo.recovery.apply(edits, changes, id: "foreign-index-#{format}",
             after_index_publish: -> { GitOracle.run(root, "add", "external.txt"); nil })
         end
-        repo.pending_ref_recoveries.should eq(["foreign-index-#{format}"])
+        repo.recovery.pending.should eq(["foreign-index-#{format}"])
         GitOracle.run(root, "ls-files", "--stage", "external.txt").stdout.should contain("external.txt")
-        expect_raises(Git::Error) { repo.recover_index_and_refs("foreign-index-#{format}") }
-        repo.pending_ref_recoveries.should eq(["foreign-index-#{format}"])
+        expect_raises(Git::Error) { repo.recovery.resume("foreign-index-#{format}") }
+        repo.recovery.pending.should eq(["foreign-index-#{format}"])
       end
     end
   end
@@ -131,14 +131,14 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         first = repo.write_commit(tree: tree, author: actor, committer: actor, message: "first")
         second = repo.write_commit(tree: tree, parents: [first], author: actor, committer: actor, message: "second")
-        repo.update_ref("refs/heads/main", first, expected_oid: nil)
+        repo.refs.update("refs/heads/main", first, expected_oid: nil)
         log = Git::References::LogEntry.new(actor, "native barrier")
         changes = [] of Git::References::Change
         changes << Git::References::Update.new("refs/heads/main", second, first, log)
         foreign = File.join(root, ".git", "refs", "heads", "main.lock")
         injected = false
         error = expect_raises(Git::References::PartialPublication) do
-          repo.change_refs_recoverably(changes, id: "foreign-lock-#{format}",
+          repo.recovery.apply(changes, id: "foreign-lock-#{format}",
             after_reflog: ->(_name : String) do
               unless injected
                 File.write(foreign, "foreign writer")
@@ -150,11 +150,11 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         injected.should be_true
         error.original_error.message.not_nil!.should contain("finalization blocked by Git lock")
         File.read(foreign).should eq("foreign writer")
-        repo.pending_ref_recoveries.should eq(["foreign-lock-#{format}"])
+        repo.recovery.pending.should eq(["foreign-lock-#{format}"])
         File.delete(foreign) # Simulated foreign writer has now exited.
-        repo.recover_refs("foreign-lock-#{format}")
-        repo.resolve_ref?("refs/heads/main").should eq(second)
-        repo.pending_ref_recoveries.should be_empty
+        repo.recovery.resume("foreign-lock-#{format}")
+        repo.refs.resolve?("refs/heads/main").should eq(second)
+        repo.recovery.pending.should be_empty
         File.exists?(foreign).should be_false
         File.exists?(File.join(root, ".git", "packed-refs.lock")).should be_false
         GitOracle.run(root, "update-ref", "refs/heads/main", first, second)
@@ -168,7 +168,7 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         tree = repo.write_tree([] of Git::Tree::Entry)
         first = repo.write_commit(tree: tree, author: actor, committer: actor, message: "first")
         second = repo.write_commit(tree: tree, parents: [first], author: actor, committer: actor, message: "second")
-        repo.update_ref("refs/heads/main", first, expected_oid: nil)
+        repo.refs.update("refs/heads/main", first, expected_oid: nil)
         blob = repo.write_blob("staged barrier\n")
         edits = [] of Git::Index::Edit
         edits << Git::Index::Put.new("staged.txt", "100644", blob)
@@ -178,7 +178,7 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         foreign = File.join(root, ".git", "index.lock")
         injected = false
         error = expect_raises(Git::References::PartialPublication) do
-          repo.change_index_and_refs_recoverably(edits, changes, id: "foreign-index-lock-#{format}",
+          repo.recovery.apply(edits, changes, id: "foreign-index-lock-#{format}",
             after_reflog: ->(_name : String) do
               unless injected
                 File.write(foreign, "foreign index writer")
@@ -190,11 +190,11 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         injected.should be_true
         error.original_error.message.not_nil!.should contain("finalization blocked by Git lock")
         File.read(foreign).should eq("foreign index writer")
-        repo.pending_ref_recoveries.should eq(["foreign-index-lock-#{format}"])
+        repo.recovery.pending.should eq(["foreign-index-lock-#{format}"])
         File.delete(foreign)
-        repo.recover_index_and_refs("foreign-index-lock-#{format}")
-        repo.pending_ref_recoveries.should be_empty
-        repo.resolve_ref?("refs/heads/main").should eq(second)
+        repo.recovery.resume("foreign-index-lock-#{format}")
+        repo.recovery.pending.should be_empty
+        repo.refs.resolve?("refs/heads/main").should eq(second)
         GitOracle.run(root, "ls-files", "--stage").stdout.should contain("staged.txt")
         File.exists?(foreign).should be_false
         GitOracle.run(root, "add", "--all")
@@ -209,20 +209,20 @@ describe "P18/P19 recovery coexistence with external Git writers" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       first = repo.write_commit(tree: tree, author: actor, committer: actor, message: "first")
       second = repo.write_commit(tree: tree, parents: [first], author: actor, committer: actor, message: "second")
-      repo.update_ref("refs/heads/main", first, expected_oid: nil)
+      repo.refs.update("refs/heads/main", first, expected_oid: nil)
       log = Git::References::LogEntry.new(actor, "barrier")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/main", second, first, log)
       foreign = File.join(root, ".git", "packed-refs.lock")
       expect_raises(Git::References::PartialPublication) do
-        repo.change_refs_recoverably(changes, id: "foreign-packed-lock",
+        repo.recovery.apply(changes, id: "foreign-packed-lock",
           after_reflog: ->(_name : String) { File.write(foreign, "packed writer"); nil })
       end
       File.read(foreign).should eq("packed writer")
-      repo.pending_ref_recoveries.should eq(["foreign-packed-lock"])
+      repo.recovery.pending.should eq(["foreign-packed-lock"])
       File.delete(foreign)
-      repo.recover_refs("foreign-packed-lock")
-      repo.pending_ref_recoveries.should be_empty
+      repo.recovery.resume("foreign-packed-lock")
+      repo.recovery.pending.should be_empty
       File.exists?(foreign).should be_false
       GitOracle.run(root, "pack-refs", "--all")
     end
@@ -237,7 +237,7 @@ describe "P18/P19 recovery coexistence with external Git writers" do
         old = repo.write_commit(tree: tree, author: actor, committer: actor, message: "old")
         desired = repo.write_commit(tree: tree, parents: [old], author: actor, committer: actor, message: "desired")
         later = repo.write_commit(tree: tree, parents: [desired], author: actor, committer: actor, message: "later")
-        repo.update_ref("refs/heads/main", old, expected_oid: nil)
+        repo.refs.update("refs/heads/main", old, expected_oid: nil)
         File.write(File.join(root, "external.txt"), "outside\n")
         blob = repo.write_blob("index\n")
         edits = [] of Git::Index::Edit
@@ -262,11 +262,11 @@ describe "P18/P19 recovery coexistence with external Git writers" do
             GitOracle.run(root, "pack-refs", "--all", check: false).success?.should be_false
             nil
           end) do |batch|
-          repo.change_refs(batch)
+          repo.refs.apply(batch)
         end
         inspected.should be_true
-        repo.pending_ref_recoveries.should be_empty
-        repo.resolve_ref?("refs/heads/main").should eq(desired)
+        repo.recovery.pending.should be_empty
+        repo.refs.resolve?("refs/heads/main").should eq(desired)
         ["index.lock", "packed-refs.lock", "refs/heads/main.lock"].each do |suffix|
           File.exists?(File.join(root, ".git", suffix)).should be_false
         end
@@ -284,22 +284,22 @@ describe "P18/P19 recovery coexistence with external Git writers" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       old = repo.write_commit(tree: tree, author: actor, committer: actor, message: "old")
       desired = repo.write_commit(tree: tree, parents: [old], author: actor, committer: actor, message: "desired")
-      repo.update_ref("refs/heads/main", old, expected_oid: nil)
+      repo.refs.update("refs/heads/main", old, expected_oid: nil)
       child = Process.run(Process.executable_path.not_nil!, [] of String,
         env: {"CR_GIT_FINALIZATION_CRASH" => root,
               "CR_GIT_FINALIZATION_OLD" => old, "CR_GIT_FINALIZATION_NEW" => desired},
         output: Process::Redirect::Close, error: Process::Redirect::Close)
       child.exit_code.should eq(79)
-      repo.pending_ref_recoveries.should eq(["killed-finalizer"])
+      repo.recovery.pending.should eq(["killed-finalizer"])
       ["packed-refs.lock", "refs/heads/main.lock"].each do |suffix|
         File.exists?(File.join(root, ".git", suffix)).should be_true
       end
-      expect_raises(Git::Error, /blocked by ref lock/) { repo.recover_refs("killed-finalizer") }
+      expect_raises(Git::Error, /blocked by ref lock/) { repo.recovery.resume("killed-finalizer") }
       # Only a trusted maintenance caller that has certified process
       # quiescence can remove dead Git lock files.
-      repo.recover_refs("killed-finalizer", clear_abandoned_locks: true)
-      repo.pending_ref_recoveries.should be_empty
-      repo.resolve_ref?("refs/heads/main").should eq(desired)
+      repo.recovery.resume("killed-finalizer", clear_abandoned_locks: true)
+      repo.recovery.pending.should be_empty
+      repo.refs.resolve?("refs/heads/main").should eq(desired)
       ["packed-refs.lock", "refs/heads/main.lock"].each do |suffix|
         File.exists?(File.join(root, ".git", suffix)).should be_false
       end

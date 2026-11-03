@@ -4,10 +4,10 @@ module Git
     # Middle-entry removal rechains subsequent reflog old-OIDs exactly as Git
     # does. Top removal moves refs/stash to the previous entry; final removal
     # deletes the ref and its reflog through the native ref transaction.
-    def stash_drop(position : Int32 = 0, *, max_log_bytes : Int32 = 8_388_608,
-                   max_object_bytes : Int32 = 8_388_608,
-                   max_entries : Int32 = 10_000,
-                   check : Proc(Nil)? = nil) : Stash::Entry
+    protected def stash_drop(position : Int32 = 0, *, max_log_bytes : Int32 = 8_388_608,
+                             max_object_bytes : Int32 = 8_388_608,
+                             max_entries : Int32 = 10_000,
+                             check : Proc(Nil)? = nil) : Stash::Entry
       raise ArgumentError.new("invalid Git stash position") if position < 0
       records = stash_log_records(max_log_bytes: max_log_bytes, max_entries: max_entries,
         max_object_bytes: max_object_bytes, check: check)

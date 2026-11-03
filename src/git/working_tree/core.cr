@@ -122,6 +122,27 @@ module Git
       {changes.first(limit), changes.size > limit, ignored_count}
     end
 
+    # Worktree changes, at most a caller-chosen number of them.
+    struct ChangeList
+      include Indexable(Change)
+
+      # Whether more changes exist than were listed.
+      getter? truncated : Bool
+      # How many ignored paths were skipped.
+      getter ignored : Int32
+
+      def initialize(@changes : Array(Change), @truncated : Bool, @ignored : Int32)
+      end
+
+      def size : Int32
+        @changes.size
+      end
+
+      def unsafe_fetch(index : Int) : Change
+        @changes.unsafe_fetch(index)
+      end
+    end
+
     record FileComparison, path : String, old_oid : String, new_oid : String?, old_mode : String,
       new_mode : String?, old_text : String, new_text : String
 
@@ -158,18 +179,27 @@ module Git
   end
 
   class Repository
-    def working_changes(max_bytes : Int32, limit : Int32, *, include_untracked : Bool = true,
+    # Paths whose worktree state differs from the index, and untracked
+    # files unless include_untracked is false, at most limit of them.
+    # allowed_path filters what is reported; config supplies core.filemode
+    # and the excludes file.
+    def working_changes(*, max_bytes : Int32 = 8_388_608, limit : Int32 = 1_000,
+                        include_untracked : Bool = true,
                         allowed_path : Proc(String, Bool)? = nil, config : Config? = nil,
-                        &check : -> Nil) : {Array(WorkingTree::Change), Bool, Int32}
+                        check : Proc(Nil)? = nil) : WorkingTree::ChangeList
       require_worktree!
-      @worktree.changes(max_bytes, limit, include_untracked: include_untracked,
-        allowed_path: allowed_path, config: config) { check.call }
+      changes, truncated, ignored = @worktree.changes(max_bytes, limit,
+        include_untracked: include_untracked, allowed_path: allowed_path,
+        config: config) { check.try &.call }
+      WorkingTree::ChangeList.new(changes, truncated, ignored)
     end
 
-    def working_file(path : String, max_bytes : Int32, *, config : Config? = nil,
-                     &check : -> Nil) : WorkingTree::FileComparison?
+    # The index's and the worktree's version of one path, or nil when they
+    # agree.
+    def working_file(path : String, *, max_bytes : Int32 = 8_388_608, config : Config? = nil,
+                     check : Proc(Nil)? = nil) : WorkingTree::FileComparison?
       require_worktree!
-      @worktree.file_comparison(path, max_bytes, config: config) { check.call }
+      @worktree.file_comparison(path, max_bytes, config: config) { check.try &.call }
     end
   end
 end

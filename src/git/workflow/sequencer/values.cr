@@ -3,7 +3,7 @@ module Git
   # metadata layout is deliberately reusable for a future multi-item rebase
   # sequencer, while CHERRY_PICK_HEAD / REVERT_HEAD remain compatible with the
   # standard Git repository state model.
-  module Sequencer
+  struct Sequencer
     enum Kind
       CherryPick
       Revert

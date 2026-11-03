@@ -7,9 +7,9 @@ module Git
     # files, symbolic links (created last, so no file is written through
     # one) and empty directories for submodules, then a matching index.
     # Existing files are never replaced.
-    def populate_worktree(commit_oid : String, *, max_files : Int32 = 1_000_000,
-                          max_object_bytes : Int32 = 268_435_456,
-                          check : Proc(Nil)? = nil) : Int32
+    protected def populate_worktree(commit_oid : String, *, max_files : Int32 = 1_000_000,
+                                    max_object_bytes : Int32 = 268_435_456,
+                                    check : Proc(Nil)? = nil) : Int32
       require_worktree!
       check!
       root = work_tree.not_nil!

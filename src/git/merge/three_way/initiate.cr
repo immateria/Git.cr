@@ -7,13 +7,13 @@ module Git
     # markers when safe, otherwise the ours blob stays in the worktree.
     # A clean merge is committed with two parents. Unresolved merges keep
     # MERGE_HEAD and must be completed or aborted explicitly.
-    def merge_three_way(source : String, *, author : Signature, committer : Signature,
-                        message : String, max_history_nodes : Int32 = 16_384,
-                        max_object_bytes : Int32 = 8_388_608,
-                        max_index_bytes : Int32 = 8_388_608,
-                        max_total_bytes : Int64 = 67_108_864,
-                        max_entries : Int32 = 10_000,
-                        check : Proc(Nil)? = nil) : Merge::Result
+    def merge(source : String, *, author : Signature, committer : Signature,
+              message : String, max_history_nodes : Int32 = 16_384,
+              max_object_bytes : Int32 = 8_388_608,
+              max_index_bytes : Int32 = 8_388_608,
+              max_total_bytes : Int64 = 67_108_864,
+              max_entries : Int32 = 10_000,
+              check : Proc(Nil)? = nil) : Merge::Result
       require_worktree!
       raise ArgumentError.new("invalid Git three-way merge budgets") if max_history_nodes < 1 || max_object_bytes < 128 ||
                                                                         max_index_bytes < 128 || max_total_bytes < max_object_bytes ||
@@ -22,7 +22,7 @@ module Git
       check!
       raise Error.new("Git three-way merge unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                       (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
-      branch, old_oid = head
+      branch, old_oid = head_ref_and_oid
       raise Error.new("Git three-way merge requires an existing symbolic branch") unless branch &&
                                                                                          branch.starts_with?("refs/heads/") && old_oid
       raise Error.new("Git merge is already in progress") if merge_state?
@@ -35,15 +35,15 @@ module Git
       raise Error.new("Git three-way merge requires exactly one common ancestor") unless bases.size == 1
       return Merge::Result.new(old_oid, target, bases[0], [] of String, [] of String, nil) if target == old_oid || bases == [target]
       if bases == [old_oid]
-        fast = merge_fast_forward(source, max_history_nodes: max_history_nodes,
+        fast = fast_forward(source, max_history_nodes: max_history_nodes,
           max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
           max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
         return Merge::Result.new(old_oid, target, old_oid, fast.changed_paths, [] of String, target)
       end
       base_oid = bases[0]
-      orig_tree = commit(old_oid, max_object_bytes) { check.try &.call }.tree
-      theirs_tree = commit(target, max_object_bytes) { check.try &.call }.tree
-      base_tree = commit(base_oid, max_object_bytes) { check.try &.call }.tree
+      orig_tree = read_commit(old_oid, max_bytes: max_object_bytes, check: check).tree
+      theirs_tree = read_commit(target, max_bytes: max_object_bytes, check: check).tree
+      base_tree = read_commit(base_oid, max_bytes: max_object_bytes, check: check).tree
       ours = Checkout.tree_files(self, orig_tree, max_object_bytes: max_object_bytes, max_files: max_entries, check: check, allow_symlinks: true)
       theirs = Checkout.tree_files(self, theirs_tree, max_object_bytes: max_object_bytes, max_files: max_entries, check: check, allow_symlinks: true)
       base = Checkout.tree_files(self, base_tree, max_object_bytes: max_object_bytes, max_files: max_entries, check: check, allow_symlinks: true)
@@ -84,7 +84,7 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
-          raise Error.new("Git merge HEAD changed") unless head == {branch, old_oid}
+          raise Error.new("Git merge HEAD changed") unless head_ref_and_oid == {branch, old_oid}
           raise Error.new("Git merge index changed") unless @index.snapshot_checksum(max_index_bytes) == snapshot
         end
         guard.call

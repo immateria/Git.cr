@@ -1,9 +1,4 @@
 module Git
-  module References
-    # Refs Git keeps directly in the Git directory, outside refs/.
-    PSEUDO_REFS = {"HEAD", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"}
-  end
-
   module Revision
     # Follow tags (and from a commit to its tree) until an object of kind.
     def self.peel(repository : Repository, oid : String, kind : String, max_bytes : Int32 = 268_435_456) : String
@@ -89,7 +84,7 @@ module Git
       # A ref name expanded with Git's rules, or nil.
       def expand_ref(name : String) : String?
         if References::PSEUDO_REFS.includes?(name)
-          return name if name == "HEAD" || File.file?(File.join(@repository.git_directory, name))
+          return name if name == "HEAD" || File.file?(File.join(@repository.git_dir, name))
         end
         RefName::REV_PARSE_RULES.each do |rule|
           candidate = rule.sub("%s", name)
@@ -117,7 +112,7 @@ module Git
       # <ref>@{upstream} and <ref>@{n}.
       private def resolve_selector(name : String, selector : String) : String
         ref = if name.empty? || name == "HEAD"
-                @repository.head[0] || "HEAD"
+                @repository.head_ref_and_oid[0] || "HEAD"
               else
                 expand_ref(name) || raise Error.new("unknown Git revision #{name}")
               end
@@ -137,8 +132,8 @@ module Git
       private def resolve_name(name : String) : String?
         format = @repository.object_format
         if References::PSEUDO_REFS.includes?(name)
-          return @repository.head[1] if name == "HEAD"
-          path = File.join(@repository.git_directory, name)
+          return @repository.head_ref_and_oid[1] if name == "HEAD"
+          path = File.join(@repository.git_dir, name)
           return nil unless File.file?(path)
           first = File.read(path).lines.first?.try(&.split(/\s/).first?)
           return first ? ObjectId.valid!(first, format) : nil
@@ -243,7 +238,7 @@ module Git
       end
 
       private def reflog_value(ref : String, count : Int32) : String
-        base = ref == "HEAD" ? @repository.git_directory : @repository.common_directory
+        base = ref == "HEAD" ? @repository.git_dir : @repository.common_dir
         path = File.join(base, "logs", ref)
         raise Error.new("Git ref #{ref} has no reflog") unless File.file?(path)
         lines = File.read(path).lines.reject(&.empty?)
@@ -266,7 +261,7 @@ module Git
     end
 
     # A short ref name expanded with Git's rules, or nil.
-    def expand_ref(name : String) : String?
+    protected def expand_ref(name : String) : String?
       Revision::Parser.new(self).expand_ref(name)
     end
 
@@ -284,7 +279,7 @@ module Git
     def log(revisions : Array(String) = ["HEAD"], *, limit : Int32 = 100,
             max_commit_bytes : Int32 = 8_388_608, check : Proc(Nil)? = nil) : Array(Commit)
       rev_list(revisions, limit: limit, check: check).map do |oid|
-        commit(oid, max_commit_bytes) { check.try &.call }
+        read_commit(oid, max_bytes: max_commit_bytes, check: check)
       end
     end
 

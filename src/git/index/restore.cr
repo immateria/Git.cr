@@ -72,11 +72,11 @@ module Git
     # for exact literal paths. Includes index-only symlinks and gitlinks, but
     # never expands globs or modifies HEAD/worktree. Unselected index entries
     # and their flags/stages are preserved. The Git index lock is cooperative.
-    def restore_staged_paths(paths : Array(String), *, source : String = "HEAD",
-                             max_object_bytes : Int32 = 8_388_608,
-                             max_index_bytes : Int32 = 8_388_608,
-                             max_entries : Int32 = 10_000,
-                             check : Proc(Nil)? = nil) : Array(String)
+    def restore_staged(paths : Array(String), *, source : String = "HEAD",
+                       max_object_bytes : Int32 = 8_388_608,
+                       max_index_bytes : Int32 = 8_388_608,
+                       max_entries : Int32 = 10_000,
+                       check : Proc(Nil)? = nil) : Array(String)
       require_worktree!
       raise ArgumentError.new("invalid Git index restore budgets") if max_object_bytes < 128 ||
                                                                       max_index_bytes < 128 || max_entries < 1 || max_entries > @max_search_entries
@@ -87,7 +87,7 @@ module Git
         raise Error.new("duplicate Git index restore path") unless chosen.add?(path)
       end
       source_oid = History.resolve_commit(self, source, max_object_bytes, check)
-      tree_oid = commit(source_oid, max_object_bytes) { check.try &.call }.tree
+      tree_oid = read_commit(source_oid, max_bytes: max_object_bytes, check: check).tree
       desired = IndexRestore.source_entries(self, tree_oid, max_object_bytes: max_object_bytes,
         max_entries: max_entries, check: check)
       current = @index.entries(max_index_bytes) { check.try &.call }
@@ -108,16 +108,16 @@ module Git
     # without moving HEAD or modifying the worktree (`git read-tree --reset`
     # behavior for simple single-tree resets). Keeps staged conflicts out of
     # the resulting index, including when the target tree is empty.
-    def reset_index_to(source : String = "HEAD", *,
-                       max_object_bytes : Int32 = 8_388_608,
-                       max_index_bytes : Int32 = 8_388_608,
-                       max_entries : Int32 = 10_000,
-                       check : Proc(Nil)? = nil) : Array(String)
+    def read_tree(source : String = "HEAD", *,
+                  max_object_bytes : Int32 = 8_388_608,
+                  max_index_bytes : Int32 = 8_388_608,
+                  max_entries : Int32 = 10_000,
+                  check : Proc(Nil)? = nil) : Array(String)
       require_worktree!
       raise ArgumentError.new("invalid Git index reset budgets") if max_object_bytes < 128 ||
                                                                     max_index_bytes < 128 || max_entries < 1 || max_entries > @max_search_entries
       source_oid = History.resolve_commit(self, source, max_object_bytes, check)
-      tree_oid = commit(source_oid, max_object_bytes) { check.try &.call }.tree
+      tree_oid = read_commit(source_oid, max_bytes: max_object_bytes, check: check).tree
       desired = IndexRestore.source_entries(self, tree_oid, max_object_bytes: max_object_bytes,
         max_entries: max_entries, check: check)
       current = @index.entries(max_index_bytes) { check.try &.call }

@@ -35,7 +35,7 @@ describe "P32 native Git cherry-pick and revert sequencer" do
           "Source Author <source@example.test>|1234567000|2009-02-14 01:46:40 +0230|Picker <picker@example.test>|1234567999|pick me")
         File.read(File.join(root, "picked")).should eq("from topic\n")
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.sequencer_state?.should be_nil
+        repo.sequencer.state?.should be_nil
       end
     end
 
@@ -67,18 +67,18 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         result.commit_oid.should be_nil
         File.read(File.join(root, ".git", "CHERRY_PICK_HEAD")).strip.should eq(source)
         File.exists?(File.join(root, ".git", "REVERT_HEAD")).should be_false
-        repo.sequencer_conflicts.should eq([Git::Merge::Conflict.new("shared",
+        repo.sequencer.conflicts.should eq([Git::Merge::Conflict.new("shared",
           Git::Checkout::FileState.new("100644", base_blob),
           Git::Checkout::FileState.new("100644", ours_blob),
           Git::Checkout::FileState.new("100644", theirs_blob))])
         GitOracle.run(root, "ls-files", "--stage", "shared").stdout.lines.size.should eq(3)
         File.write(File.join(root, "shared"), "resolved\n")
         repo.stage_file("shared")
-        oid = repo.cherry_pick_continue(committer: committer)
+        oid = repo.cherry_pick.continue(committer: committer)
         GitOracle.run(root, "rev-list", "--parents", "-n", "1", "HEAD").stdout.strip.split.should eq([oid, original])
         GitOracle.run(root, "show", "-s", "--format=%an <%ae>|%s", "HEAD").stdout.strip.should eq("Source <source@example.test>|pick conflict")
         File.read(File.join(root, "shared")).should eq("resolved\n")
-        repo.sequencer_state?.should be_nil
+        repo.sequencer.state?.should be_nil
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
     end
@@ -102,12 +102,12 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         repo.cherry_pick("topic", committer: sig).conflicts.should eq(["shared"])
         File.write(File.join(root, "shared"), "interim\n")
-        repo.cherry_pick_abort.to_set.should eq(["added", "shared"].to_set)
+        repo.cherry_pick.abort.to_set.should eq(["added", "shared"].to_set)
         File.read(File.join(root, "shared")).should eq("ours\n")
         File.exists?(File.join(root, "added")).should be_false
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.sequencer_state?.should be_nil
+        repo.sequencer.state?.should be_nil
       end
     end
 
@@ -214,17 +214,17 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         result.conflicts.should eq(["shared"])
         File.read(File.join(root, ".git", "REVERT_HEAD")).strip.should eq(source)
         File.exists?(File.join(root, ".git", "CHERRY_PICK_HEAD")).should be_false
-        repo.sequencer_conflicts.should eq([Git::Merge::Conflict.new("shared",
+        repo.sequencer.conflicts.should eq([Git::Merge::Conflict.new("shared",
           Git::Checkout::FileState.new("100644", source_blob),
           Git::Checkout::FileState.new("100644", ours_blob),
           Git::Checkout::FileState.new("100644", parent_blob))])
         File.write(File.join(root, "shared"), "resolved revert\n")
         repo.stage_file("shared")
-        oid = repo.revert_continue(committer: committer)
+        oid = repo.revert.continue(committer: committer)
         GitOracle.run(root, "rev-list", "--parents", "-n", "1", "HEAD").stdout.strip.split.should eq([oid, original])
         GitOracle.run(root, "show", "-s", "--format=%an <%ae>|%s", "HEAD").stdout.strip.should eq(
           "Reverter <reverter@example.test>|Revert \"source change\"")
-        repo.sequencer_state?.should be_nil
+        repo.sequencer.state?.should be_nil
       end
     end
 
@@ -245,7 +245,7 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         repo.revert(source, author: sig, committer: sig).conflicts.should eq(["shared"])
         File.write(File.join(root, "shared"), "manual\n")
-        repo.revert_abort.should eq(["shared"])
+        repo.revert.abort.should eq(["shared"])
         File.read(File.join(root, "shared")).should eq("later\n")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
@@ -291,11 +291,11 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         expect_raises(Git::Sequencer::EmptyResult) { repo.cherry_pick(empty, committer: sig) }
-        repo.sequencer_state?.should_not be_nil
+        repo.sequencer.state?.should_not be_nil
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(base)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
-        repo.sequencer_skip.should be_empty
-        repo.sequencer_state?.should be_nil
+        repo.sequencer.skip.should be_empty
+        repo.sequencer.state?.should be_nil
         result = repo.cherry_pick(empty, committer: sig, allow_empty: true)
         result.commit_oid.should_not be_nil
         GitOracle.run(root, "rev-parse", "HEAD^{tree}").stdout.strip.should eq(GitOracle.run(root, "rev-parse", "#{base}^{tree}").stdout.strip)
@@ -320,7 +320,7 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         repo.cherry_pick("topic", committer: sig).conflicts.should eq(["shared"])
         GitOracle.run(root, "ls-files", "--stage", "shared").stdout.lines.size.should eq(3)
-        repo.cherry_pick_abort
+        repo.cherry_pick.abort
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
     end
@@ -341,12 +341,12 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         repo.cherry_pick("topic", committer: sig).conflicts.should eq(["shared"])
-        expect_raises(Git::Error, /sequencer/) { repo.reset_head(mode: Git::Reset::Mode::Mixed) }
-        expect_raises(Git::Error, /sequencer/) { repo.checkout_branch("topic") }
-        expect_raises(Git::Error, /sequencer/) { repo.commit_staged(author: sig, committer: sig, message: "bad") }
-        expect_raises(Git::Error, /sequencer/) { repo.merge_three_way("topic", author: sig, committer: sig, message: "bad") }
+        expect_raises(Git::Error, /sequencer/) { repo.reset(mode: Git::Reset::Mode::Mixed) }
+        expect_raises(Git::Error, /sequencer/) { repo.switch("topic") }
+        expect_raises(Git::Error, /sequencer/) { repo.commit(author: sig, committer: sig, message: "bad") }
+        expect_raises(Git::Error, /sequencer/) { repo.merge("topic", author: sig, committer: sig, message: "bad") }
         expect_raises(Git::Error, /already in progress/) { repo.cherry_pick("topic", committer: sig) }
-        repo.cherry_pick_abort
+        repo.cherry_pick.abort
       end
     end
 
@@ -448,12 +448,12 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         repo.cherry_pick("topic", committer: sig).conflicts.should eq(["shared"])
         File.write(File.join(root, "unrelated"), "keep\n")
         repo.stage_file("unrelated")
-        expect_raises(Git::Error, /unrelated staged/) { repo.cherry_pick_abort }
-        repo.sequencer_state?.should_not be_nil
+        expect_raises(Git::Error, /unrelated staged/) { repo.cherry_pick.abort }
+        repo.sequencer.state?.should_not be_nil
         File.read(File.join(root, "unrelated")).should eq("keep\n")
         repo.remove_from_index("unrelated")
         File.delete(File.join(root, "unrelated"))
-        repo.cherry_pick_abort
+        repo.cherry_pick.abort
       end
     end
 
@@ -482,9 +482,9 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         end
         error.changed_paths.should be_empty
         error.index_published.should be_false
-        repo.sequencer_state?.should_not be_nil
+        repo.sequencer.state?.should_not be_nil
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)
-        repo.cherry_pick_abort
+        repo.cherry_pick.abort
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
     end
@@ -503,12 +503,12 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
         File.write(File.join(root, "base"), "dirty\n")
         expect_raises(Git::Error, /dirty/) { repo.cherry_pick("topic", committer: sig) }
-        repo.sequencer_state?.should be_nil
+        repo.sequencer.state?.should be_nil
         GitOracle.run(root, "checkout", "--", "base")
         File.write(File.join(root, "staged"), "staged\n")
         GitOracle.run(root, "add", "staged")
         expect_raises(Git::Error, /index equal to HEAD/) { repo.cherry_pick("topic", committer: sig) }
-        repo.sequencer_state?.should be_nil
+        repo.sequencer.state?.should be_nil
       end
     end
 
@@ -563,7 +563,7 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         result.conflicts.should eq(["shared"])
         File.directory?(File.join(root, "path")).should be_true
         File.read(File.join(root, "path", "child")).should eq("new\n")
-        repo.cherry_pick_abort
+        repo.cherry_pick.abort
         File.file?(File.join(root, "path")).should be_true
         File.read(File.join(root, "path")).should eq("old\n")
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(original)

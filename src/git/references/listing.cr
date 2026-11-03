@@ -1,11 +1,21 @@
 module Git
-  module References
+  struct References
     # A reference as listed by `git for-each-ref` / ls-refs: a direct ref
     # has an oid; a symbolic ref has a target and the oid it resolves to
     # (nil when the target is unborn).
     record Ref, name : String, oid : String?, symref_target : String? = nil do
       def symbolic? : Bool
         !symref_target.nil?
+      end
+
+      # The name without its refs/heads/, refs/tags/, refs/remotes/ or
+      # refs/ prefix, as `git for-each-ref --format=%(refname:short)`
+      # shows an unambiguous name.
+      def short_name : String
+        {"refs/heads/", "refs/tags/", "refs/remotes/", "refs/"}.each do |prefix|
+          return name.byte_slice(prefix.bytesize) if name.starts_with?(prefix)
+        end
+        name
       end
     end
   end
@@ -83,17 +93,12 @@ module Git
 
   class Repository
     # Every reference under prefix (`git for-each-ref`), sorted by name.
-    def references(prefix : String = "refs/", *, max_entries : Int32 = @max_search_entries) : Array(References::Ref)
+    protected def references(prefix : String = "refs/", *, max_entries : Int32 = @max_search_entries) : Array(References::Ref)
       check!
       @metadata.list_refs(prefix, max_entries)
     end
 
-    # HEAD as a symbolic (possibly unborn) or detached ref.
-    def head_reference : References::Ref
-      @metadata.head_ref
-    end
-
-    def symbolic_ref?(name : String) : String?
+    protected def symbolic_ref?(name : String) : String?
       @metadata.symbolic_ref?(name)
     end
   end

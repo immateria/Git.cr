@@ -84,30 +84,31 @@ describe "Git porcelain" do
       GitOracle.run(root, "checkout", "-q", "main")
       GitOracle.run(root, "config", "branch.unmerged.description", "work in progress")
 
-      info = repo.branches.to_h { |branch| {branch.name, branch} }
+      info = repo.branches.list.to_h { |branch| {branch.name, branch} }
       info.keys.should eq(["main", "merged", "topic", "unmerged"])
-      info["main"].current.should be_true
-      info["main"].upstream.should eq("refs/remotes/origin/main")
+      info["main"].current?.should be_true
+      info["main"].tracking_ref.should eq("refs/remotes/origin/main")
+      info["main"].upstream.should eq(Git::Branch::Upstream.new("origin", "refs/heads/main"))
       counts = GitOracle.run(root, "rev-list", "--left-right", "--count", "main...origin/main").stdout.split.map(&.to_i)
       {info["main"].ahead, info["main"].behind}.should eq({counts[0], counts[1]})
 
-      repo.delete_branch("merged")
+      repo.branches.delete("merged")
       GitOracle.run(root, "rev-parse", "--verify", "-q", "refs/heads/merged", check: false).success?.should be_false
-      expect_raises(Git::Error, /not fully merged/) { repo.delete_branch("unmerged") }
-      expect_raises(Git::Error, /checked-out/) { repo.delete_branch("main", force: true) }
+      expect_raises(Git::Error, /not fully merged/) { repo.branches.delete("unmerged") }
+      expect_raises(Git::Error, /checked-out/) { repo.branches.delete("main", force: true) }
 
-      repo.rename_branch("unmerged", "renamed")
+      repo.branches.rename("unmerged", "renamed")
       GitOracle.run(root, "config", "branch.renamed.description").stdout.strip.should eq("work in progress")
       GitOracle.run(root, "reflog", "show", "--format=%H", "refs/heads/renamed").stdout.lines.size.should be > 0
-      repo.rename_branch("main", "trunk")
+      repo.branches.rename("main", "trunk")
       GitOracle.run(root, "symbolic-ref", "HEAD").stdout.strip.should eq("refs/heads/trunk")
       GitOracle.run(root, "config", "branch.trunk.merge").stdout.strip.should eq("refs/heads/main")
-      expect_raises(Git::Error, /already exists/) { repo.rename_branch("renamed", "topic") }
-      repo.delete_branch("renamed", force: true)
+      expect_raises(Git::Error, /already exists/) { repo.branches.rename("renamed", "topic") }
+      repo.branches.delete("renamed", force: true)
       GitOracle.run(root, "config", "--get-regexp", "branch\\.renamed", check: false).success?.should be_false
 
-      repo.tags.map(&.[0]).should eq(["light", "v1"])
-      repo.delete_tag("light")
+      repo.tags.list.map(&.short_name).should eq(["light", "v1"])
+      repo.tags.delete("light")
       GitOracle.run(root, "tag", "-l").stdout.should eq("v1\n")
       GitOracle.run(root, "fsck", "--no-dangling")
     end
@@ -128,7 +129,7 @@ describe "Git porcelain" do
       GitOracle.run(writer, "push", "-q", "origin", "main")
       pulled = repo.pull(actor: SIG)
       pulled.action.should eq(Git::Pull::Action::FastForward)
-      repo.head[1].should eq(ahead)
+      repo.head.oid.should eq(ahead)
       File.read(File.join(clone, "upstream.txt")).should eq("new upstream\n")
       repo.pull.action.should eq(Git::Pull::Action::UpToDate)
 
@@ -136,7 +137,7 @@ describe "Git porcelain" do
       GitOracle.run(writer, "push", "-q", "origin", "main")
       File.write(File.join(clone, "local.txt"), "local\n")
       repo.stage_file("local.txt")
-      local = repo.commit_staged(author: SIG, committer: SIG, message: "local\n")
+      local = repo.commit(author: SIG, committer: SIG, message: "local\n")
       expect_raises(Git::Error, /diverged/) { repo.pull }
       merged = repo.pull(mode: Git::Pull::Mode::Merge, author: SIG)
       merged.action.should eq(Git::Pull::Action::Merge)

@@ -37,6 +37,18 @@ module Git
     def self.valid_name?(name : String) : Bool
       !name.empty? && !name.starts_with?('-') && RefName.valid?("refs/remotes/#{name}/test")
     end
+
+    # The remote-tracking ref this remote's fetch refspecs store a remote
+    # ref in (refs/heads/main to refs/remotes/origin/main), or nil.
+    def tracking_ref(remote_ref : String) : String?
+      @fetch_refspecs.each do |spec|
+        next if spec.negative?
+        if mapped = spec.map_source(remote_ref)
+          return mapped
+        end
+      end
+      nil
+    end
   end
 
   class Repository
@@ -49,7 +61,7 @@ module Git
     end
 
     # Names of the configured remotes, in first-seen config order.
-    def remote_names : Array(String)
+    protected def remote_names : Array(String)
       names = [] of String
       local_config.entries.each do |entry|
         next unless entry.name.starts_with?("remote.")
@@ -62,7 +74,7 @@ module Git
     end
 
     # The named remote, or nil if it has no configuration.
-    def remote?(name : String) : Remote?
+    protected def remote?(name : String) : Remote?
       config = local_config
       prefix = "remote.#{name}."
       return nil unless config.entries.any? { |entry| entry.name.starts_with?(prefix) }
@@ -78,13 +90,13 @@ module Git
         tag_mode, config.boolean?(prefix + "prune"))
     end
 
-    def remote(name : String) : Remote
+    protected def remote(name : String) : Remote
       remote?(name) || raise Error.new("Git remote #{name} is not configured")
     end
 
     # `git remote add`: url and the default (or given) fetch refspecs.
-    def add_remote(name : String, url : String, *, fetch : Array(String)? = nil,
-                   tag_mode : Remote::TagMode = Remote::TagMode::Auto) : Remote
+    protected def add_remote(name : String, url : String, *, fetch : Array(String)? = nil,
+                             tag_mode : Remote::TagMode = Remote::TagMode::Auto) : Remote
       check!
       raise Error.new("invalid Git remote name #{name.inspect}") unless Remote.valid_name?(name)
       raise Error.new("Git remote #{name} already exists") if remote?(name)
@@ -100,7 +112,7 @@ module Git
       remote(name)
     end
 
-    def set_remote_url(name : String, url : String, *, push : Bool = false) : Nil
+    protected def set_remote_url(name : String, url : String, *, push : Bool = false) : Nil
       check!
       remote(name)
       Config::FileEditor.replace_all(local_config_path, "remote.#{name}.#{push ? "pushurl" : "url"}", url)
@@ -108,7 +120,7 @@ module Git
 
     # `git remote remove`: the remote's configuration, its remote-tracking
     # refs and the branch upstream settings that name it.
-    def remove_remote(name : String) : Nil
+    protected def remove_remote(name : String) : Nil
       check!
       existing = remote(name)
       Config::FileEditor.remove_section(local_config_path, "remote.#{name}")
@@ -135,7 +147,7 @@ module Git
 
     # `git remote rename`: configuration, default refspecs, tracking refs
     # and branch upstreams move to the new name.
-    def rename_remote(old_name : String, new_name : String) : Nil
+    protected def rename_remote(old_name : String, new_name : String) : Nil
       check!
       raise Error.new("invalid Git remote name #{new_name.inspect}") unless Remote.valid_name?(new_name)
       raise Error.new("Git remote #{new_name} already exists") if remote?(new_name)
@@ -174,20 +186,13 @@ module Git
 
     # The remote-tracking ref for a branch's upstream merge ref, by the
     # remote's fetch refspecs ("." is the local repository).
-    def upstream_tracking_ref(remote_name : String, merge_ref : String) : String?
+    protected def upstream_tracking_ref(remote_name : String, merge_ref : String) : String?
       return merge_ref if remote_name == "."
-      remote = remote?(remote_name) || return nil
-      remote.fetch_refspecs.each do |spec|
-        next if spec.negative?
-        if mapped = spec.map_source(merge_ref)
-          return mapped
-        end
-      end
-      nil
+      remote?(remote_name).try(&.tracking_ref(merge_ref))
     end
 
     # The upstream of a local branch: {remote name, merge ref}.
-    def branch_upstream(branch : String) : {String, String}?
+    protected def branch_upstream(branch : String) : {String, String}?
       config = local_config
       remote_name = config.value?("branch.#{branch}.remote")
       merge = config.value?("branch.#{branch}.merge")
@@ -195,7 +200,7 @@ module Git
     end
 
     # `git branch --set-upstream-to`: branch.<name>.remote and .merge.
-    def set_branch_upstream(branch : String, remote_name : String, merge_ref : String) : Nil
+    protected def set_branch_upstream(branch : String, remote_name : String, merge_ref : String) : Nil
       check!
       raise Error.new("invalid Git branch name") unless RefName.valid?("refs/heads/#{branch}")
       Config::FileEditor.set(local_config_path, "branch.#{branch}.remote", remote_name)

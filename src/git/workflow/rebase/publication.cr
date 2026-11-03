@@ -7,9 +7,9 @@ module Git
                                     check : Proc(Nil)?) : Array(String)
       return [] of String if from_oid == to_oid
       raise Error.new("Git rebase move state changed") unless rebase_state? == state
-      raise Error.new("Git rebase move HEAD changed") unless head == {state.branch, from_oid}
-      old_tree = commit(from_oid, max_object_bytes) { check.try &.call }.tree
-      target_tree = commit(to_oid, max_object_bytes) { check.try &.call }.tree
+      raise Error.new("Git rebase move HEAD changed") unless head_ref_and_oid == {state.branch, from_oid}
+      old_tree = read_commit(from_oid, max_bytes: max_object_bytes, check: check).tree
+      target_tree = read_commit(to_oid, max_bytes: max_object_bytes, check: check).tree
       old = Checkout.tree_files(self, old_tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
       desired = Checkout.tree_files(self, target_tree, max_object_bytes: max_object_bytes,
@@ -64,7 +64,7 @@ module Git
         guard = -> do
           check.try &.call
           raise Error.new("Git rebase move state changed") unless rebase_state? == state
-          raise Error.new("Git rebase move HEAD changed") unless head == {state.branch, from_oid}
+          raise Error.new("Git rebase move HEAD changed") unless head_ref_and_oid == {state.branch, from_oid}
           raise Error.new("Git rebase move index changed") unless @index.snapshot_checksum(max_index_bytes) == checksum
         end
         guard.call

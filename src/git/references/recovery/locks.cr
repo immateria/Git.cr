@@ -1,6 +1,6 @@
 module Git
-  module References
-    module Recovery
+  struct References
+    struct Recovery
       private def self.with_repository_guard(directory : String, &block : ->) : Nil
         dir = DescriptorPath::Directory.open(directory)
         begin

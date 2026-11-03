@@ -3,7 +3,7 @@ module Git
   # grants live outside this library. P19 currently supports atomic publication
   # of loose refs. Batches coordinate locks and verify every expectation
   # before publication; files-backend renames are not crash-atomic as a group.
-  module References
+  struct References
     record LogEntry, actor : Signature, message : String do
       def encode(old_oid : String, new_oid : String) : String
         raise Error.new("invalid Git reflog message") if message.each_byte.any? { |b| b == 0 || b == 10 || b == 13 }

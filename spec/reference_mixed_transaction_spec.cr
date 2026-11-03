@@ -12,14 +12,14 @@ describe "P19 native mixed-reference transactions" do
         one = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
         two = repo.write_commit(tree: tree, parents: [one], author: sig, committer: sig, message: "two")
         log = Git::References::LogEntry.new(sig, "native mixed update")
-        repo.update_ref("refs/heads/main", one, expected_oid: nil, log: log)
-        repo.update_ref("refs/heads/obsolete", one, expected_oid: nil, log: log)
+        repo.refs.update("refs/heads/main", one, expected_oid: nil, log: log)
+        repo.refs.update("refs/heads/obsolete", one, expected_oid: nil, log: log)
         GitOracle.run(root, "tag", "-a", "release-one", "-m", "release one")
         GitOracle.run(root, "tag", "-a", "release-two", "-m", "release two")
         tag_oid = GitOracle.run(root, "rev-parse", "refs/tags/release-one").stdout.strip
         GitOracle.run(root, "pack-refs", "--all")
         # A loose override shadows the packed commit. Both copies must go.
-        repo.update_ref("refs/heads/obsolete", two, expected_oid: one)
+        repo.refs.update("refs/heads/obsolete", two, expected_oid: one)
         packed = File.join(root, ".git", "packed-refs")
         File.read(packed).should contain("refs/heads/obsolete")
         File.read(packed).should contain("refs/tags/release-one")
@@ -30,7 +30,7 @@ describe "P19 native mixed-reference transactions" do
         changes << Git::References::Update.new("refs/tags/preview", one, nil)
         published = [] of String
         observer = ->(name : String) { published << name; nil }
-        repo.change_refs(changes, after_publish: observer)
+        repo.refs.apply(changes, after_publish: observer)
         published.should eq(changes.map(&.name).sort)
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(two)
         GitOracle.run(root, "rev-parse", "refs/tags/preview").stdout.strip.should eq(one)
@@ -59,8 +59,8 @@ describe "P19 native mixed-reference transactions" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       one = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       two = repo.write_commit(tree: tree, parents: [one], author: sig, committer: sig, message: "two")
-      repo.update_ref("refs/heads/main", one, expected_oid: nil)
-      repo.update_ref("refs/heads/obsolete", one, expected_oid: nil)
+      repo.refs.update("refs/heads/main", one, expected_oid: nil)
+      repo.refs.update("refs/heads/obsolete", one, expected_oid: nil)
       GitOracle.run(root, "pack-refs", "--all")
       packed = File.join(root, ".git", "packed-refs")
       before = File.read(packed)
@@ -69,7 +69,7 @@ describe "P19 native mixed-reference transactions" do
       bad << Git::References::Update.new("refs/heads/main", two, one,
         Git::References::LogEntry.new(sig, "should never appear"))
       bad << Git::References::Delete.new("refs/heads/obsolete", two)
-      expect_raises(Git::Error, /compare-and-swap/) { repo.change_refs(bad) }
+      expect_raises(Git::Error, /compare-and-swap/) { repo.refs.apply(bad) }
       GitOracle.run(root, "show-ref").stdout.should eq(refs)
       File.read(packed).should eq(before)
       File.exists?(packed + ".lock").should be_false
@@ -85,13 +85,13 @@ describe "P19 native mixed-reference transactions" do
       sig = Git::Signature.new("Mixed", "mixed@example.invalid", 123_i64, 0)
       tree = repo.write_tree([] of Git::Tree::Entry)
       oid = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
-      repo.update_ref("refs/heads/obsolete", oid, expected_oid: nil)
+      repo.refs.update("refs/heads/obsolete", oid, expected_oid: nil)
       packed_lock = File.join(root, ".git", "packed-refs.lock")
       File.write(packed_lock, "foreign owner")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/a-new", oid, nil)
       changes << Git::References::Delete.new("refs/heads/obsolete", oid)
-      expect_raises(Git::Error, /packed-ref lock/) { repo.change_refs(changes) }
+      expect_raises(Git::Error, /packed-ref lock/) { repo.refs.apply(changes) }
       File.read(packed_lock).should eq("foreign owner")
       GitOracle.run(root, "show-ref", "--verify", "refs/heads/a-new", check: false).success?.should be_false
       GitOracle.run(root, "show-ref", "--verify", "refs/heads/obsolete").success?.should be_true
@@ -105,7 +105,7 @@ describe "P19 native mixed-reference transactions" do
       sig = Git::Signature.new("Mixed", "mixed@example.invalid", 123_i64, 0)
       tree = repo.write_tree([] of Git::Tree::Entry)
       oid = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
-      repo.update_ref("refs/heads/obsolete", oid, expected_oid: nil)
+      repo.refs.update("refs/heads/obsolete", oid, expected_oid: nil)
       GitOracle.run(root, "pack-refs", "--all")
       packed = File.join(root, ".git", "packed-refs")
       before = File.read(packed)
@@ -121,7 +121,7 @@ describe "P19 native mixed-reference transactions" do
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/a-new", oid, nil)
       changes << Git::References::Delete.new("refs/heads/obsolete", oid)
-      expect_raises(Git::Error, /cancelled after all locks/) { repo.change_refs(changes, check: cancel) }
+      expect_raises(Git::Error, /cancelled after all locks/) { repo.refs.apply(changes, check: cancel) }
       saw_locks.should be_true
       File.read(packed).should eq(before)
       File.exists?(packed + ".lock").should be_false
@@ -140,8 +140,8 @@ describe "P19 native mixed-reference transactions" do
       one = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       two = repo.write_commit(tree: tree, parents: [one], author: sig, committer: sig, message: "two")
       log = Git::References::LogEntry.new(sig, "mixed partial")
-      repo.update_ref("refs/heads/obsolete", one, expected_oid: nil, log: log)
-      repo.update_ref("refs/heads/main", one, expected_oid: nil)
+      repo.refs.update("refs/heads/obsolete", one, expected_oid: nil, log: log)
+      repo.refs.update("refs/heads/main", one, expected_oid: nil)
       GitOracle.run(root, "pack-refs", "--all")
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/main", two, one, log)
@@ -150,7 +150,7 @@ describe "P19 native mixed-reference transactions" do
         raise Git::Error.new("simulated post-publication failure") if name == "refs/heads/main"
       end
       ex = expect_raises(Git::References::PartialPublication) do
-        repo.change_refs(changes, after_publish: observer)
+        repo.refs.apply(changes, after_publish: observer)
       end
       ex.packed_published.should be_true
       ex.reflogs_started.should be_true
@@ -169,8 +169,8 @@ describe "P19 native mixed-reference transactions" do
       tree = repo.write_tree([] of Git::Tree::Entry)
       one = repo.write_commit(tree: tree, author: sig, committer: sig, message: "one")
       two = repo.write_commit(tree: tree, parents: [one], author: sig, committer: sig, message: "two")
-      repo.update_ref("refs/heads/main", one, expected_oid: nil)
-      repo.update_ref("refs/heads/obsolete", one, expected_oid: nil)
+      repo.refs.update("refs/heads/main", one, expected_oid: nil)
+      repo.refs.update("refs/heads/obsolete", one, expected_oid: nil)
       GitOracle.run(root, "pack-refs", "--all")
       packed = File.join(root, ".git", "packed-refs")
       packed_before = File.read(packed)
@@ -180,7 +180,7 @@ describe "P19 native mixed-reference transactions" do
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/main", two, one)
       changes << Git::References::Delete.new("refs/heads/obsolete", one)
-      expect_raises(Git::Error, /reflog redirected/) { repo.change_refs(changes) }
+      expect_raises(Git::Error, /reflog redirected/) { repo.refs.apply(changes) }
       File.read(packed).should eq(packed_before)
       GitOracle.run(root, "rev-parse", "refs/heads/main").stdout.strip.should eq(one)
       GitOracle.run(root, "rev-parse", "refs/heads/obsolete").stdout.strip.should eq(one)
@@ -198,16 +198,16 @@ describe "P19 native mixed-reference transactions" do
       changes = [] of Git::References::Change
       changes << Git::References::Update.new("refs/heads/a", oid, nil)
       changes << Git::References::Delete.new("refs/heads/a", oid)
-      expect_raises(Git::Error, /overlapping/) { repo.change_refs(changes) }
+      expect_raises(Git::Error, /overlapping/) { repo.refs.apply(changes) }
       overlapping = [] of Git::References::Change
       overlapping << Git::References::Update.new("refs/heads/a", oid, nil)
       overlapping << Git::References::Delete.new("refs/heads/a/nested", oid)
-      expect_raises(Git::Error, /overlapping/) { repo.change_refs(overlapping) }
+      expect_raises(Git::Error, /overlapping/) { repo.refs.apply(overlapping) }
       invalid = [] of Git::References::Change
       invalid << Git::References::Update.new("refs/heads/new", "f" * 40, nil)
       invalid << Git::References::Delete.new("refs/heads/a", oid)
-      expect_raises(Git::Error) { repo.change_refs(invalid) }
-      expect_raises(Git::Error, /budget exceeded/) { repo.change_refs(changes, max_changes: 1) }
+      expect_raises(Git::Error) { repo.refs.apply(invalid) }
+      expect_raises(Git::Error, /budget exceeded/) { repo.refs.apply(changes, max_changes: 1) }
       GitOracle.run(root, "show-ref", check: false).stdout.should eq("")
     end
   end

@@ -13,14 +13,14 @@ module Git
       check!
       raise Error.new("Git sequencer unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                 (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
-      branch, old_oid = head
+      branch, old_oid = head_ref_and_oid
       raise Error.new("Git sequencer requires an existing symbolic branch") unless branch &&
                                                                                    branch.starts_with?("refs/heads/") && old_oid
       raise Error.new("Git sequencer refuses in-progress merge") if merge_state?
       raise Error.new("Git sequencer operation already in progress") if sequencer_state?
       if rebase = rebase_state?
         raise Error.new("Git sequencer refuses in-progress rebase") unless kind.rebase?
-        raise Error.new("Git rebase sequencer HEAD changed") unless head == {rebase.branch, rebase.expected_head}
+        raise Error.new("Git rebase sequencer HEAD changed") unless head_ref_and_oid == {rebase.branch, rebase.expected_head}
       elsif kind.rebase?
         raise Error.new("Git rebase state missing")
       end
@@ -31,13 +31,13 @@ module Git
       operation_author = kind.revert? ? (author || raise Error.new("Git revert author required")) : source.author
       text = message || (kind.revert? ? Sequencer.default_revert_message(source) : source.message)
       validate_sequencer_message!(text)
-      ours_tree = commit(old_oid, max_object_bytes) { check.try &.call }.tree
+      ours_tree = read_commit(old_oid, max_bytes: max_object_bytes, check: check).tree
       ours = Checkout.tree_files(self, ours_tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
       source_files = Checkout.tree_files(self, source.tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
       parent_files = if parent_oid = parent
-                       parent_tree = commit(parent_oid, max_object_bytes) { check.try &.call }.tree
+                       parent_tree = read_commit(parent_oid, max_bytes: max_object_bytes, check: check).tree
                        Checkout.tree_files(self, parent_tree, max_object_bytes: max_object_bytes,
                          max_files: max_entries, check: check, allow_symlinks: true)
                      else
@@ -80,7 +80,7 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
-          raise Error.new("Git sequencer HEAD changed") unless head == {branch, old_oid}
+          raise Error.new("Git sequencer HEAD changed") unless head_ref_and_oid == {branch, old_oid}
           raise Error.new("Git sequencer index changed") unless @index.snapshot_checksum(max_index_bytes) == snapshot
           raise Error.new("Git sequencer state changed") if started && sequencer_state? != state
         end

@@ -1,5 +1,5 @@
 module Git
-  module References
+  struct References
     class Transaction
       # The packed-refs file contains comments, direct refs, and optionally
       # peeled OIDs following an annotated tag. Preserve the exact bytes of
