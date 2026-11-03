@@ -276,7 +276,7 @@ module Git
 
     # Publish the annotated tag object only. Updating refs/tags/* remains a
     # separately authorized future reference transaction.
-    def write_tag(*, object : String, type : String, name : String,
+    def write_tag(*, object : String, type : ObjectType, name : String,
                   message : String, tagger : Signature? = nil,
                   max_bytes : Int64 = Int64::MAX,
                   check : Proc(Nil)? = nil) : String

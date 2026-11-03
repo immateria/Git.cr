@@ -39,7 +39,7 @@ describe "Git::Pack" do
         File.basename(stem).should eq("pack-#{result.checksum}")
         result.appended.should eq(0)
         listed = GitOracle.run(root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)").stdout.lines.map(&.split)
-        result.types.should eq(listed.to_h { |fields| {fields[0], fields[1]} })
+        result.types.should eq(listed.to_h { |fields| {fields[0], Git::ObjectType.parse(fields[1])} })
       end
     end
 
@@ -55,7 +55,7 @@ describe "Git::Pack" do
           oids.each do |oid|
             stored = repo.read_object(oid, max_bytes: 1 << 20)
             kind, data = stored.type.to_s, stored.data
-            offset, crc = writer.write_object(kind, data.to_slice)
+            offset, crc = writer.write_object(Git::ObjectType.parse(kind), data.to_slice)
             entries << Git::Pack::IndexEntry.new(oid, offset, crc)
           end
           writer.finish

@@ -134,7 +134,7 @@ module Git
         else
           kind, raw = @repository.object(candidate.oid, @max_object_bytes) { @check.try &.call }
           raise Error.new("Git object #{candidate.oid} type changed while packing") unless kind == candidate.type
-          offset, crc = writer.write_object(kind, raw.to_slice)
+          offset, crc = writer.write_object(ObjectType.parse(kind), raw.to_slice)
           block.call(Written::Full)
         end
         candidate.offset = offset
@@ -152,7 +152,7 @@ module Git
           @check.try &.call
           entry = @repository.pack_files.raw_entry(candidate.oid) || next
           if !entry.header.type.delta?
-            next unless entry.header.type.object_type == candidate.type
+            next unless entry.header.type.object_type.to_s == candidate.type
             candidate.raw = entry
           elsif base_oid = entry.base_oid
             base = by_oid[base_oid]? || external[base_oid]?

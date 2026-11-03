@@ -188,7 +188,7 @@ module Git
             raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < io.size - @object_format.bytesize
             io.seek(current)
             header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
-            return {header.type.object_type, size || header.size} unless header.type.delta?
+            return {header.type.object_type.to_s, size || header.size} unless header.type.delta?
             if size.nil?
               io.seek(header.data_offset)
               prefix = Compress::Zlib::Reader.open(io) do |zlib|
@@ -557,7 +557,7 @@ module Git
               break
             end
             raise Git::Error.new("Git packed entry size mismatch") unless inflated.bytesize == header.size
-            base = {header.type.object_type, inflated}
+            base = {header.type.object_type.to_s, inflated}
             store_base(file, current, base) unless chain.empty?
             break
           end

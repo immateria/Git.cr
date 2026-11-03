@@ -12,6 +12,7 @@ module Git
       end
     end
 
+    # :nodoc:
     def self.read(objects : ObjectDatabase, oid : String, format : ObjectId::Format,
                   max_bytes : Int32, &check : -> Nil) : Commit
       kind, raw = objects.object(ObjectId.valid!(oid, format), max_bytes) { check.call }

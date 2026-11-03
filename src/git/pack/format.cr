@@ -23,13 +23,12 @@ module Git
       end
 
       # The entry type that stores an undeltified object of this type.
-      def self.for_object(type : String) : EntryType
+      def self.for_object(type : ObjectType) : EntryType
         case type
-        when "commit" then Commit
-        when "tree"   then Tree
-        when "blob"   then Blob
-        when "tag"    then Tag
-        else               raise Git::Error.new("unsupported Git object type #{type}")
+        in .commit? then Commit
+        in .tree?   then Tree
+        in .blob?   then Blob
+        in .tag?    then Tag
         end
       end
 
@@ -38,12 +37,12 @@ module Git
       end
 
       # The object type an undeltified entry stores.
-      def object_type : String
+      def object_type : ObjectType
         case self
-        in .commit? then "commit"
-        in .tree?   then "tree"
-        in .blob?   then "blob"
-        in .tag?    then "tag"
+        in .commit? then ObjectType::Commit
+        in .tree?   then ObjectType::Tree
+        in .blob?   then ObjectType::Blob
+        in .tag?    then ObjectType::Tag
         in .ofs_delta?, .ref_delta?
           raise Git::Error.new("a Git delta entry has no object type of its own")
         end

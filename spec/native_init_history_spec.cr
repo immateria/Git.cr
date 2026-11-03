@@ -179,7 +179,7 @@ describe "P22 create-only native branch and tag operations" do
         GitOracle.run(root, "rev-parse", "refs/tags/v2^{}").stdout.strip.should eq(old)
         repo.log(["refs/tags/v2"], order: Git::History::Order::Topological).commits.first.oid.should eq(old)
         repo.branches.create("from-tag", from: "refs/tags/v2").should eq(old)
-        bad = repo.write_tag(object: old, type: "tag", name: "bad", tagger: sig, message: "bad type\n")
+        bad = repo.write_tag(object: old, type: Git::ObjectType::Tag, name: "bad", tagger: sig, message: "bad type\n")
         repo.refs.update("refs/tags/bad", bad, expected_oid: nil)
         expect_raises(Git::Error, /target type mismatch/) { repo.log(["refs/tags/bad"], order: Git::History::Order::Topological) }
         expect_raises(Git::Error, /compare-and-swap/) { repo.branches.create("topic/nested") }

@@ -46,7 +46,7 @@ module Git
       raise Error.new("Git annotated tag requires both tagger and message") unless message.nil? == tagger.nil?
       target = History.resolve_commit(self, from, max_object_bytes, check)
       tagged = if text = message
-                 write_tag(object: target, type: "commit", name: name,
+                 write_tag(object: target, type: ObjectType::Commit, name: name,
                    message: text, tagger: tagger, max_bytes: max_object_bytes,
                    check: check)
                else

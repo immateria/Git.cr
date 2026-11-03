@@ -46,8 +46,11 @@ module Git
       temp = File.join(directory, "tmp_pack_#{Random::Secure.hex(12)}")
       temporaries = [temp]
       begin
-        local = ->(oid : String) : {String, String}? do
-          @object_database.has_object?(oid) ? @object_database.object(oid, max_object_bytes.clamp(1_i64, Int32::MAX.to_i64 - 129).to_i32) { check.try &.call } : nil
+        local = ->(oid : String) : RawObject? do
+          if @object_database.has_object?(oid)
+            type, data = @object_database.object(oid, max_object_bytes.clamp(1_i64, Int32::MAX.to_i64 - 129).to_i32) { check.try &.call }
+            RawObject.new(ObjectType.parse(type), data)
+          end
         end
         indexer = Pack::Indexer.new(@object_format, max_object_bytes: max_object_bytes,
           max_objects: max_objects, local_object: local, fix_thin: fix_thin,
