@@ -49,18 +49,18 @@ describe "Git::Pack" do
         repo = Git::Repository.new(root)
         oids = GitOracle.run(root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").stdout.lines
         target = File.join(File.dirname(root), "native.pack")
-        entries = [] of Git::Pack::Entry
+        entries = [] of Git::Pack::IndexEntry
         checksum = File.open(target, "wb") do |io|
           writer = Git::Pack::Writer.new(io, format_of(format), oids.size)
           oids.each do |oid|
             kind, data = repo.object(oid, 1 << 20) { nil }
             offset, crc = writer.write_object(kind, data.to_slice)
-            entries << Git::Pack::Entry.new(oid, offset, crc)
+            entries << Git::Pack::IndexEntry.new(oid, offset, crc)
           end
           writer.finish
         end
         GitOracle.run(File.dirname(root), "index-pack", "--object-format=#{format}", "-o", File.join(File.dirname(root), "git.idx"), target)
-        idx = Git::Pack::IndexWriter.idx(entries, checksum.hexbytes, format_of(format))
+        idx = Git::Pack::IndexFile.encode(entries, checksum.hexbytes, format_of(format))
         idx.should eq(File.read(File.join(File.dirname(root), "git.idx")).to_slice)
         GitOracle.run(root, "verify-pack", target.sub(/\.pack\z/, ".idx").tap { |path| File.write(path, idx) })
       end
@@ -84,19 +84,19 @@ describe "Git::Pack" do
         GitOracle.run(base, "index-pack", "--object-format=#{format}", File.join(base, "thin.pack"), check: false).success?.should be_false
 
         repo = Git::Repository.new(clone)
-        received = repo.receive_pack(IO::Memory.new(thin))
-        received.appended_bases.should be > 0
-        received.object_count.should eq(received.entries.size)
-        File.exists?(received.index_path.not_nil!).should be_true
+        published = repo.index_pack(IO::Memory.new(thin))
+        published.appended_bases.should be > 0
+        published.object_count.should eq(published.entries.size)
+        File.exists?(published.index_path.not_nil!).should be_true
         repo.update_ref("refs/heads/main", head, expected_oid: old)
         GitOracle.run(clone, "fsck", "--strict", "--no-dangling").success?.should be_true
-        GitOracle.run(clone, "verify-pack", received.index_path.not_nil!).success?.should be_true
+        GitOracle.run(clone, "verify-pack", published.index_path.not_nil!).success?.should be_true
         GitOracle.run(clone, "cat-file", "-p", "#{head}:notes.txt").stdout.should end_with("appended\n")
         repo.object(head, 1 << 20) { nil }[0].should eq("commit")
 
         # Receiving the same objects again publishes nothing new.
-        again = repo.receive_pack(IO::Memory.new(thin))
-        again.pack_path.should eq(received.pack_path)
+        again = repo.index_pack(IO::Memory.new(thin))
+        again.pack_path.should eq(published.pack_path)
         Dir.glob(File.join(clone, "objects", "pack", "tmp_*")).should be_empty
       end
     end
@@ -111,19 +111,19 @@ describe "Git::Pack" do
       before = Dir.children(File.join(root, ".git", "objects", "pack")).sort
 
       truncated = full[0, full.size - 30]
-      expect_raises(Git::Error) { repo.receive_pack(IO::Memory.new(truncated)) }
+      expect_raises(Git::Error) { repo.index_pack(IO::Memory.new(truncated)) }
 
       flipped = full.dup
       flipped[full.size // 2] ^= 0x55
-      expect_raises(Git::Error) { repo.receive_pack(IO::Memory.new(flipped)) }
+      expect_raises(Git::Error) { repo.index_pack(IO::Memory.new(flipped)) }
 
       old = GitOracle.run(root, "rev-parse", "HEAD~1").stdout.strip
       thin = GitOracle.run(root, "pack-objects", "--thin", "--stdout", "--revs", input: "#{head}\n^#{old}\n").stdout
       empty = File.join(File.dirname(root), "empty")
       Dir.mkdir(empty)
       other = Git::Repository.init(empty, initial_branch: "main")
-      expect_raises(Git::Error, /missing locally|unresolved/) { other.receive_pack(IO::Memory.new(thin)) }
-      expect_raises(Git::Error, /unresolved/) { other.receive_pack(IO::Memory.new(thin), fix_thin: false) }
+      expect_raises(Git::Error, /missing locally|unresolved/) { other.index_pack(IO::Memory.new(thin)) }
+      expect_raises(Git::Error, /unresolved/) { other.index_pack(IO::Memory.new(thin), fix_thin: false) }
       Dir.children(File.join(empty, ".git", "objects", "pack")).should be_empty
       Dir.children(File.join(root, ".git", "objects", "pack")).sort.should eq(before)
     end
@@ -150,7 +150,7 @@ describe "Git::Pack::Delta" do
       ]
       targets.each do |target|
         delta = Git::Pack::Delta.encode(source, target).not_nil!
-        Git::ObjectDatabase::PackFiles.apply_delta(String.new(source), String.new(delta), Int64::MAX).to_slice.should eq(target)
+        Git::Pack::Delta.apply(String.new(source), String.new(delta), Int64::MAX).to_slice.should eq(target)
       end
     end
     big = Bytes.new(100_000) { random.rand(256).to_u8 }

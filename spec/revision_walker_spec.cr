@@ -53,7 +53,7 @@ private def resolve(root : String, rev : String) : String
   GitOracle.run(root, "rev-parse", rev).stdout.strip
 end
 
-describe "Git::Reachability" do
+describe "Git::History::RevisionWalker" do
   ["sha1", "sha256"].each do |format|
     it "REACH-O01 matches git rev-list --objects for tips, exclusions, tags and trees (#{format})" do
       GitOracle.with_repo(format: format) do |root|
@@ -80,7 +80,7 @@ describe "Git::Reachability" do
             GitOracle.run(root, "cat-file", "-t", item.oid).stdout.strip.should eq(item.type)
           end
         end
-        commits = Git::Reachability::Walker.new(repo).commits([resolve(root, "main")], [resolve(root, "topic~2")])
+        commits = Git::History::RevisionWalker.new(repo).commits([resolve(root, "main")], [resolve(root, "topic~2")])
         commits.should eq(rev_list(root, ["rev-list", "main", "--not", "topic~2"]))
       end
     end

@@ -33,7 +33,7 @@ private def transport_source(root : String) : String
 end
 
 # Clone through the transport, commit, push back, and check both ends.
-private def round_trip(transport : Git::Transport::Base, bare : String, clone : String) : Nil
+private def round_trip(transport : Git::Transport, bare : String, clone : String) : Nil
   repo = Git::Repository.clone(transport, clone, url: transport.url)
   GitOracle.run(clone, "fsck", "--strict", "--no-dangling")
   GitOracle.run(clone, "status", "--porcelain").stdout.should eq("")
@@ -66,7 +66,7 @@ describe "Git transports" do
       failing = Git::Transport::Command.new(bare, oracle_environment(base)) do |_|
         [GitOracle::GIT_BINARY, "upload-pack", File.join(base, "missing.git")]
       end
-      expect_raises(Git::Transport::ConnectionError, /missing\.git|not appear to be a git repository/) do
+      expect_raises(Git::Transport::ConnectionFailure, /missing\.git|not appear to be a git repository/) do
         Git::Repository.new(source).ls_remote(failing)
       end
     end
@@ -80,7 +80,7 @@ describe "Git transports" do
       GitOracle.run(base, "clone", "-q", "--bare", "--no-local", source, bare)
       port = TCPServer.open("127.0.0.1", 0) { |server| server.local_address.port }
       daemon = Process.new(GitOracle::GIT_BINARY, ["daemon", "--reuseaddr", "--export-all", "--enable=receive-pack",
-        "--base-path=#{base}", "--listen=127.0.0.1", "--port=#{port}", base],
+                                                   "--base-path=#{base}", "--listen=127.0.0.1", "--port=#{port}", base],
         env: oracle_environment(base), clear_env: true, error: Process::Redirect::Close)
       begin
         ready = false
@@ -127,7 +127,7 @@ describe "Git transports" do
       round_trip(transport, bare, File.join(base, "clone"))
       arguments = File.read(log).lines
       arguments.first(6).should eq(["-o", "SendEnv=GIT_PROTOCOL", "-p", "2222", "tester@example.invalid",
-        "git-upload-pack #{Git::Transport::SSH.quote(bare)}"])
+                                    "git-upload-pack #{Git::Transport::SSH.quote(bare)}"])
       arguments.should contain("git-receive-pack #{Git::Transport::SSH.quote(bare)}")
     end
   end
@@ -170,7 +170,7 @@ describe "Git HTTP transport authentication" do
           context.response.status = HTTP::Status::UNAUTHORIZED
         else
           context.response.content_type = "application/x-git-upload-pack-advertisement"
-          Git::Protocol::UploadPack.new(repository).advertise(context.response.output)
+          Git::Protocol::UploadPack::Server.new(repository).advertise(context.response.output)
         end
       end
       address = server.bind_tcp("127.0.0.1", 0)
@@ -188,10 +188,10 @@ describe "Git HTTP transport authentication" do
 
         wrong = Git::Transport::HTTP.new("http://127.0.0.1:#{address.port}/repo",
           credentials: ->(_url : String, attempt : Int32) { attempt < 3 ? Git::Transport::Credential.new("user", "wrong") : nil })
-        expect_raises(Git::Transport::AuthenticationError) { wrong.connect(Git::Transport::Service::UploadPack) }
+        expect_raises(Git::Transport::AuthenticationFailure) { wrong.connect(Git::Transport::Service::UploadPack) }
 
         moved = Git::Transport::HTTP.new("http://user:secret@127.0.0.1:#{address.port}/moved")
-        expect_raises(Git::Transport::AuthenticationError, /different origin/) { moved.connect(Git::Transport::Service::UploadPack) }
+        expect_raises(Git::Transport::AuthenticationFailure, /different origin/) { moved.connect(Git::Transport::Service::UploadPack) }
         foreign_seen.should eq([nil])
       ensure
         server.close

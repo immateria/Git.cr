@@ -281,6 +281,64 @@ module Git
       @object_database.object(oid, max_bytes, depth, seen) { check.call }
     end
 
+    # Whether this repository has the object, loose or packed, without
+    # reading it.
+    def has_object?(oid : String) : Bool
+      @object_database.has_object?(oid)
+    end
+
+    # Type and size from stored headers, without reading the contents
+    # (`git cat-file -t/-s`). Not verified against the object ID.
+    def object_header(oid : String, &check : -> Nil) : {String, Int64}
+      @object_database.object_header(oid) { check.call }
+    end
+
+    def object_header(oid : String) : {String, Int64}
+      @object_database.object_header(oid) { nil }
+    end
+
+    # The pack directory reader (for copying stored entries).
+    def pack_files : ObjectDatabase::PackFiles
+      @object_database.pack_files
+    end
+
+    # Every loose and packed object ID once.
+    def each_object_id(& : String ->) : Nil
+      @object_database.each_oid { |oid| yield oid }
+    end
+
+    # The common Git directory (objects, refs, config).
+    def common_directory : String
+      @common
+    end
+
+    # The Git directory of this worktree (HEAD, index).
+    def git_directory : String
+      @git_dir
+    end
+
+    # The commits listed in .git/shallow (history cut by a shallow fetch).
+    def shallow_commits : Set(String)
+      path = File.join(@common, "shallow")
+      return Set(String).new unless File.file?(path)
+      File.read(path).lines.reject(&.empty?).map { |line| ObjectId.valid!(line.strip, @object_format) }.to_set
+    end
+
+    def shallow? : Bool
+      !shallow_commits.empty?
+    end
+
+    # The staging area's entries, every stage, in index order.
+    def index_entries(max_bytes : Int32 = Int32::MAX // 2) : Array(Index::Entry)
+      @index.entries(max_bytes) { nil }
+    end
+
+    # Object IDs (loose or packed) that start with a lowercase hex prefix,
+    # up to limit of them, sorted: what an abbreviated ID may mean.
+    def object_ids_with_prefix(prefix : String, *, limit : Int32 = 16) : Array(String)
+      @object_database.prefix_matches(prefix, limit)
+    end
+
     def head_entry(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
       @head_tree.head_entry(path, max_bytes) { check.call }
     end

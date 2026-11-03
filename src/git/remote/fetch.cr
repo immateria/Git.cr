@@ -1,71 +1,57 @@
 require "set"
 
 module Git
-  # One reference a fetch looked at.
-  record FetchUpdate, remote_ref : String, local_ref : String?, old_oid : String?,
-    new_oid : String, status : FetchUpdate::Status, reason : String? = nil do
-    enum Status
-      New
-      FastForward
-      Forced
-      UpToDate
-      Rejected
-      # Recorded only in FETCH_HEAD (no local destination).
-      FetchHeadOnly
-      Pruned
-    end
+  # `git fetch`: what each fetched reference did and what was received.
+  module Fetch
+    # One reference a fetch looked at.
+    record Update, remote_ref : String, local_ref : String?, old_oid : String?,
+      new_oid : String, status : Update::Status, reason : String? = nil do
+      enum Status
+        New
+        FastForward
+        Forced
+        UpToDate
+        Rejected
+        # Recorded only in FETCH_HEAD (no local destination).
+        FetchHeadOnly
+        Pruned
+      end
 
-    def applied? : Bool
-      status.new? || status.fast_forward? || status.forced? || status.pruned?
-    end
-  end
-
-  record FetchResult, url : String, updates : Array(FetchUpdate),
-    received : Pack::Received?, remote_head : String?, remote_refs : Array(Protocol::RemoteRef),
-    shallow : Array(String) do
-    def rejected : Array(FetchUpdate)
-      updates.select(&.status.rejected?)
-    end
-
-    def object_count : Int32
-      received.try(&.object_count) || 0
-    end
-  end
-
-  module Transport
-    # A transport for url: smart HTTP(S) or a local repository. Other
-    # schemes (ssh, git://) need an explicitly constructed transport.
-    def self.for_url(url : String) : Base
-      if url.starts_with?("http://") || url.starts_with?("https://")
-        HTTP.new(url)
-      elsif url.starts_with?("file://") || url.starts_with?('/') || url.starts_with?('.') || !url.includes?(':')
-        Local.new(url)
-      else
-        raise Error.new("Git transport for #{url} must be supplied explicitly (no ssh or git:// transport is opened implicitly)")
+      def applied? : Bool
+        status.new? || status.fast_forward? || status.forced? || status.pruned?
       end
     end
+
+    # The outcome of a fetch: per-ref updates, the pack stored (nil when
+    # nothing was transferred), the remote's HEAD target and refs, and the
+    # shallow boundary it reported.
+    record Result, url : String, updates : Array(Update),
+      pack : Pack::Published?, remote_head : String?, remote_refs : Array(Protocol::RemoteRef),
+      shallow : Array(String) do
+      def rejected : Array(Update)
+        updates.select(&.status.rejected?)
+      end
+
+      def object_count : Int32
+        pack.try(&.object_count) || 0
+      end
+    end
+
+    # :nodoc:
+    # How one remote ref maps to a local ref under the refspecs.
+    record Mapping, ref : Protocol::RemoteRef, destination : String?, force : Bool,
+      for_merge : Bool, auto_tag : Bool = false
   end
 
   class Repository
     # `git ls-remote`: the remote's references (and HEAD).
-    def ls_remote(transport : Transport::Base, prefixes : Array(String) = [] of String) : Array(Protocol::RemoteRef)
+    def ls_remote(transport : Transport, prefixes : Array(String) = [] of String) : Array(Protocol::RemoteRef)
       connection = transport.connect(Transport::Service::UploadPack)
       begin
-        Protocol::V2Client.new(connection).ls_refs(prefixes)
+        Protocol::UploadPack::Client.new(connection).ls_refs(prefixes)
       ensure
         connection.close
       end
-    end
-
-    # The commits listed in .git/shallow (history cut by a shallow fetch).
-    def shallow_commits : Set(String)
-      path = File.join(@common, "shallow")
-      return Set(String).new unless File.file?(path)
-      File.read(path).lines.reject(&.empty?).map { |line| ObjectId.valid!(line.strip, @object_format) }.to_set
-    end
-
-    def shallow? : Bool
-      !shallow_commits.empty?
     end
 
     # `git fetch <remote> [<refspec>...]`. Refspecs default to the remote's
@@ -74,12 +60,12 @@ module Git
     # the checked-out branch is protected). With an actor, reflog entries
     # are written. No hooks run and no credentials are looked up.
     def fetch(remote_name : String = "origin", refspecs : Array(String)? = nil, *,
-              transport : Transport::Base? = nil,
+              transport : Transport? = nil,
               tags : Remote::TagMode? = nil, prune : Bool? = nil,
               depth : Int32? = nil, force : Bool = false,
               actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
               write_fetch_head : Bool = true, update_head_ok : Bool = false,
-              check : Proc(Nil)? = nil) : FetchResult
+              check : Proc(Nil)? = nil) : Fetch::Result
       remote = remote(remote_name)
       selected = transport || Transport.for_url(remote.url)
       specs = (refspecs || remote.fetch_refspecs.map(&.to_s))
@@ -91,34 +77,31 @@ module Git
     end
 
     # Fetch from a transport without a configured remote.
-    def fetch_from(transport : Transport::Base, refspecs : Array(String), *,
+    def fetch_from(transport : Transport, refspecs : Array(String), *,
                    tags : Remote::TagMode = Remote::TagMode::Auto, prune : Bool = false,
                    depth : Int32? = nil, force : Bool = false,
                    actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
                    write_fetch_head : Bool = true, update_head_ok : Bool = false,
-                   check : Proc(Nil)? = nil) : FetchResult
+                   check : Proc(Nil)? = nil) : Fetch::Result
       fetch_with(transport, refspecs, label: transport.url, url: transport.url, tags: tags, prune: prune,
         depth: depth, force: force, actor: actor, progress: progress,
         write_fetch_head: write_fetch_head, update_head_ok: update_head_ok,
         explicit: true, check: check)
     end
 
-    private record FetchMapping, ref : Protocol::RemoteRef, destination : String?, force : Bool,
-      for_merge : Bool, auto_tag : Bool = false
-
-    protected def fetch_with(transport : Transport::Base, spec_texts : Array(String), *,
+    protected def fetch_with(transport : Transport, spec_texts : Array(String), *,
                              label : String, url : String, tags : Remote::TagMode, prune : Bool,
                              depth : Int32?, force : Bool, actor : Signature?,
                              progress : Proc(String, Nil)?, write_fetch_head : Bool,
                              update_head_ok : Bool, explicit : Bool,
-                             check : Proc(Nil)?) : FetchResult
+                             check : Proc(Nil)?) : Fetch::Result
       check!
       raise ArgumentError.new("invalid Git fetch depth") if depth && depth < 1
-      specs = spec_texts.map { |text| Refspec.parse(text, fetch: true) }
-      specs << Refspec.parse("refs/tags/*:refs/tags/*") if tags.all?
+      specs = spec_texts.map { |text| Remote::Refspec.parse(text, fetch: true) }
+      specs << Remote::Refspec.parse("refs/tags/*:refs/tags/*") if tags.all?
       connection = transport.connect(Transport::Service::UploadPack)
       begin
-        client = Protocol::V2Client.new(connection)
+        client = Protocol::UploadPack::Client.new(connection)
         unless client.object_format == @object_format
           raise Error.new("Git remote uses #{client.object_format}, this repository #{@object_format}")
         end
@@ -129,16 +112,16 @@ module Git
 
         current_shallow = shallow_commits
         wants = mappings.compact_map(&.ref.oid).uniq.reject { |oid| has_object?(oid) }
-        received = nil.as(Pack::Received?)
-        outcome = nil.as(Protocol::FetchOutcome?)
+        stored = nil.as(Pack::Published?)
+        outcome = nil.as(Protocol::UploadPack::FetchOutcome?)
         if !wants.empty? || depth
           tips = references("refs/").compact_map(&.oid)
           head_reference.oid.try { |oid| tips << oid }
-          negotiator = Protocol::Negotiator.new(self, tips.uniq, check)
+          negotiator = Protocol::UploadPack::Negotiator.new(self, tips.uniq, check)
           wanted = wants.empty? ? mappings.compact_map(&.ref.oid).uniq : wants
           outcome = client.fetch(wanted, negotiator, include_tag: !tags.none?, depth: depth,
             shallow: current_shallow.to_a.sort, progress: progress) do |stream|
-            received = receive_pack(stream, keep: "fetch-pack #{Process.pid}", check: check)
+            stored = index_pack(stream, keep: "fetch-pack #{Process.pid}", check: check)
           end
           update_shallow(current_shallow, outcome.shallow, outcome.unshallow)
         end
@@ -152,7 +135,7 @@ module Git
           end.compact_map(&.oid).uniq
           unless missing.empty?
             client.fetch(missing, nil, include_tag: false, shallow: shallow_commits.to_a.sort, progress: progress) do |stream|
-              backfilled = receive_pack(stream, keep: "fetch-pack #{Process.pid}", check: check)
+              backfilled = index_pack(stream, keep: "fetch-pack #{Process.pid}", check: check)
               release_pack_keep(backfilled)
             end
           end
@@ -163,7 +146,7 @@ module Git
             # Git follows only tags it does not have yet.
             next if resolve_ref?(ref.name)
             next if mappings.any? { |mapping| mapping.destination == ref.name }
-            mappings << FetchMapping.new(ref, ref.name, false, false, auto_tag: true)
+            mappings << Fetch::Mapping.new(ref, ref.name, false, false, auto_tag: true)
           end
         end
 
@@ -171,39 +154,39 @@ module Git
         updates = apply_fetch_updates(mappings, label, actor, force, update_head_ok, check)
         updates.concat(prune_tracking_refs(specs, remote_refs, actor, check)) if prune
         write_fetch_head_file(mappings, url) if write_fetch_head && !mappings.empty?
-        received.try { |pack| release_pack_keep(pack) }
-        FetchResult.new(url, updates, received, remote_head.try(&.symref_target), remote_refs,
+        stored.try { |pack| release_pack_keep(pack) }
+        Fetch::Result.new(url, updates, stored, remote_head.try(&.symref_target), remote_refs,
           outcome.try(&.shallow) || [] of String)
       ensure
         connection.close
       end
     end
 
-    private def fetch_prefixes(specs : Array(Refspec), tags : Remote::TagMode) : Array(String)
+    private def fetch_prefixes(specs : Array(Remote::Refspec), tags : Remote::TagMode) : Array(String)
       prefixes = ["HEAD"]
       specs.each do |spec|
         next if spec.negative?
         source = spec.source
-        if Refspec.object_id?(source)
+        if Remote::Refspec.object_id?(source)
           next
         elsif spec.pattern?
           prefixes << source.byte_slice(0, source.index('*').not_nil!)
         elsif source.starts_with?("refs/")
           prefixes << source
         else
-          Refspec::REV_PARSE_RULES.each { |rule| prefixes << rule.sub("%s", source) }
+          RefName::REV_PARSE_RULES.each { |rule| prefixes << rule.sub("%s", source) }
         end
       end
       prefixes << "refs/tags/" unless tags.none?
       prefixes.uniq
     end
 
-    private def map_remote_refs(specs : Array(Refspec), remote_refs : Array(Protocol::RemoteRef),
-                                explicit : Bool) : Array(FetchMapping)
+    private def map_remote_refs(specs : Array(Remote::Refspec), remote_refs : Array(Protocol::RemoteRef),
+                                explicit : Bool) : Array(Fetch::Mapping)
       names = remote_refs.map(&.name)
       negatives = specs.select(&.negative?)
       excluded = ->(name : String) { negatives.any?(&.source_matches?(name)) }
-      mappings = [] of FetchMapping
+      mappings = [] of Fetch::Mapping
       destinations = {} of String => String
       specs.each do |spec|
         next if spec.negative?
@@ -211,18 +194,18 @@ module Git
           remote_refs.each do |ref|
             next if ref.name == "HEAD" || ref.oid.nil? || excluded.call(ref.name)
             destination = spec.map_source(ref.name) || next
-            mappings << FetchMapping.new(ref, destination, spec.force?, false)
+            mappings << Fetch::Mapping.new(ref, destination, spec.force?, false)
           end
         else
           source = spec.source
-          ref = if Refspec.object_id?(source)
+          ref = if Remote::Refspec.object_id?(source)
                   ObjectId.valid!(source, @object_format)
                   Protocol::RemoteRef.new(source, source)
                 else
                   full = if source.starts_with?("refs/") || source == "HEAD"
                            names.includes?(source) ? source : nil
                          else
-                           Refspec.dwim(source, names)
+                           RefName.expand(source, names)
                          end
                   raise Error.new("Git couldn't find remote ref #{source}") unless full
                   remote_refs.find { |candidate| candidate.name == full }.not_nil!
@@ -238,7 +221,7 @@ module Git
               "refs/heads/#{dst}"
             end
           end
-          mappings << FetchMapping.new(ref, destination, spec.force?, explicit)
+          mappings << Fetch::Mapping.new(ref, destination, spec.force?, explicit)
         end
       end
       mappings.each do |mapping|
@@ -266,44 +249,44 @@ module Git
     private def verify_connectivity(tips : Array(String), check : Proc(Nil)?) : Nil
       return if tips.empty?
       existing = references("refs/").compact_map(&.oid).reject { |oid| tips.includes?(oid) }
-      items = Reachability::Walker.new(self, check: check).objects(tips, existing.select { |oid| has_object?(oid) })
+      items = History::RevisionWalker.new(self, check: check).objects(tips, existing.select { |oid| has_object?(oid) })
       items.each do |item|
         next unless item.type == "blob"
         raise Error.new("Git fetch is missing object #{item.oid} (#{item.path})") unless has_object?(item.oid)
       end
     end
 
-    private def apply_fetch_updates(mappings : Array(FetchMapping), label : String, actor : Signature?,
+    private def apply_fetch_updates(mappings : Array(Fetch::Mapping), label : String, actor : Signature?,
                                     force : Bool, update_head_ok : Bool,
-                                    check : Proc(Nil)?) : Array(FetchUpdate)
-      updates = [] of FetchUpdate
+                                    check : Proc(Nil)?) : Array(Fetch::Update)
+      updates = [] of Fetch::Update
       changes = [] of References::Change
       current_branch = bare? ? nil : head[0]
-      walker = Reachability::Walker.new(self, check: check)
+      walker = History::RevisionWalker.new(self, check: check)
       mappings.each do |mapping|
         new_oid = mapping.ref.oid.not_nil!
         destination = mapping.destination
         unless destination
-          updates << FetchUpdate.new(mapping.ref.name, nil, nil, new_oid, FetchUpdate::Status::FetchHeadOnly)
+          updates << Fetch::Update.new(mapping.ref.name, nil, nil, new_oid, Fetch::Update::Status::FetchHeadOnly)
           next
         end
         old = resolve_ref?(destination)
         status, reason = if old == new_oid
-                           {FetchUpdate::Status::UpToDate, nil}
+                           {Fetch::Update::Status::UpToDate, nil}
                          elsif destination == current_branch && !update_head_ok
-                           {FetchUpdate::Status::Rejected, "refusing to fetch into branch checked out"}
+                           {Fetch::Update::Status::Rejected, "refusing to fetch into branch checked out"}
                          elsif old.nil?
-                           {FetchUpdate::Status::New, nil}
+                           {Fetch::Update::Status::New, nil}
                          elsif destination.starts_with?("refs/tags/") && !(force || mapping.force)
-                           {FetchUpdate::Status::Rejected, "would clobber existing tag"}
+                           {Fetch::Update::Status::Rejected, "would clobber existing tag"}
                          elsif fast_forward?(walker, old, new_oid)
-                           {FetchUpdate::Status::FastForward, nil}
+                           {Fetch::Update::Status::FastForward, nil}
                          elsif force || mapping.force
-                           {FetchUpdate::Status::Forced, nil}
+                           {Fetch::Update::Status::Forced, nil}
                          else
-                           {FetchUpdate::Status::Rejected, "non-fast-forward"}
+                           {Fetch::Update::Status::Rejected, "non-fast-forward"}
                          end
-        updates << FetchUpdate.new(mapping.ref.name, destination, old, new_oid, status, reason)
+        updates << Fetch::Update.new(mapping.ref.name, destination, old, new_oid, status, reason)
         next unless status.new? || status.fast_forward? || status.forced?
         message = case status
                   when .new?          then destination.starts_with?("refs/tags/") ? "storing tag" : "storing head"
@@ -319,16 +302,16 @@ module Git
       updates
     end
 
-    private def fast_forward?(walker : Reachability::Walker, old : String, new_oid : String) : Bool
+    private def fast_forward?(walker : History::RevisionWalker, old : String, new_oid : String) : Bool
       return false unless has_object?(old)
       return false unless object_header(old)[0] == "commit" && object_header(new_oid)[0] == "commit"
       walker.ancestor?(old, new_oid)
     end
 
-    private def prune_tracking_refs(specs : Array(Refspec), remote_refs : Array(Protocol::RemoteRef),
-                                    actor : Signature?, check : Proc(Nil)?) : Array(FetchUpdate)
+    private def prune_tracking_refs(specs : Array(Remote::Refspec), remote_refs : Array(Protocol::RemoteRef),
+                                    actor : Signature?, check : Proc(Nil)?) : Array(Fetch::Update)
       names = remote_refs.map(&.name).to_set
-      pruned = [] of FetchUpdate
+      pruned = [] of Fetch::Update
       changes = [] of References::Change
       specs.each do |spec|
         next if spec.negative? || !spec.pattern?
@@ -342,7 +325,7 @@ module Git
           oid = ref.oid || next
           next if changes.any? { |change| change.name == ref.name }
           changes << References::Delete.new(ref.name, oid)
-          pruned << FetchUpdate.new(source, ref.name, oid, oid, FetchUpdate::Status::Pruned)
+          pruned << Fetch::Update.new(source, ref.name, oid, oid, Fetch::Update::Status::Pruned)
         end
       end
       change_refs(changes, max_changes: changes.size, check: check) unless changes.empty?
@@ -353,7 +336,7 @@ module Git
       pruned
     end
 
-    private def write_fetch_head_file(mappings : Array(FetchMapping), url : String) : Nil
+    private def write_fetch_head_file(mappings : Array(Fetch::Mapping), url : String) : Nil
       display = url.rstrip('/')
       display = display.byte_slice(0, display.bytesize - 4) if display.bytesize > 4 && display.ends_with?(".git")
       ordered = mappings.select(&.for_merge) + mappings.reject(&.for_merge)

@@ -110,8 +110,8 @@ the caller supplies (nothing is inherited unless `inherit_environment` is set);
 `Daemon` opens one TCP connection. `Transport.for_url` builds only `Local` and
 uncredentialed `HTTP` transports from a string, and builds ssh and git://
 transports only when an ssh command is passed. Missing credentials raise
-`Transport::AuthenticationError`; a failing program or connection raises
-`Transport::ConnectionError` with its error output. Hooks, filters and signers
+`Transport::AuthenticationFailure`; a failing program or connection raises
+`Transport::ConnectionFailure` with its error output. Hooks, filters and signers
 still have no runner.
 
 The library can supply composable executors/providers for trusted standalone

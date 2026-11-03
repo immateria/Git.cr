@@ -1,8 +1,8 @@
 module Git
-  module Transport
+  abstract class Transport
     # Another repository on this machine, served in-process by the native
-    # upload-pack and receive-pack implementations (no Git subprocess).
-    class Local < Base
+    # upload-pack and receive-pack servers (no Git subprocess).
+    class Local < Transport
       getter path : String
 
       def initialize(path : String, *,
@@ -17,62 +17,30 @@ module Git
         @path
       end
 
-      def connect(service : Service, protocol_version : Int32 = 2) : Connection
+      def connect(service : Service, protocol_version : Int32 = 2) : Transport::Connection
         repository = begin
           Repository.new(@path, max_scan_bytes: @max_scan_bytes, max_search_entries: @max_search_entries)
         rescue ex : File::Error | Git::Error
-          raise ConnectionError.new("Git repository #{@path} cannot be opened: #{ex.message}")
+          raise ConnectionFailure.new("Git repository #{@path} cannot be opened: #{ex.message}")
         end
-        case service
-        in .upload_pack?
-          LocalConnection.new(UploadPackHandler.new(Protocol::UploadPack.new(repository, want_policy: @want_policy)))
-        in .receive_pack?
-          LocalConnection.new(ReceivePackHandler.new(Protocol::ReceivePack.new(repository, @receive_options)))
-        end
+        server = case service
+                 in .upload_pack?  then Protocol::UploadPack::Server.new(repository, want_policy: @want_policy)
+                 in .receive_pack? then Protocol::ReceivePack::Server.new(repository, @receive_options)
+                 end
+        Connection.new(server)
       end
 
-      # The in-process server behind a local connection.
-      abstract class Handler
-        abstract def advertise(io : IO) : Nil
-        abstract def serve(input : IO, output : IO) : Nil
-      end
-
-      class UploadPackHandler < Handler
-        def initialize(@server : Protocol::UploadPack)
-        end
-
-        def advertise(io : IO) : Nil
-          @server.advertise(io)
-        end
-
-        def serve(input : IO, output : IO) : Nil
-          @server.handle(input, output)
-        end
-      end
-
-      class ReceivePackHandler < Handler
-        def initialize(@server : Protocol::ReceivePack)
-        end
-
-        def advertise(io : IO) : Nil
-          @server.advertise(io)
-        end
-
-        def serve(input : IO, output : IO) : Nil
-          @server.handle(input, output)
-        end
-      end
-
-      class LocalConnection < Connection
+      # A conversation with an in-process server.
+      class Connection < Transport::Connection
         @advertisement : Bytes? = nil
 
-        def initialize(@handler : Handler)
+        def initialize(@server : Protocol::Server)
         end
 
         def advertisement : Bytes
           @advertisement ||= begin
             io = IO::Memory.new
-            @handler.advertise(io)
+            @server.advertise(io)
             io.to_slice
           end
         end
@@ -89,7 +57,7 @@ module Git
           finished = Channel(Nil).new(1)
           spawn do
             begin
-              @handler.serve(IO::Memory.new(body), writer)
+              @server.handle(IO::Memory.new(body), writer)
             rescue ex
               failure = ex
             ensure
@@ -113,7 +81,7 @@ module Git
           # The server's own failure explains a client-side protocol error.
           if error = failure
             raise error if error.is_a?(Git::Error)
-            raise Protocol::RemoteError.new("local server failed: #{error.class}: #{error.message}")
+            raise Protocol::RemoteFailure.new("local server failed: #{error.class}: #{error.message}")
           end
           raise client_error if client_error
         end

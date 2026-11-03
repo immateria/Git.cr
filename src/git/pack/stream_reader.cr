@@ -4,36 +4,7 @@ require "digest/sha256"
 require "digest/crc32"
 
 module Git
-  # Native pack-file support: reading a pack stream entry by entry,
-  # writing packs and their .idx/.rev companions, and indexing received
-  # packs (Git's index-pack).
   module Pack
-    SIGNATURE = "PACK".to_slice
-
-    # A running SHA-1/SHA-256 over the bytes of a pack or index file.
-    class Checksum
-      def initialize(@format : ObjectId::Format)
-        @sha1 = @format.sha1? ? Digest::SHA1.new : nil
-        @sha256 = @format.sha256? ? Digest::SHA256.new : nil
-      end
-
-      def update(bytes : Bytes) : Nil
-        if sha1 = @sha1
-          sha1.update(bytes)
-        else
-          @sha256.not_nil!.update(bytes)
-        end
-      end
-
-      def final : Bytes
-        if sha1 = @sha1
-          sha1.final
-        else
-          @sha256.not_nil!.final
-        end
-      end
-    end
-
     # Buffered sequential reader over a pack stream. Every consumed byte is
     # hashed into the pack checksum (until the trailer), folded into the
     # current entry's CRC32 and optionally copied to a tee, so a pack can be
@@ -97,7 +68,7 @@ module Git
       def inflate(size : Int64, max_bytes : Int64) : Bytes
         raise Git::Error.new("Git pack object exceeds byte budget") if size > max_bytes || size > Int32::MAX - 1
         output = Bytes.new(size.to_i + 1)
-        written = Inflate.run(output) do |stream|
+        written = Inflater.inflate(output) do |stream|
           raise Git::Error.new("Git pack stream truncated") unless fill
           stream.value.next_in = @buffer.to_unsafe + @start
           stream.value.avail_in = (@finish - @start).to_u32
@@ -128,9 +99,10 @@ module Git
     end
 
     # A direct zlib inflate loop that reports how much output was produced.
-    # The caller's block supplies input and runs one inflate step.
-    module Inflate
-      def self.run(output : Bytes, & : LibZ::ZStream* -> LibZ::Error) : Int64
+    # The caller's block supplies input and runs one inflate step, so the
+    # caller knows exactly how many compressed bytes an entry used.
+    module Inflater
+      def self.inflate(output : Bytes, & : LibZ::ZStream* -> LibZ::Error) : Int64
         stream = LibZ::ZStream.new
         stream.zalloc = LibZ::AllocFunc.new { |_opaque, items, size| GC.malloc(items * size) }
         stream.zfree = LibZ::FreeFunc.new { |_opaque, address| GC.free(address) }

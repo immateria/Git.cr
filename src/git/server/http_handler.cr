@@ -29,13 +29,13 @@ module Git
         if path.ends_with?("/info/refs") && request.method == "GET"
           service = request.query_params["service"]?
           repository = resolve(context, path.rchop("/info/refs")) || return
-          advertise(context, repository, service)
+          serve_advertisement(context, repository, service)
         elsif path.ends_with?("/git-upload-pack") && request.method == "POST"
           repository = resolve(context, path.rchop("/git-upload-pack")) || return
-          upload_pack(context, repository)
+          serve_upload_pack(context, repository)
         elsif path.ends_with?("/git-receive-pack") && request.method == "POST"
           repository = resolve(context, path.rchop("/git-receive-pack")) || return
-          receive_pack(context, repository)
+          serve_receive_pack(context, repository)
         else
           call_next(context)
         end
@@ -54,7 +54,7 @@ module Git
         (context.request.headers["Git-Protocol"]? || "").split(':').includes?("version=2")
       end
 
-      private def advertise(context : ::HTTP::Server::Context, repository : Repository, service : String?) : Nil
+      private def serve_advertisement(context : ::HTTP::Server::Context, repository : Repository, service : String?) : Nil
         response = context.response
         response.headers["Cache-Control"] = "no-cache"
         case service
@@ -64,7 +64,7 @@ module Git
             return
           end
           response.content_type = "application/x-git-upload-pack-advertisement"
-          Protocol::UploadPack.new(repository, want_policy: @want_policy).advertise(response.output)
+          Protocol::UploadPack::Server.new(repository, want_policy: @want_policy).advertise(response.output)
         when "git-receive-pack"
           unless @receive_pack
             forbidden(context, "Pushing is disabled\n")
@@ -73,13 +73,13 @@ module Git
           response.content_type = "application/x-git-receive-pack-advertisement"
           Protocol::PktLine.line(response.output, "# service=git-receive-pack")
           Protocol::PktLine.flush(response.output)
-          Protocol::ReceivePack.new(repository, @receive_options).advertise(response.output)
+          Protocol::ReceivePack::Server.new(repository, @receive_options).advertise(response.output)
         else
           forbidden(context, "Only the smart HTTP protocol is served\n")
         end
       end
 
-      private def upload_pack(context : ::HTTP::Server::Context, repository : Repository) : Nil
+      private def serve_upload_pack(context : ::HTTP::Server::Context, repository : Repository) : Nil
         unless version_2?(context)
           forbidden(context, "This server requires Git protocol version 2 for fetching\n")
           return
@@ -87,7 +87,7 @@ module Git
         context.response.content_type = "application/x-git-upload-pack-result"
         context.response.headers["Cache-Control"] = "no-cache"
         input = body(context)
-        server = Protocol::UploadPack.new(repository, want_policy: @want_policy)
+        server = Protocol::UploadPack::Server.new(repository, want_policy: @want_policy)
         begin
           while server.handle(input, context.response.output)
           end
@@ -96,14 +96,14 @@ module Git
         end
       end
 
-      private def receive_pack(context : ::HTTP::Server::Context, repository : Repository) : Nil
+      private def serve_receive_pack(context : ::HTTP::Server::Context, repository : Repository) : Nil
         unless @receive_pack
           forbidden(context, "Pushing is disabled\n")
           return
         end
         context.response.content_type = "application/x-git-receive-pack-result"
         context.response.headers["Cache-Control"] = "no-cache"
-        Protocol::ReceivePack.new(repository, @receive_options).handle(body(context), context.response.output)
+        Protocol::ReceivePack::Server.new(repository, @receive_options).handle(body(context), context.response.output)
       end
 
       private def body(context : ::HTTP::Server::Context) : IO
