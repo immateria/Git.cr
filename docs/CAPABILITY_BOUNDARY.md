@@ -92,7 +92,7 @@ precede any corresponding agent tool.
 6. The library may support an operation before a host-facing tool exists or
    when agent use is prohibited. Host policy is not a reason to remove it.
 
-## Runner and transport requirements (not implemented)
+## Runner and transport requirements
 
 For each Git feature that executes an external program, define:
 
@@ -100,6 +100,19 @@ For each Git feature that executes an external program, define:
 - Git-defined working directory and environment.
 - Timeout and cancellation behavior.
 - Filesystem and network resource scope, and credential handling.
+
+`Git::Transport` follows these rules for remote access. Every transport is
+constructed explicitly by the caller: `Local` serves another repository
+in-process; `HTTP` takes its credentials from a caller-supplied callback, its
+TLS settings from a caller-supplied context and uses a proxy only when one is
+named; `Command` and `SSH` run exactly the program, arguments and environment
+the caller supplies (nothing is inherited unless `inherit_environment` is set);
+`Daemon` opens one TCP connection. `Transport.for_url` builds only `Local` and
+uncredentialed `HTTP` transports from a string, and builds ssh and git://
+transports only when an ssh command is passed. Missing credentials raise
+`Transport::AuthenticationError`; a failing program or connection raises
+`Transport::ConnectionError` with its error output. Hooks, filters and signers
+still have no runner.
 
 The library can supply composable executors/providers for trusted standalone
 callers without requiring a host. A missing provider must never be reported as
@@ -110,9 +123,12 @@ to broaden those grants.
 
 ## Current code status
 
-The native implementation currently makes no runtime Git subprocess calls and
-runs no hooks, filters, signing or network operations. That describes the current
-implementation, not a permanent restriction on the library.
+The native implementation makes no runtime Git subprocess calls of its own and
+runs no hooks, filters or signing. Network access and external programs happen
+only through a transport the caller constructs (see above): clone, fetch, pull,
+push and ls-remote, and the native upload-pack/receive-pack servers that answer
+them. That describes the current implementation, not a permanent restriction on
+the library.
 
 `Git::Config::FileEditor` edits individual files using `.lock` and rename.
 `Git::Repository#write_blob`, `#write_tree`, `#write_commit` and `#write_tag`
