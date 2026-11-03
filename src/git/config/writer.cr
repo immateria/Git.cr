@@ -49,6 +49,59 @@ module Git
         edit(path, name, nil, Operation::UnsetAll, max_bytes)
       end
 
+      # Remove every section with this name and all of its variables, as
+      # `git config --remove-section` does. Returns whether one existed.
+      def self.remove_section(path : String, section : String, *, max_bytes : Int32 = MAX_BYTES) : Bool
+        wanted = normalize_section(section)
+        found = false
+        transform(path, max_bytes) do |data|
+          sections, _ = scan(data)
+          matching = sections.select { |candidate| candidate.name == wanted }
+          found = !matching.empty?
+          splice(data, matching.map { |candidate| Patch.new(candidate.start, candidate.finish, "") })
+        end
+        found
+      end
+
+      # Rename every section with this name (`git config --rename-section`).
+      def self.rename_section(path : String, from : String, to : String, *, max_bytes : Int32 = MAX_BYTES) : Bool
+        old_name = normalize_section(from)
+        new_name = normalize_section(to)
+        found = false
+        transform(path, max_bytes) do |data|
+          sections, _ = scan(data)
+          patches = sections.select { |candidate| candidate.name == old_name }.map do |candidate|
+            header_end = data.byte_index(']'.ord, candidate.start) || raise Error.new("invalid Git config section")
+            Patch.new(data.byte_index('['.ord, candidate.start).not_nil!, header_end + 1, render_header(new_name))
+          end
+          found = !patches.empty?
+          splice(data, patches)
+        end
+        found
+      end
+
+      # "Remote.Origin" => "remote.Origin": the section is case-insensitive,
+      # the subsection is not.
+      private def self.normalize_section(name : String) : String
+        raise Error.new("unsupported Git config section") if name.empty? || name.to_slice.any? { |byte| byte == 0_u8 || byte == 10_u8 || byte == 13_u8 }
+        dot = name.index('.')
+        return name.downcase unless dot
+        name.byte_slice(0, dot).downcase + name.byte_slice(dot, name.bytesize - dot)
+      end
+
+      private def self.splice(data : String, patches : Array(Patch)) : String
+        cursor = 0
+        String.build do |builder|
+          patches.sort_by! { |patch| {patch.start, patch.finish} }.each do |patch|
+            raise Error.new("overlapping Git config edits") if patch.start < cursor
+            builder << data.byte_slice(cursor, patch.start - cursor)
+            builder << patch.text
+            cursor = patch.finish
+          end
+          builder << data.byte_slice(cursor, data.bytesize - cursor)
+        end
+      end
+
       private def self.edit(path : String, name : String, value : String?, operation : Operation,
                             max_bytes : Int32) : Nil
         raise ArgumentError.new("invalid Git config write budget") if max_bytes < 128 || max_bytes > 64 * 1024 * 1024
@@ -62,6 +115,13 @@ module Git
         end
         raise Error.new("unsupported Git config value") if value && (value.includes?('\0') || value.includes?('\r'))
         raise Error.new("Git config write budget exceeded") if value && value.bytesize > max_bytes
+        transform(path, max_bytes) { |data| rewrite(data, normalized, value, operation) }
+      end
+
+      # Read the file under its .lock, rewrite it and rename the lock into
+      # place.
+      private def self.transform(path : String, max_bytes : Int32, & : String -> String) : Nil
+        raise ArgumentError.new("invalid Git config write budget") if max_bytes < 128 || max_bytes > 64 * 1024 * 1024
         absolute = File.expand_path(path)
         lock = absolute + ".lock"
         fd = LibC.open(lock, LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL | LibC::O_CLOEXEC | LibC::O_NOFOLLOW, 0o666)
@@ -85,7 +145,7 @@ module Git
                    else
                      ""
                    end
-            output = rewrite(data, normalized, value, operation)
+            output = yield data
             raise Error.new("Git config write budget exceeded") if output.bytesize > max_bytes
             if info
               perm = (info.permissions.value & 0o777).to_u32

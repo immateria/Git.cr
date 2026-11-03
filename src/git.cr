@@ -5,6 +5,8 @@ require "json"
 # adapter; this library has no host or workspace-manager dependency or a Git
 # subprocess.
 module Git
+  VERSION = "0.1.0"
+
   class Error < Exception
   end
 end
@@ -61,3 +63,16 @@ require "./git/pack/indexer"
 require "./git/pack/delta"
 require "./git/pack/builder"
 require "./git/pack/repository"
+require "./git/references/listing"
+require "./git/protocol/pkt_line"
+require "./git/transport/base"
+require "./git/protocol/upload_pack"
+require "./git/protocol/receive_pack"
+require "./git/protocol/client"
+require "./git/transport/local"
+require "./git/transport/http"
+require "./git/remote/refspec"
+require "./git/remote/remote"
+require "./git/remote/fetch"
+require "./git/remote/clone"
+require "./git/remote/push"

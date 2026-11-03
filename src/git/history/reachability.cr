@@ -34,6 +34,8 @@ module Git
                      @max_objects : Int64 = 50_000_000,
                      @check : Proc(Nil)? = nil)
         raise ArgumentError.new("invalid Git reachability budgets") if @max_object_bytes < 128 || @max_objects < 1
+        # Shallow commits are walked as if they had no parents.
+        @shallow = @repository.shallow_commits
       end
 
       def commit_info(oid : String) : CommitInfo
@@ -41,6 +43,7 @@ module Git
           kind, raw = read(oid)
           raise Error.new("Git object #{oid} is not a commit") unless kind == "commit"
           info = Reachability.parse_commit(raw, @repository.object_format)
+          info = info.copy_with(parents: [] of String) if @shallow.includes?(oid)
           @infos[oid] = info
           info
         end
