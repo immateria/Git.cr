@@ -1,6 +1,6 @@
 module Git
   struct Sequencer
-    def self.head_name(kind : Kind) : String
+    protected def self.head_name(kind : Kind) : String
       case kind
       when .cherry_pick? then "CHERRY_PICK_HEAD"
       when .revert?      then "REVERT_HEAD"
@@ -9,7 +9,7 @@ module Git
       end
     end
 
-    def self.label(kind : Kind) : String
+    protected def self.label(kind : Kind) : String
       case kind
       when .cherry_pick? then "cherry-pick"
       when .revert?      then "revert"
@@ -18,8 +18,8 @@ module Git
       end
     end
 
-    def self.read_source(repository : Repository, oid : String, max_bytes : Int32,
-                         check : Proc(Nil)?) : Source
+    protected def self.read_source(repository : Repository, oid : String, max_bytes : Int32,
+                                   check : Proc(Nil)?) : Source
       object_kind, raw = repository.object(oid, max_bytes) { check.try &.call }
       raise Error.new("Git sequencer source is not a commit") unless object_kind == "commit"
       raise Error.new("invalid Git sequencer commit text") unless raw.valid_encoding?
@@ -44,7 +44,7 @@ module Git
       Source.new(oid, tree.not_nil!, parents, author.not_nil!, message)
     end
 
-    def self.selected_parent(source : Source, mainline : Int32?) : String?
+    protected def self.selected_parent(source : Source, mainline : Int32?) : String?
       if source.parents.size <= 1
         raise Error.new("Git sequencer mainline requires a merge commit") if mainline
         return source.parents.first?
@@ -54,7 +54,7 @@ module Git
       source.parents[selected - 1]
     end
 
-    def self.default_revert_message(source : Source) : String
+    protected def self.default_revert_message(source : Source) : String
       subject = source.message.lines.first? || ""
       "Revert \"#{subject}\"\n\nThis reverts commit #{source.oid}.\n"
     end

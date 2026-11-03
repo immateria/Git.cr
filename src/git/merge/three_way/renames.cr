@@ -9,8 +9,8 @@ module Git
     # on a side, paired with one new path carrying the same blob OID and file
     # kind. Regular executable-bit changes may accompany the move. No content
     # similarity, copy or directory rename guesses are made.
-    def self.exact_renames(base : Hash(String, Checkout::FileState),
-                           side : Hash(String, Checkout::FileState)) : Hash(String, String)
+    protected def self.exact_renames(base : Hash(String, Checkout::FileState),
+                                     side : Hash(String, Checkout::FileState)) : Hash(String, String)
       base_counts = Hash({String, String}, Int32).new(0)
       base.each_value { |state| base_counts[rename_identity(state)] += 1 }
       added = {} of {String, String} => Array(String)
@@ -43,6 +43,7 @@ module Git
       Checkout::FileState.new(mode, changed.oid)
     end
 
+    # :nodoc:
     # Reconcile one-sided exact renames with changes to the original path.
     # The destination stage-1 entry must retain the old base even though the
     # path did not exist in that base; a rename/delete or rename/type-change
@@ -55,9 +56,9 @@ module Git
       rename_identity(before)[0] != rename_identity(after)[0]
     end
 
-    def self.rename_plan(base : Hash(String, Checkout::FileState),
-                         ours : Hash(String, Checkout::FileState),
-                         theirs : Hash(String, Checkout::FileState)) : RenamePlan
+    protected def self.rename_plan(base : Hash(String, Checkout::FileState),
+                                   ours : Hash(String, Checkout::FileState),
+                                   theirs : Hash(String, Checkout::FileState)) : RenamePlan
       our_moves = exact_renames(base, ours)
       their_moves = exact_renames(base, theirs)
       resolutions = {} of String => Checkout::FileState?

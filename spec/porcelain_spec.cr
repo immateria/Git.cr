@@ -68,7 +68,7 @@ describe "Git porcelain" do
         expected = GitOracle.run_args(root, ["rev-list"] + revisions).stdout.lines
         {revisions, repo.rev_list(revisions)}.should eq({revisions, expected})
       end
-      repo.log(["main"], limit: 2).map(&.subject).should eq(["after.txt: after", "merge topic"])
+      repo.log(["main"], limit: 2).commits.map(&.subject).should eq(["after.txt: after", "merge topic"])
       counts = GitOracle.run(root, "rev-list", "--left-right", "--count", "main...topic~1").stdout.split.map(&.to_i)
       repo.ahead_behind("main", "topic~1").should eq({counts[0], counts[1]})
     end

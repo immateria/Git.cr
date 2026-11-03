@@ -1,14 +1,18 @@
 module Git
+  # :nodoc:
   module Revision
     # Follow tags (and from a commit to its tree) until an object of kind.
-    def self.peel(repository : Repository, oid : String, kind : String, max_bytes : Int32 = 268_435_456) : String
+    protected def self.peel(repository : Repository, oid : String, kind : String, max_bytes : Int32 = 268_435_456) : String
       current = oid
+      declared = nil.as(String?)
       32.times do
         type, raw = repository.object(current, max_bytes) { nil }
+        raise Error.new("Git annotated tag target type mismatch") if declared && type != declared
         return current if type == kind
         case type
         when "tag"
           target = raw.each_line.find(&.starts_with?("object ")) || raise Error.new("invalid Git tag #{current}")
+          declared = raw.each_line.find(&.starts_with?("type ")).try(&.byte_slice(5).strip)
           current = ObjectId.valid!(target.byte_slice(7).strip, repository.object_format)
         when "commit"
           raise Error.new("Git object #{oid} cannot be peeled to a #{kind}") unless kind == "tree"
@@ -23,7 +27,7 @@ module Git
     # The commits to include and exclude for rev-list style arguments:
     # A, ^A, A..B and A...B (the symmetric difference, excluding the merge
     # bases).
-    def self.ranges(repository : Repository, revisions : Array(String)) : {Array(String), Array(String)}
+    protected def self.ranges(repository : Repository, revisions : Array(String)) : {Array(String), Array(String)}
       wants = [] of String
       haves = [] of String
       commit_of = ->(text : String) { peel(repository, repository.rev_parse(text.empty? ? "HEAD" : text), "commit") }
@@ -45,6 +49,7 @@ module Git
       {wants.uniq, haves.uniq}
     end
 
+    # :nodoc:
     # Resolves Git's everyday revision grammar to object IDs (see
     # Repository#rev_parse).
     class Parser
@@ -275,12 +280,24 @@ module Git
       limit ? commits.first(limit) : commits
     end
 
-    # `git log <revisions>` as commit records (see rev_list).
+    # `git log <revisions>`: commits reachable from the positive revisions
+    # and not from the negative ones (^A, A..B, A...B), at most limit of
+    # them, in order. An unborn HEAD contributes nothing. Raises when the
+    # range holds more than max_commits commits.
     def log(revisions : Array(String) = ["HEAD"], *, limit : Int32 = 100,
-            max_commit_bytes : Int32 = 8_388_608, check : Proc(Nil)? = nil) : Array(Commit)
-      rev_list(revisions, limit: limit, check: check).map do |oid|
-        read_commit(oid, max_bytes: max_commit_bytes, check: check)
-      end
+            order : History::Order = History::Order::Date,
+            max_commits : Int32 = 1_000_000, max_commit_bytes : Int32 = 8_388_608,
+            check : Proc(Nil)? = nil) : History::Result
+      raise ArgumentError.new("invalid Git log budgets") if limit < 0 || max_commits < 1 || max_commit_bytes < 128
+      check!
+      born = revisions.reject { |revision| revision == "HEAD" && head_ref_and_oid[1].nil? }
+      return History::Result.new([] of Commit, false, 0) if born.empty?
+      wants, haves = Revision.ranges(self, born)
+      walker = History::RevisionWalker.new(self, check: check)
+      oids = walker.commits(wants, haves, max_commits: max_commits)
+      oids = walker.topological(oids) if order.topological?
+      commits = oids.first(limit).map { |oid| read_commit(oid, max_bytes: max_commit_bytes, check: check) }
+      History::Result.new(commits, oids.size > limit, oids.size)
     end
 
     # Commits only on left and only on right (`git rev-list --left-right

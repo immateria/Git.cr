@@ -1,11 +1,12 @@
 require "set"
 
 module Git
+  # :nodoc:
   # Bounded native revision parent selectors and commit-DAG merge bases.
   module Revision
-    def self.resolve_commit(repository : Repository, expression : String,
-                            max_bytes : Int32, check : Proc(Nil)?, *,
-                            max_hops : Int32 = 4_096) : String
+    protected def self.resolve_commit(repository : Repository, expression : String,
+                                      max_bytes : Int32, check : Proc(Nil)?, *,
+                                      max_hops : Int32 = 4_096) : String
       raise ArgumentError.new("invalid Git revision hop budget") if max_hops < 1
       raise Error.new("Git revision selector rejected") if expression.empty? || expression.bytesize > 4_096
       first_op = expression.index(/[~^]/) || raise Error.new("invalid Git revision expression")
@@ -84,9 +85,9 @@ module Git
       seen
     end
 
-    def self.merge_bases(repository : Repository, left : String, right : String, *,
-                         max_nodes : Int32 = 16_384, max_commit_bytes : Int32 = 8_388_608,
-                         check : Proc(Nil)? = nil) : Array(String)
+    protected def self.merge_bases(repository : Repository, left : String, right : String, *,
+                                   max_nodes : Int32 = 16_384, max_commit_bytes : Int32 = 8_388_608,
+                                   check : Proc(Nil)? = nil) : Array(String)
       raise ArgumentError.new("invalid Git merge-base budgets") if max_nodes < 1 || max_commit_bytes < 128
       repository.check!
       left_oid = resolve_commit(repository, left, max_commit_bytes, check, max_hops: max_nodes)

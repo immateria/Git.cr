@@ -1,4 +1,5 @@
 module Git
+  # :nodoc:
   # Repository identity, linked worktree metadata, and ref/HEAD resolution.
   # Does not read object payloads, indexes or current working files.
   class Metadata
@@ -21,7 +22,7 @@ module Git
                    work_tree : String? = nil, follow_gitfile : Bool = true,
                    discover : Bool = false,
                    discovery_ceiling : String? = nil,
-                   before_config : Proc(Location::AdmissionSite, Nil)? = nil,
+                   before_config : Proc(Repository::Admission::Site, Nil)? = nil,
                    before_implicit_bare : Proc(Nil)? = nil,
                    @max_scan_bytes : Int32 = 8_388_608, @max_search_entries : Int32 = 10_000)
       raise ArgumentError.new("invalid Git read budgets") if @max_scan_bytes < 128 || @max_search_entries < 1

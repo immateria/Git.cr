@@ -232,6 +232,7 @@ module Git
         Finalization.new(token, redo, refs, index_sha == "-" ? nil : index_sha)
       end
 
+      # :nodoc:
       # A completed redo may have been unlinked before SIGKILL/_exit, leaving
       # only this receipt plus our token-marked locks. The operation is
       # intentionally explicit: never infer ownership of an arbitrary .lock.

@@ -5,8 +5,8 @@ module Git
     # the native equivalent of Git refusing an update that would lose
     # untracked files. Publication rechecks with rmdir so a racing arrival is
     # preserved and reported as partial publication rather than deleted.
-    def self.require_collapsible_directory!(root : String, prefix : String,
-                                            tracked_paths : Array(String), max_entries : Int32) : Nil
+    protected def self.require_collapsible_directory!(root : String, prefix : String,
+                                                      tracked_paths : Array(String), max_entries : Int32) : Nil
       expected_files = tracked_paths.to_set
       expected_dirs = path_prefixes(tracked_paths)
       raise Error.new("Git checkout transition path is not a tracked directory") unless expected_dirs.includes?(prefix)
@@ -40,10 +40,10 @@ module Git
     # tracked directory requires that the entire old subtree contain only
     # tracked leaves; a new descendant beneath a tracked file is allowed only
     # because that tracked blocker is scheduled to disappear.
-    def self.require_transition_destinations!(root : String,
-                                              old_paths : Enumerable(String),
-                                              new_paths : Enumerable(String),
-                                              *, max_entries : Int32) : Nil
+    protected def self.require_transition_destinations!(root : String,
+                                                        old_paths : Enumerable(String),
+                                                        new_paths : Enumerable(String),
+                                                        *, max_entries : Int32) : Nil
       old = old_paths.to_a.uniq
       fresh = new_paths.to_a.uniq
       require_tree_paths!(old, "Git predecessor")
@@ -66,7 +66,7 @@ module Git
     # their tracked leaves are removed. Obsolete empty directories unrelated
     # to a D/F replacement are deliberately left alone; Git does not track
     # directories and they are not required for correctness.
-    def self.transition_directories(old_paths : Enumerable(String), new_paths : Enumerable(String)) : Array(String)
+    protected def self.transition_directories(old_paths : Enumerable(String), new_paths : Enumerable(String)) : Array(String)
       old_dirs = path_prefixes(old_paths)
       targets = new_paths.to_a
       old_dirs.select do |directory|
@@ -74,15 +74,15 @@ module Git
       end.to_a.sort_by { |path| {-path.count('/'), -path.bytesize, path} }
     end
 
-    def self.transition_blocker?(removed : String, written : String) : Bool
+    protected def self.transition_blocker?(removed : String, written : String) : Bool
       written.starts_with?(removed + "/") || removed.starts_with?(written + "/")
     end
 
     # A clean tracked regular file is read with the existing bounded,
     # identity-checked worktree reader. Missing files and mode changes refuse.
-    def self.require_clean!(repository : Repository, index : Array(Index::Entry), *,
-                            max_blob_bytes : Int32, max_total_bytes : Int64,
-                            check : Proc(Nil)?, allow_symlinks : Bool = false) : Nil
+    protected def self.require_clean!(repository : Repository, index : Array(Index::Entry), *,
+                                      max_blob_bytes : Int32, max_total_bytes : Int64,
+                                      check : Proc(Nil)?, allow_symlinks : Bool = false) : Nil
       scanned = 0_i64
       index.each do |entry|
         check.try &.call

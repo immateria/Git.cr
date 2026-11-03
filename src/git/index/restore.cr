@@ -1,14 +1,15 @@
 require "set"
 
 module Git
+  # :nodoc:
   # Index-only tree restoration: no worktree I/O, ref movement or subprocess.
   # Explicit source commits and literal paths avoid expanding user pathspecs.
   module IndexRestore
     record State, mode : String, oid : String
 
-    def self.source_entries(repository : Repository, tree_oid : String, *,
-                            max_object_bytes : Int32, max_entries : Int32,
-                            check : Proc(Nil)?) : Hash(String, State)
+    protected def self.source_entries(repository : Repository, tree_oid : String, *,
+                                      max_object_bytes : Int32, max_entries : Int32,
+                                      check : Proc(Nil)?) : Hash(String, State)
       found = {} of String => State
       stack = [{"", tree_oid, 0}]
       visited = 0
@@ -37,8 +38,8 @@ module Git
 
     # Build a batch of index edits. Source-only additions, staged deletions,
     # and unmerged paths are handled, but unselected index records are not.
-    def self.edits(current : Array(Index::Entry), source : Hash(String, State),
-                   selected : Set(String)?) : Array(Index::Edit)
+    protected def self.edits(current : Array(Index::Entry), source : Hash(String, State),
+                             selected : Set(String)?) : Array(Index::Edit)
       grouped = {} of String => Array(Index::Entry)
       current.each do |entry|
         next if selected && !selected.includes?(entry.path)

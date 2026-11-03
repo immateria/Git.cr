@@ -1,8 +1,8 @@
 module Git
   module Checkout
-    def self.tree_files(repository : Repository, tree_oid : String, *,
-                        max_object_bytes : Int32, max_files : Int32,
-                        check : Proc(Nil)?, allow_symlinks : Bool = false) : Hash(String, FileState)
+    protected def self.tree_files(repository : Repository, tree_oid : String, *,
+                                  max_object_bytes : Int32, max_files : Int32,
+                                  check : Proc(Nil)?, allow_symlinks : Bool = false) : Hash(String, FileState)
       found = {} of String => FileState
       stack = [{"", tree_oid, 0}]
       visited = 0
@@ -30,7 +30,7 @@ module Git
       found
     end
 
-    def self.path_collision(paths : Enumerable(String)) : {String, String}?
+    protected def self.path_collision(paths : Enumerable(String)) : {String, String}?
       sorted = paths.to_a.uniq.sort
       sorted.each_cons(2) do |pair|
         return {pair[0], pair[1]} if pair[1].starts_with?(pair[0] + "/")
@@ -40,7 +40,7 @@ module Git
 
     # Each individual Git tree/index view must still be free of D/F
     # collisions. A transition between two valid views is handled separately.
-    def self.require_tree_paths!(paths : Enumerable(String), context : String = "Git tree") : Nil
+    protected def self.require_tree_paths!(paths : Enumerable(String), context : String = "Git tree") : Nil
       if pair = path_collision(paths)
         raise Error.new("#{context} file/directory collision: #{pair[0]} and #{pair[1]}")
       end
@@ -48,13 +48,13 @@ module Git
 
     # Legacy conservative admission retained for reset/abort paths that have
     # not yet opted into transition planning.
-    def self.require_compatible_paths!(old_paths : Array(String), new_paths : Array(String)) : Nil
+    protected def self.require_compatible_paths!(old_paths : Array(String), new_paths : Array(String)) : Nil
       if pair = path_collision(old_paths + new_paths)
         raise Error.new("Git checkout file/directory transition unsupported: #{pair[0]} and #{pair[1]}")
       end
     end
 
-    def self.path_prefixes(paths : Enumerable(String)) : Set(String)
+    protected def self.path_prefixes(paths : Enumerable(String)) : Set(String)
       result = Set(String).new
       paths.each do |path|
         components = path.split('/')

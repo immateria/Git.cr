@@ -44,6 +44,7 @@ module Git
     record FileComparison, path : String, old_oid : String?, new_oid : String?, old_mode : String?, new_mode : String?,
       old_text : String, new_text : String
 
+    # :nodoc:
     def initialize(@metadata : Metadata, @head_tree : HeadTree,
                    @object_database : ObjectDatabase, @object_format : ObjectId::Format,
                    @max_search_entries : Int32)
@@ -51,7 +52,7 @@ module Git
 
     # Compare HEAD's full tracked tree with the staged index. No worktree
     # reads, ignores, filters, hooks, or executable invocation are needed.
-    def changes(max_bytes : Int32, limit : Int32, &check : -> Nil) : {Array(Change), Bool}
+    protected def changes(max_bytes : Int32, limit : Int32, &check : -> Nil) : {Array(Change), Bool}
       check.call
       staged = entries(max_bytes) { check.call }
       head_files = {} of String => {String, String}
@@ -118,7 +119,7 @@ module Git
     # Versions 2/3 use 8-byte padded entries. Version 4 shares the stat
     # header but prefix-compresses names and has no padding. Unsupported
     # required extensions (notably sparse/split index) must fail closed.
-    def entries(max_bytes : Int32, &check : -> Nil) : Array(Entry)
+    protected def entries(max_bytes : Int32, &check : -> Nil) : Array(Entry)
       file = File.join(@metadata.git_dir, "index")
       raise Git::Error.new("Git index symlink refused") if File.symlink?(file)
       return [] of Entry unless File.exists?(file)
@@ -240,7 +241,7 @@ module Git
       PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH)
     end
 
-    def file_comparison(path : String, max_bytes : Int32, &check : -> Nil) : FileComparison?
+    protected def file_comparison(path : String, max_bytes : Int32, &check : -> Nil) : FileComparison?
       validate_index_path!(path)
       entry = entries(max_bytes) { check.call }.find { |e| e.path == path }
       raise Error.new("unmerged or intent-to-add paths cannot be diffed") if entry && (entry.stage != 0 || entry.intent)
@@ -265,7 +266,7 @@ module Git
       FileComparison.new(path, old_oid, new_oid, old_mode, new_mode, old_text, new_text)
     end
 
-    def blob_text(oid : String, max_bytes : Int32, &check : -> Nil) : String
+    protected def blob_text(oid : String, max_bytes : Int32, &check : -> Nil) : String
       kind, data = @object_database.object(oid, max_bytes) { check.call }
       raise Error.new("Git staged object is not a text blob") unless kind == "blob" && data.valid_encoding? && !data.includes?('\0')
       data

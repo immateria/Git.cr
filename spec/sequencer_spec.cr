@@ -290,7 +290,7 @@ describe "P32 native Git cherry-pick and revert sequencer" do
         GitOracle.run(root, "reset", "--hard", "-q", base)
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        expect_raises(Git::Sequencer::EmptyResult) { repo.cherry_pick(empty, committer: sig) }
+        expect_raises(Git::Sequencer::EmptyCommit) { repo.cherry_pick(empty, committer: sig) }
         repo.sequencer.state?.should_not be_nil
         GitOracle.run(root, "rev-parse", "HEAD").stdout.strip.should eq(base)
         GitOracle.run(root, "status", "--porcelain").stdout.should eq("")

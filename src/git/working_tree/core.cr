@@ -15,6 +15,7 @@ module Git
       end
     end
 
+    # :nodoc:
     def initialize(@root : String, @common : String, @index : Index,
                    @object_format : ObjectId::Format, @max_scan_bytes : Int32,
                    @max_search_entries : Int32)
@@ -27,9 +28,9 @@ module Git
     # Compare stage-zero index entries with on-disk tracked files, and walk
     # untracked paths without following symlinked directories. Note that this
     # is a bounded snapshot-like observation, not an atomic filesystem view.
-    def changes(max_bytes : Int32, limit : Int32, *, include_untracked : Bool = true,
-                allowed_path : Proc(String, Bool)? = nil, config : Config? = nil,
-                &check : -> Nil) : {Array(Change), Bool, Int32}
+    protected def changes(max_bytes : Int32, limit : Int32, *, include_untracked : Bool = true,
+                          allowed_path : Proc(String, Bool)? = nil, config : Config? = nil,
+                          &check : -> Nil) : {Array(Change), Bool, Int32}
       # The caller supplies an explicitly resolved Git config. Do not load
       # ambient/home configuration or follow arbitrary external paths here.
       mode_sensitive = config.try(&.boolean?("core.filemode")) != false
@@ -148,8 +149,8 @@ module Git
 
     # Compare one indexed regular file with its raw working-tree bytes. No
     # Git filters or executables are consulted. Host authorization is separate.
-    def file_comparison(path : String, max_bytes : Int32, *, config : Config? = nil,
-                        &check : -> Nil) : FileComparison?
+    protected def file_comparison(path : String, max_bytes : Int32, *, config : Config? = nil,
+                                  &check : -> Nil) : FileComparison?
       mode_sensitive = config.try(&.boolean?("core.filemode")) != false
       validate_index_path!(path)
       check.call

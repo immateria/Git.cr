@@ -2,6 +2,7 @@ require "compress/zlib"
 require "set"
 
 module Git
+  # :nodoc:
   # Loose-object loading, object identity verification, and pack selection.
   # No HEAD/ref lookup, tree traversal, or worktree policy is owned here.
   class ObjectDatabase

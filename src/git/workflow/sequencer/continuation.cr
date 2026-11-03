@@ -17,7 +17,7 @@ module Git
       tree = write_index_tree(max_index_bytes: max_index_bytes,
         max_tree_bytes: max_object_bytes, check: check)
       original_tree = read_commit(state.original_head, max_bytes: max_object_bytes, check: check).tree
-      raise Sequencer::EmptyResult.new if !state.allow_empty && tree == original_tree
+      raise Sequencer::EmptyCommit.new if !state.allow_empty && tree == original_tree
       oid = write_commit(tree: tree, parents: [state.original_head], author: state.author,
         committer: committer, message: text, max_bytes: max_object_bytes, check: check)
       checked = -> do

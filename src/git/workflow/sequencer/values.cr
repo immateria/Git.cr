@@ -22,7 +22,7 @@ module Git
     # A syntactically valid replay whose resulting tree equals the original
     # HEAD. State intentionally remains present so the caller can either skip
     # it or explicitly continue when allow_empty was selected at start.
-    class EmptyResult < Git::Error
+    class EmptyCommit < Git::Error
       def initialize
         super("Git sequencer result is empty; skip or restart with allow_empty")
       end

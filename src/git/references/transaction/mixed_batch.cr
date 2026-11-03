@@ -1,5 +1,6 @@
 module Git
   struct References
+    # :nodoc:
     class Transaction
       #
       # Git's files backend does not provide cross-file atomic renames. Failed

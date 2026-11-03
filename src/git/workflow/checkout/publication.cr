@@ -3,9 +3,9 @@ module Git
     # Publish one complete blob through a temporary sibling, with the
     # original path constrained to the same pinned directory. Caller has
     # already preflighted all tracked files and untracked destinations.
-    def self.write(root : String, write : Write, sequence : Int32, *,
-                   expected_old : FileState?, format : ObjectId::Format,
-                   check : Proc(Nil)?) : Nil
+    protected def self.write(root : String, write : Write, sequence : Int32, *,
+                             expected_old : FileState?, format : ObjectId::Format,
+                             check : Proc(Nil)?) : Nil
       if write.mode == "120000"
         return write_symlink(root, write, sequence, expected_old: expected_old,
           format: format, check: check)
@@ -45,9 +45,9 @@ module Git
 
     # Publish symlink bytes, not the pointed-to file. A pinned directory and
     # owned temporary inode limit path redirection and cleanup interference.
-    def self.write_symlink(root : String, write : Write, sequence : Int32, *,
-                           expected_old : FileState?, format : ObjectId::Format,
-                           check : Proc(Nil)?) : Nil
+    protected def self.write_symlink(root : String, write : Write, sequence : Int32, *,
+                                     expected_old : FileState?, format : ObjectId::Format,
+                                     check : Proc(Nil)?) : Nil
       raise Error.new("invalid Git symlink target") if write.data.empty? || write.data.includes?('\0') || write.data.bytesize > 4095
       dir, leaf, location = parent(root, write.path, create: true)
       temp = ".crystal-git-checkout-#{Process.pid}-#{sequence}.tmp"
@@ -76,7 +76,7 @@ module Git
       end
     end
 
-    def self.remove_empty_directory(root : String, path : String, *, check : Proc(Nil)?) : Nil
+    protected def self.remove_empty_directory(root : String, path : String, *, check : Proc(Nil)?) : Nil
       dir, leaf, location = parent(root, path, create: false)
       begin
         check.try &.call
@@ -97,8 +97,8 @@ module Git
       end
     end
 
-    def self.remove(root : String, path : String, old : FileState, *,
-                    format : ObjectId::Format, check : Proc(Nil)?) : Nil
+    protected def self.remove(root : String, path : String, old : FileState, *,
+                              format : ObjectId::Format, check : Proc(Nil)?) : Nil
       dir, leaf, location = parent(root, path, create: false)
       begin
         check.try &.call

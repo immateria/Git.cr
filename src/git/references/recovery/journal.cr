@@ -1,7 +1,7 @@
 module Git
   struct References
     struct Recovery
-      def self.list(metadata : Metadata) : Array(String)
+      protected def self.list(metadata : Metadata) : Array(String)
         directory = directory?(metadata)
         return [] of String unless directory
         ids = [] of String
@@ -17,7 +17,7 @@ module Git
         ids.sort!
       end
 
-      def self.pending_finalizations(metadata : Metadata) : Array(String)
+      protected def self.pending_finalizations(metadata : Metadata) : Array(String)
         directory = directory?(metadata)
         return [] of String unless directory
         ids = [] of String
@@ -33,6 +33,7 @@ module Git
         ids.sort!
       end
 
+      # :nodoc:
       def self.run(metadata : Metadata, format : ObjectId::Format, id : String,
                    changes : Array(Change), after_reflog : Proc(String, Nil)? = nil,
                    index_image : Index::Image? = nil,
@@ -142,14 +143,14 @@ module Git
       # desired are conflicts; the journal is preserved for manual review.
       # Stale ref .lock files from a killed process are NEVER removed unless
       # the trusted caller explicitly certifies exclusive repository access.
-      def self.resume(metadata : Metadata, format : ObjectId::Format, id : String, *,
-                      clear_abandoned_locks : Bool = false,
-                      check : Proc(Nil)? = nil,
-                      after_reflog : Proc(String, Nil)? = nil,
-                      index_store : Index? = nil,
-                      index_check : Proc(Nil)? = nil,
-                      after_index_publish : Proc(Nil)? = nil,
-                      &publish : Array(Change) ->) : Nil
+      protected def self.resume(metadata : Metadata, format : ObjectId::Format, id : String, *,
+                                clear_abandoned_locks : Bool = false,
+                                check : Proc(Nil)? = nil,
+                                after_reflog : Proc(String, Nil)? = nil,
+                                index_store : Index? = nil,
+                                index_check : Proc(Nil)? = nil,
+                                after_index_publish : Proc(Nil)? = nil,
+                                &publish : Array(Change) ->) : Nil
         validate_id!(id)
         metadata.check!
         directory = directory?(metadata)

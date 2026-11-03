@@ -2,7 +2,7 @@ module Git
   module Checkout
     # Dangling targets are valid. The descriptor reader never follows a link
     # at the leaf or any ancestor.
-    def self.symlink_target(root : String, path : String, max_bytes : Int32) : String
+    protected def self.symlink_target(root : String, path : String, max_bytes : Int32) : String
       dir, leaf, location = parent(root, path, create: false)
       begin
         raise Error.new("Git symlink parent replaced") unless dir.attached_at?(location)
@@ -15,7 +15,7 @@ module Git
     # Follow no symlinks, and refuse any existing leaf for a newly tracked
     # path, including directories and ignored files. Avoid even probing a
     # symlinked ancestor outside the checked worktree.
-    def self.require_free_destination!(root : String, path : String) : Nil
+    protected def self.require_free_destination!(root : String, path : String) : Nil
       parent = root
       parts = path.split('/')
       parts[0...-1].each do |part|
@@ -30,7 +30,7 @@ module Git
     end
 
     # Pinned descriptor parent for new paths; mkdirat never follows a symlink.
-    def self.parent(root : String, path : String, *, create : Bool) : {DescriptorPath::Directory, String, String}
+    protected def self.parent(root : String, path : String, *, create : Bool) : {DescriptorPath::Directory, String, String}
       parts = path.split('/')
       location = root
       dir = DescriptorPath::Directory.open(root)

@@ -1,5 +1,6 @@
 module Git
   struct References
+    # :nodoc:
     class Transaction
       private def self.read_small_ref(path : String) : String
         bytes = IO::Memory.new

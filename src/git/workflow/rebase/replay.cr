@@ -31,7 +31,7 @@ module Git
             author: nil, message: nil, mainline: nil, allow_empty: state.keep_empty || originally_empty,
             max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
             max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
-        rescue ex : Sequencer::EmptyResult
+        rescue ex : Sequencer::EmptyCommit
           # Default non-interactive rebase drops a replay that has become empty.
           # The single-item state remains durable until it is explicitly
           # restored, so skip uses the same recovery path as a user request.

@@ -1,5 +1,6 @@
 module Git
   class Index
+    # :nodoc:
     # Build a hierarchical Git tree from stage-zero entries. Tree writing
     # is independent of ref updates and is usable without a host.
     class TreeBuilder

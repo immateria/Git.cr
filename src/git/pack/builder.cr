@@ -66,13 +66,13 @@ module Git
       def write(io : IO, items : Array(History::ReachableObject),
                 preferred_bases : Array(History::ReachableObject) = [] of History::ReachableObject) : Stats
         candidates = items.map_with_index do |item, order|
-          Candidate.new(item.oid, item.type, Builder.name_hash(item.path), 0, false, nil, order)
+          Candidate.new(item.oid, item.type.to_s, Builder.name_hash(item.path), 0, false, nil, order)
         end
         seen = items.map(&.oid).to_set
         bases = preferred_bases.compact_map do |item|
-          next nil if seen.includes?(item.oid) || !{"tree", "blob"}.includes?(item.type)
+          next nil if seen.includes?(item.oid) || !(item.type.tree? || item.type.blob?)
           seen << item.oid
-          Candidate.new(item.oid, item.type, Builder.name_hash(item.path), 0, true, nil, -1)
+          Candidate.new(item.oid, item.type.to_s, Builder.name_hash(item.path), 0, true, nil, -1)
         end
         plan_reuse(candidates, bases) if @reuse
         find_deltas(candidates + bases) if @window > 0

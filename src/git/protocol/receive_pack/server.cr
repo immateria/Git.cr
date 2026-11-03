@@ -152,7 +152,7 @@ module Git
           existing = @repository.references("refs/").compact_map(&.oid).select { |oid| @repository.has_object?(oid) }
           items = History::RevisionWalker.new(@repository, check: @options.check).objects(tips, existing)
           items.each do |item|
-            return "missing necessary objects" unless item.type != "blob" || @repository.has_object?(item.oid)
+            return "missing necessary objects" unless !item.type.blob? || @repository.has_object?(item.oid)
           end
           nil
         rescue ex : Git::Error

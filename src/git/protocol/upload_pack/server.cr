@@ -193,7 +193,7 @@ module Git
               tags.each do |tag|
                 next if present.includes?(tag)
                 present << tag
-                items << History::ReachableObject.new(tag, "tag", nil)
+                items << History::ReachableObject.new(tag, ObjectType::Tag, nil)
               end
             end
           end
@@ -279,7 +279,7 @@ module Git
           pending = [] of History::ReachableObject
           wants.each do |want|
             tags, target, kind = walker.peel(want)
-            tags.each { |tag| pending << History::ReachableObject.new(tag, "tag", nil) }
+            tags.each { |tag| pending << History::ReachableObject.new(tag, ObjectType::Tag, nil) }
             if kind == "commit"
               stack << target
             else
@@ -293,7 +293,7 @@ module Git
             next if boundary.includes?(oid)
             walker.commit_node(oid).parents.reverse_each { |parent| stack << parent }
           end
-          items = commits.map { |oid| History::ReachableObject.new(oid, "commit", nil) }
+          items = commits.map { |oid| History::ReachableObject.new(oid, ObjectType::Commit, nil) }
           trees = @repository.reachable_objects(commits.map { |oid| walker.commit_node(oid).tree },
             max_object_bytes: @max_object_bytes, check: @check)
           present = Set(String).new

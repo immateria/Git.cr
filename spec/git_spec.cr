@@ -354,7 +354,7 @@ describe "Git packed storage with deep delta chains" do
         oid = git_fixture_git(root, "rev-parse", "HEAD~#{119 - i}:payload.txt")
         store.read_object(oid, max_bytes: 128 * 1024).should eq(Git::RawObject.new(Git::ObjectType::Blob, text))
       end
-      history = store.history(limit: 200, max_nodes: 200)
+      history = store.log(limit: 200, max_commits: 200, order: Git::History::Order::Topological)
       history.commits.size.should eq(120)
     end
   end

@@ -20,6 +20,7 @@ module Git
     end
   end
 
+  # :nodoc:
   class Metadata
     # Every reference under prefix, loose refs shadowing packed ones,
     # sorted by name bytes. Symbolic refs are reported, not followed

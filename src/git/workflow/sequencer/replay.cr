@@ -140,7 +140,7 @@ module Git
           begin
             committed = sequencer_continue(committer: committer,
               max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
-          rescue ex : Sequencer::PartialCommit | Sequencer::EmptyResult
+          rescue ex : Sequencer::PartialCommit | Sequencer::EmptyCommit
             raise ex
           rescue ex
             raise Sequencer::PartialPublication.new(changed_paths.dup, index_published, ex)

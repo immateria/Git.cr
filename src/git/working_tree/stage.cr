@@ -2,7 +2,7 @@ module Git
   class WorkingTree
     # Explicit read of a single regular worktree file for staging. Does not
     # interpret attributes or run clean filters; those remain Git parity work.
-    def stage_content(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
+    protected def stage_content(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
       oid, mode, bytes = read_working_regular(path, max_bytes) { check.call }
       {mode, bytes}
     end

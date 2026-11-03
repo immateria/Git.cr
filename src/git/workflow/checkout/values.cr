@@ -4,6 +4,7 @@ module Git
   module Checkout
     record Result, reference : String, commit_oid : String, changed_paths : Array(String)
     record FileState, mode : String, oid : String
+    # :nodoc:
     record Write, path : String, mode : String, oid : String, data : String
 
     class PartialPublication < Git::Error

@@ -3,6 +3,7 @@ require "digest/crc32"
 require "set"
 
 module Git
+  # :nodoc:
   # Pack index v2 lookup and compressed delta reconstruction. The only
   # caller supplies an object-ID resolver for REF_DELTA parents that live
   # outside the pack being read.
@@ -228,6 +229,7 @@ module Git
         raise Git::Error.new("Git packed object header invalid: #{ex.class}")
       end
 
+      # :nodoc:
       # A stored pack entry that can be copied into another pack: its header,
       # its delta base by object ID (for OFS_DELTA too) and the bounds of
       # its compressed data. The entry CRC has been verified.

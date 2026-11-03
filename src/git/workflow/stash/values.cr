@@ -13,6 +13,7 @@ module Git
     # An application followed by dropping the entry.
     record Popped, applied : Applied, dropped : Bool
 
+    # :nodoc:
     record LogRecord, old_oid : String, new_oid : String,
       identity : String, message : String do
       def encode : String

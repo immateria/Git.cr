@@ -253,7 +253,7 @@ module Git
       existing = references("refs/").compact_map(&.oid).reject { |oid| tips.includes?(oid) }
       items = History::RevisionWalker.new(self, check: check).objects(tips, existing.select { |oid| has_object?(oid) })
       items.each do |item|
-        next unless item.type == "blob"
+        next unless item.type.blob?
         raise Error.new("Git fetch is missing object #{item.oid} (#{item.path})") unless has_object?(item.oid)
       end
     end

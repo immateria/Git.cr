@@ -17,7 +17,7 @@ module Git
                    work_tree : String? = nil, follow_gitfile : Bool = true,
                    discover : Bool = false,
                    discovery_ceiling : String? = nil,
-                   before_config : Proc(Location::AdmissionSite, Nil)? = nil,
+                   before_config : Proc(Admission::Site, Nil)? = nil,
                    before_implicit_bare : Proc(Nil)? = nil,
                    @max_scan_bytes : Int32 = 8_388_608, @max_search_entries : Int32 = 10_000)
       @metadata = Metadata.new(root, linked_worktree_admin_dir: linked_worktree_admin_dir,
@@ -171,7 +171,7 @@ module Git
       # Location invokes this before consulting core.bare, core.worktree,
       # repository extensions or the object-format declaration. Only trusted
       # system/global/command inputs can authorize foreign ownership.
-      admission = ->(site : Location::AdmissionSite) do
+      admission = ->(site : Admission::Site) do
         protected_config = load_protected_config(system_files, global_files, command_values, home)
         unless Admission.allowed?(site.root, site.git_dir, site.bare, site.gitfile,
                  identity, protected_config, home: home, git_prefix: git_prefix)
