@@ -1,0 +1,10 @@
+require "set"
+
+require "./three_way/values"
+require "./three_way/conflicts"
+require "./three_way/renames"
+require "./three_way/initiate"
+require "./three_way/state"
+require "./three_way/continue"
+require "./three_way/abort"
+require "./three_way/metadata"

@@ -1,0 +1,7 @@
+name: git
+version: 0.1.0
+description: Independent native Crystal Git implementation with repository reads and evolving write, transport and extension APIs.
+authors:
+  - Silph Code contributors
+crystal: ">= 1.13.0"
+license: MIT

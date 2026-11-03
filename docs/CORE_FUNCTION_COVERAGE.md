@@ -1,0 +1,78 @@
+# Native Crystal Git: core-function coverage and completion criteria
+
+The `git` shard is intended to be a general Git library. Core support is
+complete when an ordinary application can use native Crystal APIs to create
+and open repositories, make and inspect changes, branch and merge history,
+restore and rewrite local state, exchange history with remotes, and maintain
+repository storage. A read-only set of host tools does not meet that goal.
+
+External Git hooks, filters, signers and network credentials must use explicit
+providers, with no hidden `git` CLI fallback. Host policy remains separate.
+Git 2.47.3 is the initial differential oracle, not an upper compatibility bound.
+
+## Capability matrix
+
+`Narrow` means the named API works for a tested subset with important Git CLI
+behavior missing. `Partial` means some plumbing exists but the command-level
+workflow cannot yet be completed. `Missing` means there is no comparable
+native workflow. These labels describe coverage, not readiness for release.
+
+| Git core family                            | Current standalone capability                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Gaps to close before core parity                                                                                                                                                                                                                                                                  |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`, discover, open, config             | Narrow: explicit init for bare/worktree SHA-1/SHA-256; linked/bare discovery; typed scoped config; file-specific mutation                                                                                                                                                                                                                                                                                                                                                                                            | Re-init/template/options, ambient Git config when explicitly authorized, full compatibility and platforms                                                                                                                                                                                         |
+| `status`, `add`, `rm`, `diff`              | Partial: index/worktree/HEAD reads, bounded status/diffs, native staging including symlink target bytes, index removal, working-file comparisons                                                                                                                                                                                                                                                                                                                                                                     | Porcelain pathspecs, rename/copy detection, comprehensive attributes/ignore/filter modes, binary/large diff, broad add/rm behaviors                                                                                                                                                               |
+| `commit`, `log`, `show`                    | Partial: tree/object/commit/tag writing; staged first-parent commit with CAS; bounded full-DAG history and parent selectors                                                                                                                                                                                                                                                                                                                                                                                          | Interactive/amend/merge commits and HEAD variants, commit hooks/signing, log range grammar, diff/revision filtering, paging/show                                                                                                                                                                  |
+| `branch`, `tag`                            | Narrow: create-only branches/tags, direct CAS refs/deletes and mixed batches                                                                                                                                                                                                                                                                                                                                                                                                                                         | Branch/tag porcelain delete/rename/upstream, branch reflog/recovery parity, names/ambiguity, linked worktree coordination                                                                                                                                                                         |
+| `checkout`, `switch`, `restore`            | Narrow: clean regular-file branch checkout including bounded clean D/F transitions; explicit worktree restore; index-only staged restore                                                                                                                                                                                                                                                                                                                                                                             | Detached target, -b/-B switch, symlink/gitlink/submodule checkout, broader D/F/pathspec semantics, merge checkout, sparse/linked worktree, reflogs                                                                                                                                                |
+| `reset`                                    | Narrow: index-only target tree, symbolic branch soft/mixed/hard resets                                                                                                                                                                                                                                                                                                                                                                                                                                               | Detached HEAD, ORIG_HEAD, complete reflogs, D/F transitions, symlinks, gitlinks, conflicted/sparse index, revision/path mode flags, filesystem crash recovery                                                                                                                                     |
+| `merge`                                    | Partial: best merge bases, fast-forward, bounded three-way tree/text merge including symlink leaves, independent mode/content edits, clean D/F transitions, unique exact-content rename/edit+mode combinations, rename/delete and rename/type conflict stages, touching-edit conflict safety, Git index conflict stages, two-parent merge commits, continue/abort                                                                                                                                                    | Recursive/ort multiple-base merge, divergent D/F conflict relocation, fuzzy/copy/directory renames, gitlink/submodule support, binary conflict styles, full reflogs/ORIG_HEAD, rerere/strategies, crash recovery                                                                                  |
+| `rebase`, `cherry-pick`, `revert`          | Partial: native single-item cherry-pick/revert plus bounded linear non-interactive multi-commit rebase with ordered replay, explicit `onto`, SHA-1/SHA-256 conflict stages, continue/skip/full-abort, original-empty preservation versus became-empty drop/keep, and preserved replay authors                                                                                                                                                                                                                        | Merge-preserving/interactive rebase, edit/reword/squash/fixup/autosquash/exec, detached HEAD, patch-id/cherry-mark filtering, `--no-commit`, strategy/merge-driver options, rerere, ORIG_HEAD/reflog parity, advanced rename/D/F conflicts and crash recovery                                     |
+| `stash`, `worktree`, `submodule`           | Partial: native stash push/list/show/apply/pop/drop using Git-compatible two-parent tracked state plus optional three-parent `-u` (`include_untracked`) and bounded `-a` (`include_ignored`) capture, `keep_index`, and bounded staged-only inverse-delta cleanup (`staged_only`), and exact literal-path partial capture/cleanup (`paths`); three-way apply/conflicts, collision-safe third-parent restore, and exact index restore on the original base are supported; worktree/submodule workflows remain missing | Full stash pathspec wildcard/magic/directory modes, selected staged-only, stash branch/autostash modes, wider staged-only conflict parity, cross-base `--index`, selector/expiry parity and complete ignore/nested-repo semantics; worktree creation/locking/removal; submodule/gitlink lifecycle |
+| `clone`, `fetch`, `pull`, `push`, `remote` | Missing: local object, refs and pack **read** foundation only                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Refspec mapping, pack generation, Git smart protocol v2, HTTP(S)/SSH transports, shallow/partial negotiation, fetch/push consistency, credentials and cancellation                                                                                                                                |
+| `gc`, `repack`, `prune`, `fsck`            | Partial: object checks and some ref/index maintenance primitives                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Native pack writing/maintenance, reachability, verification, MIDX/commit-graph, cruft, repack, safe prune and scaling                                                                                                                                                                             |
+| Hooks, filters, signing, attributes        | Missing or narrow read-only pieces                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Typed external execution/credential interfaces, controlled configuration, Git-compatible behavior and failure propagation                                                                                                                                                                         |
+
+## Requirements for core support
+
+1. Match the Git oracle for supported flags, output/state transitions, errors,
+   file modes, refs, index bytes, reflogs and relevant Git metadata under both
+   SHA-1 and SHA-256. Include large/binary payloads and invalid UTF-8 paths
+   where applicable, as well as clean text files.
+2. Cover dirty/staged/unmerged state, symlinks, path collisions, permission and
+   foreign-lock refusal, cancellation and concurrent writers. Describe
+   non-atomic publication and recovery accurately; do not promise rollback.
+3. Verify standalone `require "git"` consumers, source-only path dependencies
+   and independent repository behavior. They must need no host permissions
+   and use no implicit Git executable fallback.
+4. Exercise memory, time and allocation scaling with large/packed histories;
+   default hard budgets are current limits, not the intended final behavior.
+5. For remotes/hooks/filters, use explicit, injectable providers. Test real
+   loopback/integration behavior and keep credential/permission boundaries separate.
+6. Test the applicable Crystal compilers and operating systems. Do not extend
+   claims about Linux-only descriptor protections to other platforms.
+
+## Build order
+
+- **Local workflow parity:** finish reset/restore/checkout/index paths,
+  branch/tag management, revision names/ranges, full status/diff/add/rm,
+  and native merge support beyond the narrow three-way lifecycle. Replay
+  operations reuse that engine; the remaining pieces still need implementation.
+- **History editing:** extend linear rebase with merge-preserving and
+  interactive/autosquash flows, then add detached HEAD support, more stash
+  modes, reflog and worktree lifecycle.
+- **Remote interoperability:** transport/credentials, pack writer,
+  negotiation and refspecs, clone/fetch/pull/push, shallow/partial repos.
+- **Scalability and maintenance:** streaming object/index/diff operations,
+  native pack and garbage collection, verification, large repo benchmarks.
+- **Cross-platform and optional effects:** macOS/Windows Git filesystem
+  behavior, case-folding, providers for hooks, filters, signing and SSH.
+
+Read-only adapters and subprocess-backed inspection do not implement missing
+native Git functions. A family is complete only when it meets all applicable
+requirements above.
+
+## Evidence
+
+Behavior is checked against Git 2.47.3 through `GIT_ORACLE_BINARY`; see
+[ORACLE_FIXTURES.md](ORACLE_FIXTURES.md) and the per-gap specs named in
+[PARITY_LEDGER.md](PARITY_LEDGER.md).

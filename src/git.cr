@@ -1,0 +1,56 @@
+require "json"
+
+# An independent native Crystal Git library with repository inspection and
+# explicitly requested object/config writes. Host policy is a separate
+# adapter; this library has no host or workspace-manager dependency or a Git
+# subprocess.
+module Git
+  class Error < Exception
+  end
+end
+
+require "./git/path_bytes"
+require "./git/references/name"
+require "./git/object/id"
+require "./git/config/core"
+require "./git/config/value"
+require "./git/config/loader"
+require "./git/config/writer"
+require "./git/admission"
+require "./git/location"
+require "./git/metadata"
+require "./git/object/pack_files"
+require "./git/object/database"
+require "./git/object/tree"
+require "./git/object/signature"
+require "./git/object/commit"
+require "./git/object/tag"
+require "./git/head_tree"
+require "./git/repository"
+require "./git/descriptor_path"
+require "./git/workflow/init"
+require "./git/history/core"
+require "./git/history/revision_graph"
+require "./git/references/transaction"
+require "./git/references/reflog_replay"
+require "./git/references/recovery"
+require "./git/references/branches_tags"
+require "./git/workflow/checkout"
+require "./git/index/core"
+require "./git/index/writer"
+require "./git/index/tree"
+require "./git/index/restore"
+require "./git/workflow/reset"
+require "./git/workflow/hard_reset"
+require "./git/merge/fast_forward"
+require "./git/merge/text"
+require "./git/merge/three_way"
+require "./git/merge/plan"
+require "./git/workflow/sequencer"
+require "./git/workflow/rebase"
+require "./git/workflow/stash"
+require "./git/working_tree/ignore"
+require "./git/working_tree/files"
+require "./git/working_tree/core"
+require "./git/working_tree/stage"
+require "./git/diff"
