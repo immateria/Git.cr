@@ -149,9 +149,8 @@ Index and ref writes support:
   partial publication.
 - An opt-in bounded, versioned durable redo journal with idempotent reflog
   completion and version-3 exact-index-image forward recovery for mixed refs:
-  `change_refs_recoverably` / `recover_refs`,
-  `change_index_and_refs_recoverably` / `recover_index_and_refs`, and
-  `commit_index_changes_recoverably`.
+  `recovery.apply` (refs, or index edits with refs), `recovery.commit` and
+  `recovery.resume`.
 - Optional reflog append in ordinary non-recoverable writes.
 
 The redo journal records recoverable intent. It provides neither global crash
@@ -159,9 +158,8 @@ atomicity across refs and index, rollback nor an agent grant. Git compatibility
 remains partial, with no signing, credential or hook execution.
 
 The low-level object writers do not update the index/refs. Separate APIs perform
-those mutations: `stage_blob`, `stage_file`, `write_index_tree`, `update_ref`,
-`update_refs`, `change_refs`, `delete_ref`, `remove_from_index` and
-`commit_staged`. They do not change host permissions, and the host registers no
+those mutations: `stage_blob`, `stage_file`, `write_index_tree`, `refs.update`,
+`refs.apply`, `refs.delete`, `remove_from_index` and `commit`. They do not change host permissions, and the host registers no
 model-facing mutation tool. The opt-in external-process provider uses a trusted
 Git executable for three read-only operations under a separate policy. The full
 external-runner and mutation-grant designs are not implemented.

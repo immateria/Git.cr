@@ -24,10 +24,25 @@ shards install
 require "git"
 
 repository = Git::Repository.new("/path/to/repository")
-branch, head_oid = repository.head
-repository.rev_parse("main~2:src/app.cr") # => blob ID
-repository.log(["origin/main..HEAD"], limit: 20).each { |commit| puts commit.subject }
+repository.head.symref_target                # => "refs/heads/main"
+repository.rev_parse("main~2:src/app.cr")    # => blob ID
+repository.log(["origin/main..HEAD"], limit: 20).commits.each { |commit| puts commit.subject }
+
+me = Git::Signature.new("Me", "me@example.com", Time.utc.to_unix, 0)
+repository.branches.create("feature", from: "main")
+repository.switch("feature")
+repository.stage_file("src/app.cr")
+repository.commit(author: me, committer: me, message: "Fix the app")
+repository.stash.push(actor: me) # nil when there is nothing to stash
 ```
+
+`Repository` keeps Git's top-level commands as verbs (`commit`, `switch`,
+`reset`, `restore`, `merge`, `rebase`, `cherry_pick`, `fetch`, `push`, ...).
+Families of subcommands hang off handles named for what they manage:
+`refs`, `branches`, `tags`, `remotes`, `stash` and `recovery`. Without
+arguments, `merge`, `rebase`, `cherry_pick`, `revert` and `sequencer` give the
+operation in progress (`repository.merge.abort`,
+`repository.rebase.continue(committer: me)`).
 
 Remote work goes through an explicit transport:
 
@@ -42,6 +57,7 @@ repository = Git::Repository.clone(transport, "/tmp/project",
   url: "https://example.com/project.git")
 repository.fetch("origin", transport: transport)
 repository.push("origin", ["main"], transport: transport)
+repository.fetch(transport, ["+refs/heads/*:refs/remotes/mirror/*"]) # no configured remote
 ```
 
 Local paths (`Git::Transport::Local`, served in-process) and plain HTTP(S)
@@ -68,9 +84,12 @@ agent tools and controls every grant; see
   and `GIT_WORK_TREE` from a hash the caller supplies. Ownership and bare-repository
   admission checks are available (`open_with_ownership_check`,
   `open_with_bare_repository_check`).
-- **Reading.** Loose and packed objects (including REF_DELTA), refs and
-  packed refs, the HEAD tree, index versions 2 to 4, bounded working-tree status
-  and per-file diffs, and effective configuration with provenance. Paths are
+- **Reading.** Loose and packed objects (`read_object`, `object_header`,
+  `read_commit`, typed by `Git::ObjectType`), refs and packed refs, the HEAD
+  tree (`head_entry`, `head_directory`, `read_head_file`), index versions 2 to
+  4, bounded status (`staged_changes`, `working_changes`) and per-file
+  comparisons (`staged_file`, `working_file`), and effective configuration with
+  provenance. Paths are
   byte-exact (`Git::PathBytes`), including invalid UTF-8 on Linux; callers must not
   normalize them for lookup or permission decisions. `Git::RefName.valid?` follows
   the byte-level `git check-ref-format` grammar. `Git::TextDiff` emits Git's
@@ -80,27 +99,31 @@ agent tools and controls every grant; see
 - **Writing objects.** `init` makes a repository and probes its file system as
   Git's init does, writing `filemode`, `symlinks`, `ignorecase` and, on macOS,
   `precomposeunicode` as Git would. `write_blob`, `write_tree`, `write_commit` and
-  `write_tag` publish loose objects, and `create_branch` and `create_tag` create
-  refs. `Config::FileEditor` makes explicit file-scoped configuration edits with an
+  `write_tag` publish loose objects, and `branches.create` and `tags.create`
+  create refs. `Config::FileEditor` makes explicit file-scoped configuration edits with an
   exclusive `.lock` and atomic replace.
 - **Index and refs.** `stage_blob`, `stage_file`, `remove_from_index`,
-  `write_index_tree` and `commit_staged` stage and commit with index versions 2 to
-  4. `update_ref`, `update_refs`, `change_refs` and `delete_ref` do single-ref
-  compare-and-swap updates and mixed create/update/delete batches, with packed-refs
-  rewriting, optional reflog appends and explicit partial-publication diagnostics.
-- **Recovery.** `change_refs_recoverably`, `change_index_and_refs_recoverably`
-  and `commit_index_changes_recoverably` write a bounded redo journal and a
-  checksummed finalization receipt; `recover_refs`, `recover_index_and_refs`,
-  `pending_ref_finalizations` and `finish_ref_finalization` finish or clean up an
-  interrupted run. Durable transactions share a per-common-directory advisory lock
+  `write_index_tree` and `commit` stage and commit with index versions 2 to
+  4. `refs.update` and `refs.delete` are single-ref compare-and-swap updates and
+  `refs.apply` takes a mixed create/update/delete batch, with packed-refs
+  rewriting, optional reflog appends and explicit partial-publication
+  diagnostics. `refs.list`, `refs.resolve?`, `refs.set_symbolic`,
+  `refs.detach_head` and `refs.pack` cover the rest of `for-each-ref`,
+  `symbolic-ref`, `update-ref` and `pack-refs`.
+- **Recovery.** `recovery.apply` (refs, or index edits and refs together) and
+  `recovery.commit` write a bounded redo journal and a checksummed finalization
+  receipt; `recovery.resume`, `recovery.pending`,
+  `recovery.pending_finalizations` and `recovery.finish_finalization` finish or
+  clean up an interrupted run. Durable transactions share a per-common-directory advisory lock
   and refuse to start while a journal is pending. This is a recoverable intent
   record, not global crash atomicity or rollback.
-- **Workflows.** `checkout_branch`, `restore_paths`, `reset_head`,
-  `reset_head_hard`, `merge_fast_forward`, `merge_three_way` (with
-  `merge_continue`, `merge_abort` and `merge_conflicts`), the single-commit
-  sequencer (`cherry_pick`, `revert`), linear `rebase` (with `rebase_continue`,
-  `rebase_skip` and `rebase_abort`) and `stash_push`, `stash_list`, `stash_apply`,
-  `stash_pop` and `stash_drop`. `stash_push` takes `include_untracked`,
+- **Workflows.** `switch`, `restore`, `restore_staged`, `read_tree`, `reset`
+  (soft, mixed or hard), `fast_forward`, `merge` (then `merge.continue`,
+  `merge.abort` and `merge.conflicts`), the single-commit sequencer
+  (`cherry_pick` and `revert`, then `cherry_pick.continue` and so on), linear
+  `rebase` (then `rebase.continue`, `rebase.skip` and `rebase.abort`) and
+  `stash.push`, `stash.list`, `stash.show`, `stash.apply`, `stash.pop` and
+  `stash.drop`. `stash.push` takes `include_untracked`,
   `include_ignored`, `keep_index`, `staged_only` and literal repository-relative
   `paths:`; there are no globs or pathspec magic. Merge and replay conflicts keep
   Git-compatible index stages and worktree leaves, and rebase keeps commits that
@@ -110,23 +133,25 @@ agent tools and controls every grant; see
 - **History.** `rev_parse` resolves Git's everyday revision grammar: full
   and abbreviated IDs, ref lookup rules, `@`, `@{n}`, `@{upstream}`, `~`,
   `^`, `^{type}`, `<rev>:<path>` and `:<path>`. `rev_list` and `log` take
-  `^A`, `A..B` and `A...B`; `ahead_behind`, `merge_bases` and `ancestor?`
-  answer ancestry questions; `reachable_objects` is `rev-list --objects`
-  (`History::RevisionWalker`). `diff_trees` and `commit_changes` list added,
+  `^A`, `A..B` and `A...B`, and `log` orders by date or topologically
+  (`History::Order`); `ahead_behind`, `merge_bases` and `ancestor?` answer
+  ancestry questions; `reachable_objects` is `rev-list --objects`. `diff_trees` and `commit_changes` list added,
   deleted, modified, type-changed and (exactly) renamed paths between trees as
   `TreeDiff::Change` values, as `git diff-tree -r` does.
-- **Branches and tags.** `branches` (`References::Branch`, with upstream ahead/behind),
-  `create_branch`, `delete_branch`, `rename_branch`, `set_branch_upstream`,
-  `create_tag`, `delete_tag` and `tags`; `references` lists any namespace with
-  symbolic refs, and `set_symbolic_ref` and `detach_head` write HEAD.
+- **Branches and tags.** `branches.list` (`Git::Branch`, with upstream and
+  ahead/behind), `branches.create`, `branches.delete`, `branches.rename`,
+  `branches.upstream` and `branches.set_upstream`; `tags.list`, `tags.create`
+  and `tags.delete`.
 - **Packs.** Pack reads cache verified indexes and follow delta chains of any
   Git depth. `Pack::Writer`, `Pack::Delta` and `Pack::Builder` (pack-objects,
   with delta search and reuse of stored deltas) write packs; `Pack::Indexer`
   and `Repository#index_pack` are index-pack, including thin-pack completion,
   and write `.idx` and `.rev` files (`Pack::IndexFile`, `Pack::ReverseIndexFile`)
   byte-identical to Git's.
-- **Remotes.** `add_remote`, `remove_remote`, `rename_remote` and refspecs;
-  `clone`, `fetch` (tag following, prune, shallow `depth:`, FETCH_HEAD),
+- **Remotes.** `remotes.add`, `remotes.remove`, `remotes.rename`,
+  `remotes.set_url` and `Remote::Refspec`;
+  `clone`, `fetch` (from a remote name or a `Transport`; tag following, prune,
+  shallow `depth:`, FETCH_HEAD),
   `pull` (fast-forward or merge), `push` (fast-forward rules, force, atomic,
   deletes) and `ls_remote`, reporting `Fetch::Result`, `Pull::Result` and
   `Push::Result`. Fetch speaks protocol v2 (`Protocol::UploadPack::Client`);
@@ -137,7 +162,7 @@ agent tools and controls every grant; see
   `require "git/server/http_handler"` adds an `HTTP::Handler` that serves
   repositories to Git clients over smart HTTP.
 - **Maintenance.** `repack` (one pack of everything reachable, honouring
-  `.keep`), `prune_packed`, `pack_refs`, `gc` and `fsck` (corrupt, missing and
+  `.keep`), `prune_packed`, `refs.pack`, `gc` and `fsck` (corrupt, missing and
   unreachable objects), reporting `Repack::Result`, `Gc::Result` and
   `Fsck::Report`.
 
