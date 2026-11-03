@@ -55,3 +55,41 @@ complete multi-worktree inventory, global/included configuration, macOS/Windows,
 mount-aware discovery and hostile concurrent mutation unverified. The P05
 location tests cover specific cases, not full Git environment/config parity.
 Each output comparison establishes behavior only for its stated profile.
+
+## Pack, history, remote and maintenance fixtures
+
+These specs use the same pinned oracle. The remote specs additionally run
+`git http-backend` (behind a loopback `HTTP::Server` acting as a CGI host),
+`git daemon`, `git upload-pack` and `git receive-pack` from the oracle's
+installation; the native code never starts them itself.
+
+| Fixture ID | Spec | Verified property |
+| ---------- | ---- | ----------------- |
+| PACK-O01 | `pack_spec.cr` | Indexing a Git-written delta pack (`repack -adf --depth=50`) yields `.idx` and `.rev` bytes identical to Git's, under SHA-1 and SHA-256 |
+| PACK-O02 | `pack_spec.cr` | Native packs are accepted by `index-pack` and `verify-pack`, and the native `.idx` equals Git's for the same pack |
+| PACK-O03 | `pack_spec.cr` | A `pack-objects --thin` pack received natively has its bases appended; `fsck --strict` and `verify-pack` pass; re-receiving publishes nothing new |
+| PACK-O04 | `pack_spec.cr` | Truncated, corrupted and unresolvable thin packs are refused with nothing published |
+| PACK-D01 | `pack_spec.cr` | Native deltas round-trip through the pack reader across empty, short, random and repetitive inputs |
+| PACK-O05 | `pack_spec.cr` | Delta-compressed full and thin packs from `Pack::Builder` pass `index-pack --strict`, `--fix-thin` and `fsck --strict` |
+| PACK-O06 | `pack_spec.cr` | `object_header` reports type and size like `cat-file --batch-check` for loose and deltified objects |
+| REACH-O01 | `reachability_spec.cr` | `reachable_objects` equals `rev-list --objects` (with paths) for tips, exclusions, tags, trees and orphans; commit order equals `rev-list` |
+| REACH-O02 | `reachability_spec.cr` | `ancestor?` equals `merge-base --is-ancestor` for every pair, including a clock-skewed commit |
+| REMOTE-O01 | `remote_spec.cr` | Native clone over the local transport equals `git clone --no-local`: refs, symrefs, index, config, modes, symlinks, gitlinks; `fsck --strict` and clean `status` |
+| REMOTE-O02 | `remote_spec.cr` | Incremental fetch with forced updates, new branches, tag following and prune equals `git fetch`/`fetch --prune`, including FETCH_HEAD bytes |
+| REMOTE-O03 | `remote_spec.cr` | The real Git client clones, fetches, pushes (including forced and delete) and shallow-clones from the native HTTP handler |
+| REMOTE-O04 | `remote_spec.cr` | The native client clones, fetches, pushes and shallow-clones against `git http-backend`, under SHA-1 and SHA-256 |
+| REMOTE-O05 | `remote_spec.cr` | Push rules: up-to-date, tag protection without force, atomic failure, refusal of a checked-out branch by the native receive-pack |
+| REMOTE-O06 | `remote_spec.cr` | Remote add/rename/remove match `git remote -v`, `git config` and tracking refs |
+| REMOTE-O07 | `remote_spec.cr` | Refspec parsing, pattern mapping, DWIM and refusals |
+| TRANSPORT-O01..O04 | `transport_spec.cr` | Round trips through `git upload-pack`/`receive-pack` as programs, through `git daemon`, and through ssh (argument layout and quoting checked by a recording stand-in); ssh URL parsing |
+| TRANSPORT-O05 | `transport_spec.cr` | HTTP credentials are requested after a 401 and retried; wrong ones fail; credentials are never sent to a redirect target on another origin |
+| TRANSPORT-O06 | `transport_spec.cr` | Advertised ref names that are not valid refs are ignored |
+| REMOTE-O08 | `remote_spec.cr` | A failed clone removes the directory it created, or empties the empty directory it was given, and never touches a non-empty one |
+| PORCELAIN-O01 | `porcelain_spec.cr` | `rev_parse` equals `rev-parse --verify` for 29 expressions and fails where Git fails for 8 |
+| PORCELAIN-O02 | `porcelain_spec.cr` | `rev_list` equals `rev-list` for `A..B`, `A...B`, `^A B`; `ahead_behind` equals `--left-right --count` |
+| PORCELAIN-O03 | `porcelain_spec.cr` | Branch listing, delete, rename and tag delete leave refs, reflogs and config as Git does |
+| PORCELAIN-O04 | `porcelain_spec.cr` | `pull` fast-forwards, refuses diverged history without merge mode, and merges with two parents |
+| MAINT-O01 | `maintenance_spec.cr` | `repack` keeps exactly the `rev-list --objects --all --reflog --indexed-objects` set in one pack; only unreachable objects stay loose |
+| MAINT-O02 | `maintenance_spec.cr` | `pack_refs` writes `packed-refs` byte-identical to `git pack-refs --all` and prunes the same loose files |
+| DIFF-O01 | `inspection_spec.cr` | `diff_trees` equals `diff-tree -r` raw and `--name-status` output (A/D/M/T, file/directory and symlink transitions, submodules, root diffs, path limits) and `-M100%` renames, under SHA-1 and SHA-256 |
+| FSCK-O01 | `inspection_spec.cr` | `fsck` reports the unreachable set of `git fsck --unreachable`, a corrupt loose object and a missing reachable tree |

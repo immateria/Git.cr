@@ -18,8 +18,11 @@ module Git
       end
 
       def connect(service : Service, protocol_version : Int32 = 2) : Connection
-        repository = Repository.new(@path, max_scan_bytes: @max_scan_bytes,
-          max_search_entries: @max_search_entries)
+        repository = begin
+          Repository.new(@path, max_scan_bytes: @max_scan_bytes, max_search_entries: @max_search_entries)
+        rescue ex : File::Error | Git::Error
+          raise ConnectionError.new("Git repository #{@path} cannot be opened: #{ex.message}")
+        end
         case service
         in .upload_pack?
           LocalConnection.new(UploadPackHandler.new(Protocol::UploadPack.new(repository, want_policy: @want_policy)))

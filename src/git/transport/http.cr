@@ -51,7 +51,9 @@ module Git
           request_headers = @headers.dup
           headers.each { |key, values| request_headers[key] = values }
           request_headers["User-Agent"] = @user_agent
-          if credential = @credential
+          # Credentials go only to the origin they were given for, never to
+          # a host a redirect points at.
+          if (credential = @credential) && same_origin?(current, @url)
             request_headers["Authorization"] = "Basic #{Base64.strict_encode("#{credential.username}:#{credential.password}")}"
           end
           retry = false
@@ -61,6 +63,7 @@ module Git
             client.exec(request) do |response|
               case response.status_code
               when 401
+                raise AuthenticationError.new("Git HTTP authentication required by #{current}, a different origin than #{@url}") unless same_origin?(current, @url)
                 attempt += 1
                 provider = @credentials
                 found = provider.try &.call(current, attempt)
@@ -85,6 +88,13 @@ module Git
           end
           break unless retry
         end
+      end
+
+      private def same_origin?(left : String, right : String) : Bool
+        a = URI.parse(left)
+        b = URI.parse(right)
+        a.scheme == b.scheme && a.host.try(&.downcase) == b.host.try(&.downcase) &&
+          (a.port || (a.scheme == "https" ? 443 : 80)) == (b.port || (b.scheme == "https" ? 443 : 80))
       end
 
       private def with_client(url : String, & : ::HTTP::Client, String ->) : Nil

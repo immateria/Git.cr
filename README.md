@@ -25,7 +25,30 @@ require "git"
 
 repository = Git::Repository.new("/path/to/repository")
 branch, head_oid = repository.head
+repository.rev_parse("main~2:src/app.cr") # => blob ID
+repository.log(["origin/main..HEAD"], limit: 20).each { |commit| puts commit.subject }
 ```
+
+Remote work goes through an explicit transport:
+
+```crystal
+tls = OpenSSL::SSL::Context::Client.new
+credentials = ->(url : String, attempt : Int32) do
+  attempt == 1 ? Git::Transport::Credential.new("me", ENV["TOKEN"]) : nil
+end
+transport = Git::Transport::HTTP.new("https://example.com/project.git",
+  credentials: credentials, tls: tls)
+repository = Git::Repository.clone(transport, "/tmp/project",
+  url: "https://example.com/project.git")
+repository.fetch("origin", transport: transport)
+repository.push("origin", ["main"], transport: transport)
+```
+
+Local paths (`Git::Transport::Local`, served in-process) and plain HTTP(S)
+URLs without credentials can be given as strings. ssh, git:// and other
+programs need `Git::Transport::SSH`, `Git::Transport::Daemon` or
+`Git::Transport::Command`, constructed with the program and environment the
+caller chooses.
 
 The trusted caller handles permission checks, operation limits, authorization,
 secret masking, cancellation and any operating-system confinement. This library
@@ -84,6 +107,35 @@ agent tools and controls every grant; see
   were empty in their source history unless the caller says otherwise. Repeated-line
   alignment and Git's full `ort` conflict layout are intentionally bounded.
 
+- **History.** `rev_parse` resolves Git's everyday revision grammar: full
+  and abbreviated IDs, ref lookup rules, `@`, `@{n}`, `@{upstream}`, `~`,
+  `^`, `^{type}`, `<rev>:<path>` and `:<path>`. `rev_list` and `log` take
+  `^A`, `A..B` and `A...B`; `ahead_behind`, `merge_bases` and `ancestor?`
+  answer ancestry questions; `reachable_objects` is `rev-list --objects`.
+  `diff_trees` and `commit_changes` list added, deleted, modified,
+  type-changed and (exactly) renamed paths between trees, as
+  `git diff-tree -r` does.
+- **Branches and tags.** `branches` (with upstream ahead/behind),
+  `create_branch`, `delete_branch`, `rename_branch`, `set_branch_upstream`,
+  `create_tag`, `delete_tag` and `tags`; `references` lists any namespace with
+  symbolic refs, and `set_symbolic_ref` and `detach_head` write HEAD.
+- **Packs.** Pack reads cache verified indexes and follow delta chains of any
+  Git depth. `Pack::Writer`, `Pack::Delta` and `Pack::Builder` (pack-objects,
+  with delta search and reuse of stored deltas) write packs; `Pack::Indexer`
+  and `receive_pack` are index-pack, including thin-pack completion, and write
+  `.idx` and `.rev` files byte-identical to Git's.
+- **Remotes.** `add_remote`, `remove_remote`, `rename_remote` and refspecs;
+  `clone`, `fetch` (tag following, prune, shallow `depth:`, FETCH_HEAD),
+  `pull` (fast-forward or merge), `push` (fast-forward rules, force, atomic,
+  deletes) and `ls_remote`. Fetch speaks protocol v2; push speaks receive-pack
+  v0/v1. Transports: `Local` (in-process), `HTTP` (smart HTTP with a credential
+  callback, TLS context and CONNECT proxy), `SSH`, `Daemon` (git://) and
+  `Command`. `require "git/server/http_handler"` adds an `HTTP::Handler` that
+  serves repositories to Git clients over smart HTTP.
+- **Maintenance.** `repack` (one pack of everything reachable, honouring
+  `.keep`), `prune_packed`, `pack_refs`, `gc` and `fsck` (corrupt, missing and
+  unreachable objects).
+
 Worktree, index and HEAD are published separately. `Checkout::PartialPublication`
 and related types report possibly incomplete results; they do not promise rollback.
 Pinned directory descriptors (`src/git/descriptor_path.cr`, with
@@ -97,17 +149,25 @@ The library runs on Linux and macOS; Windows is unverified.
 `crystal spec` runs the specs. The specs that compare against upstream Git need
 **Git 2.47.3**, selected by `GIT_ORACLE_BINARY` (default: `git` on `PATH`); the
 oracle refuses any other version. Runtime Git operations never launch that binary.
+The remote specs also run `git http-backend`, `git daemon`, `git upload-pack` and
+`git receive-pack` from that installation on loopback addresses.
 [docs/ORACLE_FIXTURES.md](docs/ORACLE_FIXTURES.md) lists the fixtures and their
 profiles. In an umbrella workspace that vendors this shard,
 `scripts/test-all git-differential` runs a bounded routine oracle suite.
 
 ## Current limits
 
-- Not implemented: clone, fetch, pull, push and remote handling; worktree and
-  submodule lifecycle; hooks, filters and signing; and full attribute and ignore
-  parity (global excludes, case folding and the whole of Git's wildmatch). Reftable
-  ref storage, split and sparse indexes, replace refs, grafts and alternate object
-  directories are unsupported.
+- Not implemented: worktree and submodule lifecycle; hooks, filters and
+  signing; credential helpers; protocol v0/v1 fetch (servers must speak
+  protocol v2 for fetching, as Git servers have by default since 2.26),
+  partial clones, `--force-with-lease`, `rebase` pulls, similarity-based rename
+  detection and textual patches between commits; and full
+  attribute and ignore parity (global excludes, case folding and the whole of
+  Git's wildmatch). Reftable ref storage, split and sparse indexes, replace
+  refs, grafts and alternate object directories are unsupported.
+- Clone's checkout writes the tree into an empty worktree; it does not apply
+  filters or attributes. The index it writes carries no stat data, so Git
+  rehashes files on its first `status`.
 - Text diffs and merges use bounded algorithms and handle UTF-8 text only, not
   binary or very large patches. `0b` and `0B` configuration integer prefixes follow
   a fixed binary-integer policy independent of the host libc.
@@ -124,6 +184,14 @@ Linux 7.0 arm64. On 2026-11-03 all 640 examples passed with Crystal 1.13.0 and
 the same oracle Git on macOS 15.4.1 arm64. That sets the `crystal:` floor:
 1.12.0 and earlier put `system_fsync` on the File layer, where a bare
 `IO::FileDescriptor` has no `fsync`.
+
+On 2026-11-03 all 681 examples passed with Crystal 1.13.3, 1.21.1 and 1.22.2
+and Git 2.47.3 built from source on Linux x86-64 (Ubuntu 24.04), including the
+pack, remote, transport, porcelain and maintenance specs. Crystal 1.13 resolves
+the oracle's `git` through the restricted `PATH` it is given, so set
+`GIT_ORACLE_BINARY` to the 2.47.3 binary's full path there. A native clone of
+`github.com/crystal-lang/crystal` (depth 1, 2,749 files) through an HTTPS
+CONNECT proxy passed `git fsck` and left a clean `git status`.
 
 Apple's file systems refuse names that are not UTF-8. On those systems the
 specs put such names into the index and packed-refs without a file, as Git

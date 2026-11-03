@@ -82,6 +82,7 @@ module Git
           end
           oid, _, name = text.partition(' ')
           raise ProtocolError.new("invalid Git ref advertisement line") if name.empty?
+          next unless name == "HEAD" || name == "capabilities^{}" || name.ends_with?("^{}") || (name.starts_with?("refs/") && RefName.valid?(name))
           if name.ends_with?("^{}")
             base = name.byte_slice(0, name.bytesize - 3)
             if previous = refs.index { |ref| ref.name == base }
@@ -196,7 +197,11 @@ module Git
         @connection.request(command("ls-refs", arguments)) do |io|
           lines, kind = PktLine.read_section(io)
           raise ProtocolError.new("Git ls-refs response must end with a flush") unless kind.flush?
-          lines.each { |line| refs << parse_ls_ref(line) }
+          lines.each do |line|
+            ref = parse_ls_ref(line)
+            # A server cannot make the client write outside refs/.
+            refs << ref if ref.name == "HEAD" || (ref.name.starts_with?("refs/") && RefName.valid?(ref.name))
+          end
         end
         refs
       end

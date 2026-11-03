@@ -1,3 +1,4 @@
+require "../../git"
 require "http/server"
 require "compress/gzip"
 require "compress/deflate"
