@@ -91,3 +91,5 @@ installation; the native code never starts them itself.
 | PORCELAIN-O04 | `porcelain_spec.cr` | `pull` fast-forwards, refuses diverged history without merge mode, and merges with two parents |
 | MAINT-O01 | `maintenance_spec.cr` | `repack` keeps exactly the `rev-list --objects --all --reflog --indexed-objects` set in one pack; only unreachable objects stay loose |
 | MAINT-O02 | `maintenance_spec.cr` | `pack_refs` writes `packed-refs` byte-identical to `git pack-refs --all` and prunes the same loose files |
+| DIFF-O01 | `inspection_spec.cr` | `diff_trees` equals `diff-tree -r` raw and `--name-status` output (A/D/M/T, file/directory and symlink transitions, submodules, root diffs, path limits) and `-M100%` renames, under SHA-1 and SHA-256 |
+| FSCK-O01 | `inspection_spec.cr` | `fsck` reports the unreachable set of `git fsck --unreachable`, a corrupt loose object and a missing reachable tree |

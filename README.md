@@ -112,6 +112,9 @@ agent tools and controls every grant; see
   `^`, `^{type}`, `<rev>:<path>` and `:<path>`. `rev_list` and `log` take
   `^A`, `A..B` and `A...B`; `ahead_behind`, `merge_bases` and `ancestor?`
   answer ancestry questions; `reachable_objects` is `rev-list --objects`.
+  `diff_trees` and `commit_changes` list added, deleted, modified,
+  type-changed and (exactly) renamed paths between trees, as
+  `git diff-tree -r` does.
 - **Branches and tags.** `branches` (with upstream ahead/behind),
   `create_branch`, `delete_branch`, `rename_branch`, `set_branch_upstream`,
   `create_tag`, `delete_tag` and `tags`; `references` lists any namespace with
@@ -130,7 +133,8 @@ agent tools and controls every grant; see
   `Command`. `require "git/server/http_handler"` adds an `HTTP::Handler` that
   serves repositories to Git clients over smart HTTP.
 - **Maintenance.** `repack` (one pack of everything reachable, honouring
-  `.keep`), `prune_packed`, `pack_refs` and `gc`.
+  `.keep`), `prune_packed`, `pack_refs`, `gc` and `fsck` (corrupt, missing and
+  unreachable objects).
 
 Worktree, index and HEAD are published separately. `Checkout::PartialPublication`
 and related types report possibly incomplete results; they do not promise rollback.
@@ -156,7 +160,8 @@ profiles. In an umbrella workspace that vendors this shard,
 - Not implemented: worktree and submodule lifecycle; hooks, filters and
   signing; credential helpers; protocol v0/v1 fetch (servers must speak
   protocol v2 for fetching, as Git servers have by default since 2.26),
-  partial clones, `--force-with-lease`, `rebase` pulls and full `fsck`; and full
+  partial clones, `--force-with-lease`, `rebase` pulls, similarity-based rename
+  detection and textual patches between commits; and full
   attribute and ignore parity (global excludes, case folding and the whole of
   Git's wildmatch). Reftable ref storage, split and sparse indexes, replace
   refs, grafts and alternate object directories are unsupported.
@@ -180,7 +185,7 @@ the same oracle Git on macOS 15.4.1 arm64. That sets the `crystal:` floor:
 1.12.0 and earlier put `system_fsync` on the File layer, where a bare
 `IO::FileDescriptor` has no `fsync`.
 
-On 2026-11-03 all 678 examples passed with Crystal 1.13.3, 1.21.1 and 1.22.2
+On 2026-11-03 all 681 examples passed with Crystal 1.13.3, 1.21.1 and 1.22.2
 and Git 2.47.3 built from source on Linux x86-64 (Ubuntu 24.04), including the
 pack, remote, transport, porcelain and maintenance specs. Crystal 1.13 resolves
 the oracle's `git` through the restricted `PATH` it is given, so set
