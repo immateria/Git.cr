@@ -1,8 +1,9 @@
 module Git
   module Pack
-    # A pack published into a repository's objects/pack directory.
-    record Received, checksum : String?, pack_path : String?, index_path : String?,
-      entries : Array(Entry), appended_bases : Int32, keep_path : String? do
+    # A pack index_pack published into objects/pack (nil paths when the
+    # pack held no objects).
+    record Published, checksum : String?, pack_path : String?, index_path : String?,
+      entries : Array(IndexEntry), appended_bases : Int32, keep_path : String? do
       def object_count : Int32
         entries.size
       end
@@ -18,25 +19,25 @@ module Git
       result = Indexer.new(format, max_object_bytes: max_object_bytes, check: check).index_file(pack_path)
       checksum = result.checksum.hexbytes
       stem = pack_path.byte_slice(0, pack_path.bytesize - 5)
-      File.write(stem + ".idx", IndexWriter.idx(result.entries, checksum, format))
-      File.write(stem + ".rev", IndexWriter.rev(result.entries, checksum, format)) if write_rev
+      File.write(stem + ".idx", IndexFile.encode(result.entries, checksum, format))
+      File.write(stem + ".rev", ReverseIndexFile.encode(result.entries, checksum, format)) if write_rev
       result
     end
   end
 
   class Repository
-    # Receive one pack stream (Git's `index-pack --stdin`) into
-    # objects/pack. Every delta is resolved and every object named before
-    # anything is published; shared objects must match the local copies.
+    # Store one pack stream in objects/pack (Git's `index-pack --stdin`).
+    # Every delta is resolved and every object named before anything is
+    # published; shared objects must match the local copies.
     # With fix_thin, REF_DELTA bases outside the pack are appended from
     # this repository. The .pack, .rev and optional .keep are published
     # before the .idx that makes the pack visible; existing files are never
     # replaced. The objects are not yet referenced by any ref.
-    def receive_pack(input : IO, *, fix_thin : Bool = true, keep : String? = nil,
-                     write_rev : Bool = true, check_collisions : Bool = true,
-                     max_object_bytes : Int64 = Pack::Indexer::DEFAULT_MAX_OBJECT_BYTES,
-                     max_objects : Int64 = 40_000_000,
-                     check : Proc(Nil)? = nil) : Pack::Received
+    def index_pack(input : IO, *, fix_thin : Bool = true, keep : String? = nil,
+                   write_rev : Bool = true, check_collisions : Bool = true,
+                   max_object_bytes : Int64 = Pack::Indexer::DEFAULT_MAX_OBJECT_BYTES,
+                   max_objects : Int64 = 40_000_000,
+                   check : Proc(Nil)? = nil) : Pack::Published
       check!
       directory = File.join(@common, "objects", "pack")
       Dir.mkdir(directory, 0o755) unless File.info?(directory, follow_symlinks: false)
@@ -53,7 +54,7 @@ module Git
           check_collisions: check_collisions, check: check)
         result = indexer.index_stream(input, temp)
         if result.entries.empty?
-          return Pack::Received.new(nil, nil, nil, result.entries, 0, nil)
+          return Pack::Published.new(nil, nil, nil, result.entries, 0, nil)
         end
         checksum = result.checksum.hexbytes
         stem = File.join(directory, "pack-#{result.checksum}")
@@ -61,17 +62,17 @@ module Git
         final_idx = stem + ".idx"
         if File.exists?(final_idx) && File.exists?(final_pack)
           # The same pack (named by its checksum) is already present.
-          return Pack::Received.new(result.checksum, final_pack, final_idx, result.entries,
+          return Pack::Published.new(result.checksum, final_pack, final_idx, result.entries,
             result.appended, nil)
         end
         idx_temp = temp + ".idx"
         temporaries << idx_temp
-        write_synced(idx_temp, Pack::IndexWriter.idx(result.entries, checksum, @object_format))
+        write_synced(idx_temp, Pack::IndexFile.encode(result.entries, checksum, @object_format))
         rev_temp = nil.as(String?)
         if write_rev
           rev_temp = temp + ".rev"
           temporaries << rev_temp
-          write_synced(rev_temp, Pack::IndexWriter.rev(result.entries, checksum, @object_format))
+          write_synced(rev_temp, Pack::ReverseIndexFile.encode(result.entries, checksum, @object_format))
         end
         File.open(temp, "rb") { |io| io.fsync }
         check.try &.call
@@ -85,18 +86,18 @@ module Git
         publish_pack_file(idx_temp, final_idx)
         File.open(directory) { |dir| dir.fsync }
         @object_database.refresh_packs
-        Pack::Received.new(result.checksum, final_pack, final_idx, result.entries,
+        Pack::Published.new(result.checksum, final_pack, final_idx, result.entries,
           result.appended, keep_path)
       ensure
         temporaries.each { |path| File.delete?(path) }
       end
     rescue ex : File::Error | IO::Error
-      raise Error.new("Git pack reception failed: #{ex.class}: #{ex.message}")
+      raise Error.new("Git pack indexing failed: #{ex.class}: #{ex.message}")
     end
 
-    # Remove a .keep written by receive_pack once refs point at its objects.
-    def release_pack_keep(received : Pack::Received) : Nil
-      received.keep_path.try { |path| File.delete?(path) }
+    # Remove a .keep written by index_pack once refs point at its objects.
+    def release_pack_keep(published : Pack::Published) : Nil
+      published.keep_path.try { |path| File.delete?(path) }
     end
 
     private def write_synced(path : String, bytes : Bytes) : Nil

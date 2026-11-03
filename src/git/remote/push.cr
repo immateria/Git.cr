@@ -1,32 +1,36 @@
 require "set"
 
 module Git
-  # One reference a push looked at.
-  record PushUpdate, local_ref : String?, remote_ref : String, old_oid : String?,
-    new_oid : String?, status : PushUpdate::Status, reason : String? = nil do
-    enum Status
-      # Created or updated on the remote.
-      Ok
-      Deleted
-      UpToDate
-      # Refused locally before sending (non-fast-forward, fetch first, ...).
-      Rejected
-      # Sent, and refused by the remote (its "ng" reason).
-      RemoteRejected
+  # `git push`: what each pushed reference did.
+  module Push
+    # One reference a push looked at.
+    record Update, local_ref : String?, remote_ref : String, old_oid : String?,
+      new_oid : String?, status : Update::Status, reason : String? = nil do
+      enum Status
+        # Created or updated on the remote.
+        Ok
+        Deleted
+        UpToDate
+        # Refused locally before sending (non-fast-forward, fetch first, ...).
+        Rejected
+        # Sent, and refused by the remote (its "ng" reason).
+        RemoteRejected
+      end
+
+      def success? : Bool
+        status.ok? || status.deleted? || status.up_to_date?
+      end
     end
 
-    def success? : Bool
-      status.ok? || status.deleted? || status.up_to_date?
-    end
-  end
+    # The outcome of a push and how many objects its pack carried.
+    record Result, url : String, updates : Array(Update), pack_objects : Int32 do
+      def success? : Bool
+        updates.all?(&.success?)
+      end
 
-  record PushResult, url : String, updates : Array(PushUpdate), pack_objects : Int32 do
-    def success? : Bool
-      updates.all?(&.success?)
-    end
-
-    def rejected : Array(PushUpdate)
-      updates.reject(&.success?)
+      def rejected : Array(Update)
+        updates.reject(&.success?)
+      end
     end
   end
 
@@ -37,10 +41,10 @@ module Git
     # Non-fast-forward updates are refused unless forced. With
     # update_tracking, remote-tracking refs follow successful updates.
     def push(remote_name : String = "origin", refspecs : Array(String)? = nil, *,
-             transport : Transport::Base? = nil, force : Bool = false,
+             transport : Transport? = nil, force : Bool = false,
              atomic : Bool = false, update_tracking : Bool = true,
              actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
-             check : Proc(Nil)? = nil) : PushResult
+             check : Proc(Nil)? = nil) : Push::Result
       remote = remote(remote_name)
       selected = transport || Transport.for_url(remote.push_url)
       specs = refspecs || begin
@@ -61,40 +65,37 @@ module Git
     end
 
     # Push to a transport without a configured remote.
-    def push_to(transport : Transport::Base, refspecs : Array(String), *, url : String = transport.url,
+    def push_to(transport : Transport, refspecs : Array(String), *, url : String = transport.url,
                 force : Bool = false, atomic : Bool = false,
                 progress : Proc(String, Nil)? = nil,
-                check : Proc(Nil)? = nil) : PushResult
+                check : Proc(Nil)? = nil) : Push::Result
       check!
-      specs = refspecs.map { |text| Refspec.parse(text, fetch: false) }
+      specs = refspecs.map { |text| Remote::Refspec.parse(text, fetch: false) }
       connection = transport.connect(Transport::Service::ReceivePack, 0)
       begin
-        advertisement = Protocol::Advertisement.parse(connection.advertisement)
-        raise Protocol::ProtocolError.new("Git remote answered receive-pack with protocol v2") if advertisement.version == 2
-        unless advertisement.object_format == @object_format
-          raise Error.new("Git remote uses #{advertisement.object_format}, this repository #{@object_format}")
+        client = Protocol::ReceivePack::Client.new(connection)
+        unless client.object_format == @object_format
+          raise Error.new("Git remote uses #{client.object_format}, this repository #{@object_format}")
         end
-        raise Protocol::ProtocolError.new("Git remote does not offer report-status") unless advertisement.capability?("report-status")
-        remote_refs = advertisement.refs.to_h { |ref| {ref.name, ref.oid.not_nil!} }
-        zero = Protocol.zero_id(@object_format)
+        remote_refs = client.refs
         planned = plan_push(specs, remote_refs, force)
-        walker = Reachability::Walker.new(self, check: check)
-        updates = [] of PushUpdate
-        commands = [] of PushUpdate
+        walker = History::RevisionWalker.new(self, check: check)
+        updates = [] of Push::Update
+        commands = [] of Push::Update
         planned.each do |local_ref, remote_ref, new_oid, forced|
           old = remote_refs[remote_ref]?
           if new_oid.nil?
             if old.nil?
-              updates << PushUpdate.new(local_ref, remote_ref, nil, nil, PushUpdate::Status::Rejected, "remote ref does not exist")
-            elsif !advertisement.capability?("delete-refs")
-              updates << PushUpdate.new(local_ref, remote_ref, old, nil, PushUpdate::Status::Rejected, "remote does not support deleting refs")
+              updates << Push::Update.new(local_ref, remote_ref, nil, nil, Push::Update::Status::Rejected, "remote ref does not exist")
+            elsif !client.capability?("delete-refs")
+              updates << Push::Update.new(local_ref, remote_ref, old, nil, Push::Update::Status::Rejected, "remote does not support deleting refs")
             else
-              commands << PushUpdate.new(local_ref, remote_ref, old, nil, PushUpdate::Status::Deleted)
+              commands << Push::Update.new(local_ref, remote_ref, old, nil, Push::Update::Status::Deleted)
             end
             next
           end
           if old == new_oid
-            updates << PushUpdate.new(local_ref, remote_ref, old, new_oid, PushUpdate::Status::UpToDate)
+            updates << Push::Update.new(local_ref, remote_ref, old, new_oid, Push::Update::Status::UpToDate)
             next
           end
           reason = nil.as(String?)
@@ -108,83 +109,52 @@ module Git
             end
           end
           if reason
-            updates << PushUpdate.new(local_ref, remote_ref, old, new_oid, PushUpdate::Status::Rejected, reason)
+            updates << Push::Update.new(local_ref, remote_ref, old, new_oid, Push::Update::Status::Rejected, reason)
           else
-            commands << PushUpdate.new(local_ref, remote_ref, old, new_oid, PushUpdate::Status::Ok)
+            commands << Push::Update.new(local_ref, remote_ref, old, new_oid, Push::Update::Status::Ok)
           end
         end
         if atomic && updates.any? { |update| update.status.rejected? }
-          commands.each { |command| updates << command.copy_with(status: PushUpdate::Status::Rejected, reason: "atomic push failed") }
-          return PushResult.new(url, updates, 0)
+          commands.each { |command| updates << command.copy_with(status: Push::Update::Status::Rejected, reason: "atomic push failed") }
+          return Push::Result.new(url, updates, 0)
         end
-        return PushResult.new(url, updates, 0) if commands.empty?
-        raise Protocol::ProtocolError.new("Git remote does not support atomic pushes") if atomic && !advertisement.capability?("atomic")
+        return Push::Result.new(url, updates, 0) if commands.empty?
 
-        body = IO::Memory.new
-        wanted = ["report-status"]
-        wanted << "side-band-64k" if advertisement.capability?("side-band-64k")
-        wanted << "atomic" if atomic
-        wanted << "quiet" if progress.nil? && advertisement.capability?("quiet")
-        wanted << "ofs-delta" if advertisement.capability?("ofs-delta")
-        wanted << "object-format=#{@object_format.sha256? ? "sha256" : "sha1"}" if advertisement.capability?("object-format")
-        wanted << "agent=#{Protocol::AGENT}"
-        commands.each_with_index do |command, index|
-          line = "#{command.old_oid || zero} #{command.new_oid || zero} #{command.remote_ref}"
-          line += "\0#{wanted.join(' ')}" if index == 0
-          Protocol::PktLine.line(body, line)
+        zero = ObjectId.zero(@object_format)
+        wire = commands.map do |command|
+          Protocol::ReceivePack::Command.new(command.old_oid || zero, command.new_oid || zero, command.remote_ref)
         end
-        Protocol::PktLine.flush(body)
         objects = 0
-        if commands.any?(&.new_oid)
+        report = client.push(wire, atomic: atomic, progress: progress) do |io|
           tips = commands.compact_map(&.new_oid).uniq
           haves = remote_refs.values.uniq.select { |oid| has_object?(oid) }
           items = reachable_objects(tips, haves, exclude_have_trees: true, check: check)
-          bases = [] of Reachability::Item
+          bases = [] of History::ReachableObject
           commands.compact_map(&.old_oid).uniq.select { |oid| has_object?(oid) && object_header(oid)[0] == "commit" }.first(4).each do |oid|
-            bases.concat(reachable_objects([walker.commit_info(oid).tree], check: check))
+            bases.concat(reachable_objects([walker.commit_node(oid).tree], check: check))
           end
-          stats = Pack::Builder.new(self, ofs_delta: advertisement.capability?("ofs-delta"), check: check).write(body, items, bases)
-          objects = stats.objects
+          objects = Pack::Builder.new(self, ofs_delta: client.capability?("ofs-delta"), check: check).write(io, items, bases).objects
         end
-        statuses = {} of String => String?
-        unpack = nil.as(String?)
-        connection.request(body.to_slice) do |io|
-          stream = wanted.includes?("side-band-64k") ? Protocol::SidebandReader.new(io, progress) : io
-          loop do
-            packet = Protocol::PktLine.read(stream, allow_eof: true)
-            break if packet.nil? || packet.flush?
-            text = packet.text
-            if text.starts_with?("unpack ")
-              unpack = text.byte_slice(7)
-            elsif text.starts_with?("ok ")
-              statuses[text.byte_slice(3)] = nil
-            elsif text.starts_with?("ng ")
-              name, _, reason = text.byte_slice(3).partition(' ')
-              statuses[name] = reason.empty? ? "rejected" : reason
-            end
-          end
-          IO.copy(stream, IO::Memory.new) if stream.is_a?(Protocol::SidebandReader)
-        end
-        raise Protocol::RemoteError.new("remote unpack failed: #{unpack}") unless unpack == "ok"
+        raise Protocol::RemoteFailure.new("remote unpack failed: #{report.unpack}") unless report.unpacked?
         commands.each do |command|
-          if statuses.has_key?(command.remote_ref)
-            if failure = statuses[command.remote_ref]
-              updates << command.copy_with(status: PushUpdate::Status::RemoteRejected, reason: failure)
+          if report.statuses.has_key?(command.remote_ref)
+            if failure = report.statuses[command.remote_ref]
+              updates << command.copy_with(status: Push::Update::Status::RemoteRejected, reason: failure)
             else
               updates << command
             end
           else
-            updates << command.copy_with(status: PushUpdate::Status::RemoteRejected, reason: "no report from remote")
+            updates << command.copy_with(status: Push::Update::Status::RemoteRejected, reason: "no report from remote")
           end
         end
-        PushResult.new(url, updates, objects)
+        Push::Result.new(url, updates, objects)
       ensure
         connection.close
       end
     end
 
     # {local ref, remote ref, new oid (nil to delete), forced}
-    private def plan_push(specs : Array(Refspec), remote_refs : Hash(String, String),
+    private def plan_push(specs : Array(Remote::Refspec), remote_refs : Hash(String, String),
                           force : Bool) : Array({String?, String, String?, Bool})
       local = references("refs/")
       local_names = local.map(&.name)
@@ -196,7 +166,7 @@ module Git
           destination = spec.destination || spec.source
           local.each do |ref|
             next unless spec.source_matches?(ref.name) && (oid = ref.oid)
-            mapped = Refspec.new(spec.source, destination, pattern: true).map_source(ref.name).not_nil!
+            mapped = Remote::Refspec.new(spec.source, destination, pattern: true).map_source(ref.name).not_nil!
             planned << {ref.name, mapped, oid, forced}
           end
           next
@@ -204,16 +174,16 @@ module Git
         source = spec.source
         if source.empty?
           destination = spec.destination || raise Error.new("invalid Git push refspec #{spec}")
-          full = destination.starts_with?("refs/") ? destination : (Refspec.dwim(destination, remote_refs.keys) || "refs/heads/#{destination}")
+          full = destination.starts_with?("refs/") ? destination : (RefName.expand(destination, remote_refs.keys) || "refs/heads/#{destination}")
           planned << {nil, full, nil, forced}
           next
         end
-        local_ref, oid = if Refspec.object_id?(source)
+        local_ref, oid = if Remote::Refspec.object_id?(source)
                            {nil, ObjectId.valid!(source, @object_format)}
                          elsif source == "HEAD" || source == "@"
                            {head[0], head[1] || raise(Error.new("Git HEAD is unborn"))}
                          else
-                           full = source.starts_with?("refs/") ? source : Refspec.dwim(source, local_names)
+                           full = source.starts_with?("refs/") ? source : RefName.expand(source, local_names)
                            raise Error.new("Git source ref #{source} does not match any") unless full && (resolved = resolve_ref?(full))
                            {full, resolved}
                          end
@@ -223,7 +193,7 @@ module Git
                        local_ref
                      elsif destination.starts_with?("refs/")
                        destination
-                     elsif found = Refspec.dwim(destination, remote_refs.keys)
+                     elsif found = RefName.expand(destination, remote_refs.keys)
                        found
                      elsif local_ref.try(&.starts_with?("refs/tags/"))
                        "refs/tags/#{destination}"
@@ -236,7 +206,7 @@ module Git
       planned.uniq { |entry| entry[1] }
     end
 
-    private def update_tracking_after_push(remote : Remote, result : PushResult, actor : Signature?) : Nil
+    private def update_tracking_after_push(remote : Remote, result : Push::Result, actor : Signature?) : Nil
       result.updates.each do |update|
         next unless update.status.ok? || update.status.deleted?
         remote.fetch_refspecs.each do |spec|

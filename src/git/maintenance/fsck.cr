@@ -1,13 +1,16 @@
 require "set"
 
 module Git
-  # What `fsck` found. corrupt maps object IDs to the problem; missing
-  # lists objects that something reachable names but the repository
-  # lacks; unreachable lists stored objects nothing reachable names.
-  record FsckReport, checked : Int32, corrupt : Hash(String, String),
-    missing : Array(String), unreachable : Array(String) do
-    def ok? : Bool
-      corrupt.empty? && missing.empty?
+  # `git fsck`.
+  module Fsck
+    # What fsck found. corrupt maps object IDs to the problem; missing
+    # lists objects that something reachable names but the repository
+    # lacks; unreachable lists stored objects nothing reachable names.
+    record Report, checked : Int32, corrupt : Hash(String, String),
+      missing : Array(String), unreachable : Array(String) do
+      def ok? : Bool
+        corrupt.empty? && missing.empty?
+      end
     end
   end
 
@@ -17,7 +20,7 @@ module Git
     # from refs, HEAD, reflogs and the index for missing objects. Objects
     # are only read, never repaired.
     def fsck(*, connectivity : Bool = true, max_object_bytes : Int32 = 268_435_456,
-             check : Proc(Nil)? = nil) : FsckReport
+             check : Proc(Nil)? = nil) : Fsck::Report
       check!
       corrupt = {} of String => String
       stored = [] of String
@@ -58,7 +61,7 @@ module Git
         end
         unreachable = stored.reject { |oid| reached.includes?(oid) || corrupt.has_key?(oid) }
       end
-      FsckReport.new(stored.size, corrupt, missing.to_a.sort, unreachable)
+      Fsck::Report.new(stored.size, corrupt, missing.to_a.sort, unreachable)
     end
 
     # The objects an object names, after checking its structure: a commit's
@@ -67,17 +70,17 @@ module Git
     private def fsck_links(kind : String, raw : String) : Array(String)
       case kind
       when "commit"
-        info = Reachability.parse_commit(raw, @object_format)
+        node = History::CommitNode.parse(raw, @object_format)
         header_end = raw.index("\n\n") || raise Error.new("commit has no message separator")
         headers = raw.byte_slice(0, header_end)
         raise Error.new("commit does not start with a tree") unless headers.starts_with?("tree ")
         raise Error.new("commit has no author") unless headers.includes?("\nauthor ")
         raise Error.new("commit has no committer") unless headers.includes?("\ncommitter ")
-        [info.tree] + info.parents
+        [node.tree] + node.parents
       when "tree"
         targets = [] of String
         previous = nil.as({String, String}?)
-        Reachability.each_tree_entry(raw, @object_format) do |mode, name, oid|
+        Tree.each_entry(raw, @object_format) do |mode, name, oid|
           raise Error.new("tree has an invalid mode #{mode}") unless {"40000", "100644", "100755", "120000", "160000", "100664"}.includes?(mode)
           raise Error.new("tree has an invalid name #{name.inspect}") if name == "." || name == ".." || name.empty?
           current = {name, mode}

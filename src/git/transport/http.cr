@@ -5,11 +5,11 @@ require "socket"
 require "openssl"
 
 module Git
-  module Transport
+  abstract class Transport
     # Git's smart HTTP protocol (stateless RPC). Nothing ambient is used:
     # credentials come from the supplied provider, TLS from the supplied
     # context and a proxy only when one is named.
-    class HTTP < Base
+    class HTTP < Transport
       USER_AGENT = "git/#{Protocol::AGENT}"
 
       getter url : String
@@ -36,14 +36,14 @@ module Git
         @url = uri.to_s.rchop('/')
       end
 
-      def connect(service : Service, protocol_version : Int32 = 2) : Connection
-        HTTPConnection.new(self, service, protocol_version)
+      def connect(service : Service, protocol_version : Int32 = 2) : Transport::Connection
+        Connection.new(self, service, protocol_version)
       end
 
       # One HTTP exchange with authentication retry and redirects for GET.
       # :nodoc:
       def exchange(method : String, url : String, headers : ::HTTP::Headers, body : Bytes?,
-                             & : ::HTTP::Client::Response, String ->) : Nil
+                   & : ::HTTP::Client::Response, String ->) : Nil
         attempt = 0
         redirects = 0
         current = url
@@ -63,22 +63,22 @@ module Git
             client.exec(request) do |response|
               case response.status_code
               when 401
-                raise AuthenticationError.new("Git HTTP authentication required by #{current}, a different origin than #{@url}") unless same_origin?(current, @url)
+                raise AuthenticationFailure.new("Git HTTP authentication required by #{current}, a different origin than #{@url}") unless same_origin?(current, @url)
                 attempt += 1
                 provider = @credentials
                 found = provider.try &.call(current, attempt)
-                raise AuthenticationError.new("Git HTTP authentication failed for #{current}") unless found
+                raise AuthenticationFailure.new("Git HTTP authentication failed for #{current}") unless found
                 @credential = found
                 retry = true
               when 301, 302, 303, 307, 308
-                raise ConnectionError.new("Git HTTP redirect limit exceeded") if (redirects += 1) > @max_redirects
-                location = response.headers["Location"]? || raise ConnectionError.new("Git HTTP redirect without a location")
-                raise ConnectionError.new("Git HTTP redirect of a #{method} request") unless method == "GET"
+                raise ConnectionFailure.new("Git HTTP redirect limit exceeded") if (redirects += 1) > @max_redirects
+                location = response.headers["Location"]? || raise ConnectionFailure.new("Git HTTP redirect without a location")
+                raise ConnectionFailure.new("Git HTTP redirect of a #{method} request") unless method == "GET"
                 redirect = URI.parse(current).resolve(location).to_s
               when 200
                 yield response, current
               else
-                raise ConnectionError.new("Git HTTP #{method} #{current} failed: #{response.status_code} #{response.status_message}")
+                raise ConnectionFailure.new("Git HTTP #{method} #{current} failed: #{response.status_code} #{response.status_message}")
               end
             end
           end
@@ -125,7 +125,7 @@ module Git
           client.close
         end
       rescue ex : Socket::Error | IO::TimeoutError | OpenSSL::Error
-        raise ConnectionError.new("Git HTTP connection to #{url} failed: #{ex.class}: #{ex.message}")
+        raise ConnectionFailure.new("Git HTTP connection to #{url} failed: #{ex.class}: #{ex.message}")
       end
 
       # Open an HTTP CONNECT tunnel through the proxy.
@@ -140,58 +140,60 @@ module Git
         end
         socket << "\r\n"
         socket.flush
-        status = socket.gets || raise ConnectionError.new("Git HTTP proxy closed the connection")
+        status = socket.gets || raise ConnectionFailure.new("Git HTTP proxy closed the connection")
         code = status.split(' ')[1]?.try(&.to_i?)
         while (line = socket.gets) && !line.chomp.empty?
         end
-        raise ConnectionError.new("Git HTTP proxy refused the tunnel: #{status.strip}") unless code == 200
+        raise ConnectionFailure.new("Git HTTP proxy refused the tunnel: #{status.strip}") unless code == 200
         socket
       end
-    end
 
-    class HTTPConnection < Connection
-      getter base_url : String
-      @advertisement : Bytes
+      # One stateless conversation: the advertisement GET and then a POST
+      # per request.
+      class Connection < Transport::Connection
+        getter base_url : String
+        @advertisement : Bytes
 
-      def initialize(@transport : HTTP, @service : Service, @protocol_version : Int32)
-        @base_url = @transport.url
-        headers = ::HTTP::Headers{"Accept" => "*/*", "Pragma" => "no-cache"}
-        headers["Git-Protocol"] = "version=#{@protocol_version}" if @protocol_version > 0
-        raw = Bytes.empty
-        @transport.exchange("GET", "#{@base_url}/info/refs?service=#{@service.git_name}", headers, nil) do |response, final_url|
-          type = response.content_type || ""
-          unless type == "application/x-#{@service.git_name}-advertisement"
-            raise Protocol::ProtocolError.new("Git server at #{final_url} does not speak the smart HTTP protocol (#{type.inspect})")
+        def initialize(@transport : HTTP, @service : Service, @protocol_version : Int32)
+          @base_url = @transport.url
+          headers = ::HTTP::Headers{"Accept" => "*/*", "Pragma" => "no-cache"}
+          headers["Git-Protocol"] = "version=#{@protocol_version}" if @protocol_version > 0
+          raw = Bytes.empty
+          @transport.exchange("GET", "#{@base_url}/info/refs?service=#{@service.git_name}", headers, nil) do |response, final_url|
+            type = response.content_type || ""
+            unless type == "application/x-#{@service.git_name}-advertisement"
+              raise Protocol::Violation.new("Git server at #{final_url} does not speak the smart HTTP protocol (#{type.inspect})")
+            end
+            suffix = "/info/refs?service=#{@service.git_name}"
+            @base_url = final_url.ends_with?(suffix) ? final_url.byte_slice(0, final_url.bytesize - suffix.bytesize) : @base_url
+            buffer = IO::Memory.new
+            IO.copy(response.body_io, buffer, 64 * 1024 * 1024)
+            raw = buffer.to_slice
           end
-          suffix = "/info/refs?service=#{@service.git_name}"
-          @base_url = final_url.ends_with?(suffix) ? final_url.byte_slice(0, final_url.bytesize - suffix.bytesize) : @base_url
-          buffer = IO::Memory.new
-          IO.copy(response.body_io, buffer, 64 * 1024 * 1024)
-          raw = buffer.to_slice
+          @advertisement = Transport.strip_service_preamble(raw, @service)
         end
-        @advertisement = Transport.strip_service_preamble(raw, @service)
-      end
 
-      def advertisement : Bytes
-        @advertisement
-      end
+        def advertisement : Bytes
+          @advertisement
+        end
 
-      def stateless? : Bool
-        true
-      end
+        def stateless? : Bool
+          true
+        end
 
-      def request(body : Bytes, & : IO ->) : Nil
-        headers = ::HTTP::Headers{
-          "Content-Type" => "application/x-#{@service.git_name}-request",
-          "Accept"       => "application/x-#{@service.git_name}-result",
-        }
-        headers["Git-Protocol"] = "version=#{@protocol_version}" if @protocol_version > 0
-        @transport.exchange("POST", "#{@base_url}/#{@service.git_name}", headers, body) do |response, _|
-          type = response.content_type || ""
-          unless type == "application/x-#{@service.git_name}-result"
-            raise Protocol::ProtocolError.new("Git server answered #{@service.git_name} with #{type.inspect}")
+        def request(body : Bytes, & : IO ->) : Nil
+          headers = ::HTTP::Headers{
+            "Content-Type" => "application/x-#{@service.git_name}-request",
+            "Accept"       => "application/x-#{@service.git_name}-result",
+          }
+          headers["Git-Protocol"] = "version=#{@protocol_version}" if @protocol_version > 0
+          @transport.exchange("POST", "#{@base_url}/#{@service.git_name}", headers, body) do |response, _|
+            type = response.content_type || ""
+            unless type == "application/x-#{@service.git_name}-result"
+              raise Protocol::Violation.new("Git server answered #{@service.git_name} with #{type.inspect}")
+            end
+            yield response.body_io
           end
-          yield response.body_io
         end
       end
     end

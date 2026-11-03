@@ -8,9 +8,9 @@ module Git
   # outside the pack being read.
   class ObjectDatabase
     class PackFiles
-      MAX_PACKS              =         4_096
-      MAX_INDEX_BYTES        = 1_073_741_824
-      MAX_INDEX_OBJECTS      =    40_000_000
+      MAX_PACKS              =             4_096
+      MAX_INDEX_BYTES        =     1_073_741_824
+      MAX_INDEX_OBJECTS      =        40_000_000
       MAX_PACKED_ENTRY_BYTES = 2_147_483_647_i64
       # Git writes chains of at most 4095 deltas (pack-objects caps --depth);
       # resolution is iterative, so this only bounds hostile input.
@@ -186,8 +186,8 @@ module Git
           loop do
             raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < io.size - @object_format.bytesize
             io.seek(current)
-            header = PackFiles.read_entry_header(io, current, @object_format.bytesize)
-            return {PackFiles.type_name(header.type_code), size || header.size} if header.type_code < 6
+            header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
+            return {header.type.object_type, size || header.size} unless header.type.delta?
             if size.nil?
               io.seek(header.data_offset)
               prefix = Compress::Zlib::Reader.open(io) do |zlib|
@@ -232,7 +232,7 @@ module Git
       # its delta base by object ID (for OFS_DELTA too) and the bounds of
       # its compressed data. The entry CRC has been verified.
       record RawEntry, pack_path : String, offset : Int64, finish : Int64,
-        header : EntryHeader, base_oid : String?
+        header : Pack::EntryHeader, base_oid : String?
 
       def raw_entry(oid : String) : RawEntry?
         wanted = oid.hexbytes
@@ -243,7 +243,7 @@ module Git
           finish = index.entry_end(offset)
           header = File.open(index.pack_path) do |io|
             io.seek(offset)
-            PackFiles.read_entry_header(io, offset, @object_format.bytesize)
+            Pack::EntryHeader.read(io, offset, @object_format.bytesize)
           end
           base = header.base_oid
           if base_offset = header.base_offset
@@ -504,69 +504,6 @@ module Git
         end
       end
 
-      # Header of a pack entry: type code, declared size, and the delta base
-      # (an absolute offset for OFS_DELTA or an object ID for REF_DELTA).
-      record EntryHeader, type_code : Int32, size : Int64, base_offset : Int64?, base_oid : String?, data_offset : Int64
-
-      def self.read_entry_header(io : IO, offset : Int64, hash_size : Int32) : EntryHeader
-        b = io.read_byte || raise Git::Error.new("truncated Git pack object")
-        size = (b & 0x0f).to_i64
-        type_code = ((b >> 4) & 7).to_i32
-        shift = 4
-        consumed = 1_i64
-        while (b & 0x80) != 0
-          b = io.read_byte || raise Git::Error.new("truncated Git object size")
-          consumed += 1
-          raise Git::Error.new("Git object size invalid") if shift > 56
-          size |= (b & 0x7f).to_i64 << shift
-          shift += 7
-        end
-        base_offset = nil.as(Int64?)
-        base_oid = nil.as(String?)
-        if type_code == 6
-          byte = io.read_byte || raise Git::Error.new("truncated Git offset delta")
-          consumed += 1
-          distance = (byte & 0x7f).to_i64
-          while (byte & 0x80) != 0
-            byte = io.read_byte || raise Git::Error.new("truncated Git offset delta")
-            consumed += 1
-            raise Git::Error.new("Git delta distance overflows") if distance >= (Int64::MAX >> 7) - 1
-            distance = ((distance + 1) << 7) | (byte & 0x7f).to_i64
-            raise Git::Error.new("invalid Git delta distance") if distance >= offset
-          end
-          raise Git::Error.new("invalid Git delta parent offset") if distance <= 0 || offset - distance < 12
-          base_offset = offset - distance
-        elsif type_code == 7
-          bytes = Bytes.new(hash_size)
-          io.read_fully(bytes)
-          consumed += hash_size
-          base_oid = bytes.hexstring
-        elsif !{1, 2, 3, 4}.includes?(type_code)
-          raise Git::Error.new("unsupported Git pack entry type")
-        end
-        EntryHeader.new(type_code, size, base_offset, base_oid, offset + consumed)
-      end
-
-      def self.type_name(code : Int32) : String
-        case code
-        when 1 then "commit"
-        when 2 then "tree"
-        when 3 then "blob"
-        when 4 then "tag"
-        else        raise Git::Error.new("unsupported Git pack entry type")
-        end
-      end
-
-      def self.type_code(name : String) : Int32
-        case name
-        when "commit" then 1
-        when "tree"   then 2
-        when "blob"   then 3
-        when "tag"    then 4
-        else               raise Git::Error.new("unsupported Git object type")
-        end
-      end
-
       # Reconstruct the object at offset. OFS_DELTA chains and REF_DELTA
       # bases found in the same pack are followed iteratively; other
       # REF_DELTA bases are delegated to resolve_oid.
@@ -599,10 +536,10 @@ module Git
             end
             raise Git::Error.new("Git delta chain too deep") if depth + chain.size >= @max_delta_depth
             io.seek(current)
-            header = PackFiles.read_entry_header(io, current, @object_format.bytesize)
+            header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
             raise Git::Error.new("Git object exceeds byte budget") if header.size > max
             inflated = Compress::Zlib::Reader.open(io) { |z| bounded_decompress(z, max + 128) }
-            if header.type_code == 6 || header.type_code == 7
+            if header.type.delta?
               raise Git::Error.new("Git packed delta instruction size mismatch") unless inflated.bytesize == header.size
               chain << {current, inflated}
               if base_offset = header.base_offset
@@ -618,14 +555,14 @@ module Git
               break
             end
             raise Git::Error.new("Git packed entry size mismatch") unless inflated.bytesize == header.size
-            base = {PackFiles.type_name(header.type_code), inflated}
+            base = {header.type.object_type, inflated}
             store_base(file, current, base) unless chain.empty?
             break
           end
           result = base.not_nil!
           chain.reverse_each.with_index do |(entry_offset, delta), position|
             check.call
-            result = {result[0], apply_delta(result[1], delta, max)}
+            result = {result[0], Pack::Delta.apply(result[1], delta, max.to_i64)}
             store_base(file, entry_offset, result) if position < chain.size - 1
           end
           result
@@ -657,70 +594,6 @@ module Git
             removed = @base_cache.delete(oldest).not_nil!
             @base_cache_bytes -= removed[1].bytesize
           end
-        end
-      end
-
-      def self.apply_delta(base : String, delta : String, max : Int64) : String
-        source = delta.to_slice
-        position = 0
-        original, position = delta_varint(source, position)
-        target_size, position = delta_varint(source, position)
-        raise Git::Error.new("Git delta base size mismatch") unless original == base.bytesize
-        raise Git::Error.new("Git delta exceeds budget") if target_size > max
-        base_bytes = base.to_slice
-        String.new(target_size.to_i) do |buffer|
-          written = 0
-          while position < source.size
-            opcode = source[position]
-            position += 1
-            if (opcode & 0x80) != 0
-              copy_offset = 0_i64
-              length = 0_i64
-              4.times do |i|
-                next if (opcode & (1 << i)) == 0
-                raise Git::Error.new("truncated Git delta offset") if position >= source.size
-                copy_offset |= source[position].to_i64 << (i * 8)
-                position += 1
-              end
-              3.times do |i|
-                next if (opcode & (0x10 << i)) == 0
-                raise Git::Error.new("truncated Git delta length") if position >= source.size
-                length |= source[position].to_i64 << (i * 8)
-                position += 1
-              end
-              length = 65_536_i64 if length == 0
-              raise Git::Error.new("invalid Git delta copy") if copy_offset + length > base_bytes.size || written + length > target_size
-              (buffer + written).copy_from(base_bytes.to_unsafe + copy_offset, length)
-              written += length.to_i
-            elsif opcode != 0
-              raise Git::Error.new("invalid Git delta literal") if position + opcode > source.size || written + opcode > target_size
-              (buffer + written).copy_from(source.to_unsafe + position, opcode)
-              written += opcode
-              position += opcode
-            else
-              raise Git::Error.new("invalid Git delta opcode")
-            end
-          end
-          raise Git::Error.new("Git delta output size mismatch") unless written == target_size
-          {target_size.to_i, 0}
-        end
-      end
-
-      private def apply_delta(base : String, delta : String, max : Int32) : String
-        PackFiles.apply_delta(base, delta, max.to_i64)
-      end
-
-      private def self.delta_varint(source : Bytes, position : Int32) : {Int64, Int32}
-        number = 0_i64
-        shift = 0
-        loop do
-          raise Git::Error.new("truncated Git delta varint") if position >= source.size
-          byte = source[position]
-          position += 1
-          raise Git::Error.new("Git delta length overflows") if shift > 42
-          number |= (byte & 0x7f).to_i64 << shift
-          return {number, position} if (byte & 0x80) == 0
-          shift += 7
         end
       end
 

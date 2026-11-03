@@ -21,6 +21,20 @@ module Git
       separator && valid_component?(name, component_start, name.bytesize)
     end
 
+    # Git's ref_rev_parse_rules: the full names a short name may mean, in
+    # the order Git tries them.
+    REV_PARSE_RULES = ["%s", "refs/%s", "refs/tags/%s", "refs/heads/%s", "refs/remotes/%s", "refs/remotes/%s/HEAD"]
+
+    # The first of names that the short name means under Git's rules
+    # (`git rev-parse`'s and `git fetch`'s DWIM), or nil.
+    def self.expand(short : String, names : Enumerable(String)) : String?
+      REV_PARSE_RULES.each do |rule|
+        candidate = rule.sub("%s", short)
+        return candidate if names.includes?(candidate)
+      end
+      nil
+    end
+
     def self.valid!(name : String) : String
       raise Error.new("Git reference name rejected") unless valid?(name)
       name

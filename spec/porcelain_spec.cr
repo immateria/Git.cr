@@ -127,10 +127,10 @@ describe "Git porcelain" do
       ahead = commit_file(writer, "upstream.txt", "new upstream\n", 1_700_002_000)
       GitOracle.run(writer, "push", "-q", "origin", "main")
       pulled = repo.pull(actor: SIG)
-      pulled.action.should eq(:fast_forward)
+      pulled.action.should eq(Git::Pull::Action::FastForward)
       repo.head[1].should eq(ahead)
       File.read(File.join(clone, "upstream.txt")).should eq("new upstream\n")
-      repo.pull.action.should eq(:up_to_date)
+      repo.pull.action.should eq(Git::Pull::Action::UpToDate)
 
       commit_file(writer, "upstream.txt", "newer upstream\n", 1_700_003_000)
       GitOracle.run(writer, "push", "-q", "origin", "main")
@@ -138,8 +138,8 @@ describe "Git porcelain" do
       repo.stage_file("local.txt")
       local = repo.commit_staged(author: SIG, committer: SIG, message: "local\n")
       expect_raises(Git::Error, /diverged/) { repo.pull }
-      merged = repo.pull(mode: Git::PullMode::Merge, author: SIG)
-      merged.action.should eq(:merge)
+      merged = repo.pull(mode: Git::Pull::Mode::Merge, author: SIG)
+      merged.action.should eq(Git::Pull::Action::Merge)
       parents = GitOracle.run(clone, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split
       parents[1..].should eq([local, GitOracle.run(writer, "rev-parse", "HEAD").stdout.strip])
       File.read(File.join(clone, "upstream.txt")).should eq("newer upstream\n")

@@ -6,7 +6,14 @@ module Git
     # does). Bases outside the pack ("preferred bases") make a thin pack.
     class Builder
       record Stats, objects : Int32, deltas : Int32, thin_deltas : Int32, bytes : Int64, checksum : String,
-        entries : Array(Entry)
+        entries : Array(IndexEntry)
+
+      # How an entry was written.
+      private enum Written
+        Full
+        Delta
+        ThinDelta
+      end
 
       private class Candidate
         getter oid : String
@@ -15,7 +22,7 @@ module Git
         property size : Int32
         getter external : Bool
         property data : Bytes?
-        property index : Delta::Index? = nil
+        property index : Delta::SourceIndex? = nil
         property base : Candidate? = nil
         property delta : Bytes? = nil
         property depth : Int32 = 0
@@ -56,8 +63,8 @@ module Git
       # Write items (in the given order, bases first where needed) to io.
       # preferred_bases are objects the receiver already has: they may be
       # used as REF_DELTA bases but are never written.
-      def write(io : IO, items : Array(Reachability::Item),
-                preferred_bases : Array(Reachability::Item) = [] of Reachability::Item) : Stats
+      def write(io : IO, items : Array(History::ReachableObject),
+                preferred_bases : Array(History::ReachableObject) = [] of History::ReachableObject) : Stats
         candidates = items.map_with_index do |item, order|
           Candidate.new(item.oid, item.type, Builder.name_hash(item.path), 0, false, nil, order)
         end
@@ -70,21 +77,21 @@ module Git
         plan_reuse(candidates, bases) if @reuse
         find_deltas(candidates + bases) if @window > 0
         writer = Writer.new(io, @repository.object_format, candidates.size, @compression_level)
-        entries = [] of Entry
+        entries = [] of IndexEntry
         deltas = 0
         thin = 0
         candidates.each do |candidate|
-          write_candidate(writer, candidate, entries) do |kind|
-            deltas += 1 unless kind == :full
-            thin += 1 if kind == :thin
+          write_candidate(writer, candidate, entries) do |written|
+            deltas += 1 unless written.full?
+            thin += 1 if written.thin_delta?
           end
         end
         checksum = writer.finish
         Stats.new(candidates.size, deltas, thin, writer.position, checksum, entries)
       end
 
-      private def write_candidate(writer : Writer, candidate : Candidate, entries : Array(Entry),
-                                  &block : Symbol ->) : Nil
+      private def write_candidate(writer : Writer, candidate : Candidate, entries : Array(IndexEntry),
+                                  &block : Written ->) : Nil
         return if candidate.offset >= 0
         @check.try &.call
         if raw = candidate.raw
@@ -92,29 +99,29 @@ module Git
           base = candidate.base
           if candidate.reused_delta && base
             if base.external
-              offset, crc = writer.write_raw(7, raw.header.size, data, base_oid: base.oid)
-              block.call(:thin)
+              offset, crc = writer.write_raw(EntryType::RefDelta, raw.header.size, data, base_oid: base.oid)
+              block.call(Written::ThinDelta)
             else
               write_candidate(writer, base, entries, &block) if base.offset < 0
               offset, crc = if @ofs_delta
-                              writer.write_raw(6, raw.header.size, data, base_offset: base.offset)
+                              writer.write_raw(EntryType::OfsDelta, raw.header.size, data, base_offset: base.offset)
                             else
-                              writer.write_raw(7, raw.header.size, data, base_oid: base.oid)
+                              writer.write_raw(EntryType::RefDelta, raw.header.size, data, base_oid: base.oid)
                             end
-              block.call(:delta)
+              block.call(Written::Delta)
             end
           else
-            offset, crc = writer.write_raw(raw.header.type_code, raw.header.size, data)
-            block.call(:full)
+            offset, crc = writer.write_raw(raw.header.type, raw.header.size, data)
+            block.call(Written::Full)
           end
           candidate.offset = offset
-          entries << Entry.new(candidate.oid, offset, crc)
+          entries << IndexEntry.new(candidate.oid, offset, crc)
           return
         end
         if (base = candidate.base) && (delta = candidate.delta)
           if base.external
             offset, crc = writer.write_ref_delta(base.oid, delta)
-            block.call(:thin)
+            block.call(Written::ThinDelta)
           else
             write_candidate(writer, base, entries, &block) if base.offset < 0
             offset, crc = if @ofs_delta
@@ -122,16 +129,16 @@ module Git
                           else
                             writer.write_ref_delta(base.oid, delta)
                           end
-            block.call(:delta)
+            block.call(Written::Delta)
           end
         else
           kind, raw = @repository.object(candidate.oid, @max_object_bytes) { @check.try &.call }
           raise Error.new("Git object #{candidate.oid} type changed while packing") unless kind == candidate.type
           offset, crc = writer.write_object(kind, raw.to_slice)
-          block.call(:full)
+          block.call(Written::Full)
         end
         candidate.offset = offset
-        entries << Entry.new(candidate.oid, offset, crc)
+        entries << IndexEntry.new(candidate.oid, offset, crc)
       end
 
       # Reuse stored entries: undeltified ones as they are, deltas whose
@@ -144,8 +151,8 @@ module Git
         candidates.each do |candidate|
           @check.try &.call
           entry = @repository.pack_files.raw_entry(candidate.oid) || next
-          if entry.header.type_code < 6
-            next unless ObjectDatabase::PackFiles.type_name(entry.header.type_code) == candidate.type
+          if !entry.header.type.delta?
+            next unless entry.header.type.object_type == candidate.type
             candidate.raw = entry
           elsif base_oid = entry.base_oid
             base = by_oid[base_oid]? || external[base_oid]?
@@ -190,7 +197,7 @@ module Git
               source = base.data || next
               limit = base.delta ? best_size * (@max_depth - base.depth) // (@max_depth + 1) : best_size
               next if limit <= 0
-              index = base.index ||= Delta::Index.new(source)
+              index = base.index ||= Delta::SourceIndex.new(source)
               if encoded = index.encode(data, limit)
                 if encoded.size < best_size
                   best_size = encoded.size.to_i64

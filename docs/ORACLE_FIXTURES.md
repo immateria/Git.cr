@@ -72,8 +72,8 @@ installation; the native code never starts them itself.
 | PACK-D01 | `pack_spec.cr` | Native deltas round-trip through the pack reader across empty, short, random and repetitive inputs |
 | PACK-O05 | `pack_spec.cr` | Delta-compressed full and thin packs from `Pack::Builder` pass `index-pack --strict`, `--fix-thin` and `fsck --strict` |
 | PACK-O06 | `pack_spec.cr` | `object_header` reports type and size like `cat-file --batch-check` for loose and deltified objects |
-| REACH-O01 | `reachability_spec.cr` | `reachable_objects` equals `rev-list --objects` (with paths) for tips, exclusions, tags, trees and orphans; commit order equals `rev-list` |
-| REACH-O02 | `reachability_spec.cr` | `ancestor?` equals `merge-base --is-ancestor` for every pair, including a clock-skewed commit |
+| REACH-O01 | `revision_walker_spec.cr` | `reachable_objects` equals `rev-list --objects` (with paths) for tips, exclusions, tags, trees and orphans; commit order equals `rev-list` |
+| REACH-O02 | `revision_walker_spec.cr` | `ancestor?` equals `merge-base --is-ancestor` for every pair, including a clock-skewed commit |
 | REMOTE-O01 | `remote_spec.cr` | Native clone over the local transport equals `git clone --no-local`: refs, symrefs, index, config, modes, symlinks, gitlinks; `fsck --strict` and clean `status` |
 | REMOTE-O02 | `remote_spec.cr` | Incremental fetch with forced updates, new branches, tag following and prune equals `git fetch`/`fetch --prune`, including FETCH_HEAD bytes |
 | REMOTE-O03 | `remote_spec.cr` | The real Git client clones, fetches, pushes (including forced and delete) and shallow-clones from the native HTTP handler |

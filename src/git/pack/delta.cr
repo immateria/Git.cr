@@ -1,15 +1,15 @@
 module Git
   module Pack
     # Git's binary delta format: a copy/insert program that rebuilds a
-    # target from a source. The encoder indexes the source in 16-byte
-    # blocks and greedily extends exact matches in both directions, the
-    # approach of Git's diff-delta.c.
+    # target from a source. apply runs one; encode writes one by indexing
+    # the source in 16-byte blocks and greedily extending exact matches in
+    # both directions, the approach of Git's diff-delta.c.
     module Delta
       BLOCK    =      16
       MAX_COPY = 0x10000
 
-      # A source indexed once and reused for many targets.
-      class Index
+      # A delta source indexed once and reused for many targets.
+      class SourceIndex
         getter source : Bytes
 
         def initialize(@source : Bytes)
@@ -132,6 +132,68 @@ module Git
           output.write(encoded[0, used])
           offset += part
           length -= part
+        end
+      end
+
+      # Rebuild a target from its base and a delta, refusing targets larger
+      # than max bytes.
+      def self.apply(base : String, delta : String, max : Int64) : String
+        source = delta.to_slice
+        position = 0
+        original, position = delta_varint(source, position)
+        target_size, position = delta_varint(source, position)
+        raise Git::Error.new("Git delta base size mismatch") unless original == base.bytesize
+        raise Git::Error.new("Git delta exceeds budget") if target_size > max
+        base_bytes = base.to_slice
+        String.new(target_size.to_i) do |buffer|
+          written = 0
+          while position < source.size
+            opcode = source[position]
+            position += 1
+            if (opcode & 0x80) != 0
+              copy_offset = 0_i64
+              length = 0_i64
+              4.times do |i|
+                next if (opcode & (1 << i)) == 0
+                raise Git::Error.new("truncated Git delta offset") if position >= source.size
+                copy_offset |= source[position].to_i64 << (i * 8)
+                position += 1
+              end
+              3.times do |i|
+                next if (opcode & (0x10 << i)) == 0
+                raise Git::Error.new("truncated Git delta length") if position >= source.size
+                length |= source[position].to_i64 << (i * 8)
+                position += 1
+              end
+              length = 65_536_i64 if length == 0
+              raise Git::Error.new("invalid Git delta copy") if copy_offset + length > base_bytes.size || written + length > target_size
+              (buffer + written).copy_from(base_bytes.to_unsafe + copy_offset, length)
+              written += length.to_i
+            elsif opcode != 0
+              raise Git::Error.new("invalid Git delta literal") if position + opcode > source.size || written + opcode > target_size
+              (buffer + written).copy_from(source.to_unsafe + position, opcode)
+              written += opcode
+              position += opcode
+            else
+              raise Git::Error.new("invalid Git delta opcode")
+            end
+          end
+          raise Git::Error.new("Git delta output size mismatch") unless written == target_size
+          {target_size.to_i, 0}
+        end
+      end
+
+      private def self.delta_varint(source : Bytes, position : Int32) : {Int64, Int32}
+        number = 0_i64
+        shift = 0
+        loop do
+          raise Git::Error.new("truncated Git delta varint") if position >= source.size
+          byte = source[position]
+          position += 1
+          raise Git::Error.new("Git delta length overflows") if shift > 42
+          number |= (byte & 0x7f).to_i64 << shift
+          return {number, position} if (byte & 0x80) == 0
+          shift += 7
         end
       end
 

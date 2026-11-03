@@ -111,30 +111,35 @@ agent tools and controls every grant; see
   and abbreviated IDs, ref lookup rules, `@`, `@{n}`, `@{upstream}`, `~`,
   `^`, `^{type}`, `<rev>:<path>` and `:<path>`. `rev_list` and `log` take
   `^A`, `A..B` and `A...B`; `ahead_behind`, `merge_bases` and `ancestor?`
-  answer ancestry questions; `reachable_objects` is `rev-list --objects`.
-  `diff_trees` and `commit_changes` list added, deleted, modified,
-  type-changed and (exactly) renamed paths between trees, as
-  `git diff-tree -r` does.
-- **Branches and tags.** `branches` (with upstream ahead/behind),
+  answer ancestry questions; `reachable_objects` is `rev-list --objects`
+  (`History::RevisionWalker`). `diff_trees` and `commit_changes` list added,
+  deleted, modified, type-changed and (exactly) renamed paths between trees as
+  `TreeDiff::Change` values, as `git diff-tree -r` does.
+- **Branches and tags.** `branches` (`References::Branch`, with upstream ahead/behind),
   `create_branch`, `delete_branch`, `rename_branch`, `set_branch_upstream`,
   `create_tag`, `delete_tag` and `tags`; `references` lists any namespace with
   symbolic refs, and `set_symbolic_ref` and `detach_head` write HEAD.
 - **Packs.** Pack reads cache verified indexes and follow delta chains of any
   Git depth. `Pack::Writer`, `Pack::Delta` and `Pack::Builder` (pack-objects,
   with delta search and reuse of stored deltas) write packs; `Pack::Indexer`
-  and `receive_pack` are index-pack, including thin-pack completion, and write
-  `.idx` and `.rev` files byte-identical to Git's.
+  and `Repository#index_pack` are index-pack, including thin-pack completion,
+  and write `.idx` and `.rev` files (`Pack::IndexFile`, `Pack::ReverseIndexFile`)
+  byte-identical to Git's.
 - **Remotes.** `add_remote`, `remove_remote`, `rename_remote` and refspecs;
   `clone`, `fetch` (tag following, prune, shallow `depth:`, FETCH_HEAD),
   `pull` (fast-forward or merge), `push` (fast-forward rules, force, atomic,
-  deletes) and `ls_remote`. Fetch speaks protocol v2; push speaks receive-pack
-  v0/v1. Transports: `Local` (in-process), `HTTP` (smart HTTP with a credential
-  callback, TLS context and CONNECT proxy), `SSH`, `Daemon` (git://) and
-  `Command`. `require "git/server/http_handler"` adds an `HTTP::Handler` that
-  serves repositories to Git clients over smart HTTP.
+  deletes) and `ls_remote`, reporting `Fetch::Result`, `Pull::Result` and
+  `Push::Result`. Fetch speaks protocol v2 (`Protocol::UploadPack::Client`);
+  push speaks receive-pack v0/v1 (`Protocol::ReceivePack::Client`), and both
+  services have native servers. Every `Git::Transport` is one of `Local`
+  (in-process), `HTTP` (smart HTTP with a credential callback, TLS context and
+  CONNECT proxy), `SSH`, `Daemon` (git://) and `Command`.
+  `require "git/server/http_handler"` adds an `HTTP::Handler` that serves
+  repositories to Git clients over smart HTTP.
 - **Maintenance.** `repack` (one pack of everything reachable, honouring
   `.keep`), `prune_packed`, `pack_refs`, `gc` and `fsck` (corrupt, missing and
-  unreachable objects).
+  unreachable objects), reporting `Repack::Result`, `Gc::Result` and
+  `Fsck::Report`.
 
 Worktree, index and HEAD are published separately. `Checkout::PartialPublication`
 and related types report possibly incomplete results; they do not promise rollback.

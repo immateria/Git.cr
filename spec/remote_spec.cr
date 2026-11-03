@@ -105,15 +105,15 @@ describe "Git remote operations" do
       refs_of(native).should eq(refs_of(oracle))
       File.read(File.join(native, ".git", "FETCH_HEAD")).should eq(File.read(File.join(oracle, ".git", "FETCH_HEAD")))
       statuses = result.updates.to_h { |update| {update.local_ref, update.status} }
-      statuses["refs/remotes/origin/main"].should eq(Git::FetchUpdate::Status::FastForward)
-      statuses["refs/remotes/origin/feature"].should eq(Git::FetchUpdate::Status::Forced)
-      statuses["refs/remotes/origin/topic"].should eq(Git::FetchUpdate::Status::New)
-      statuses["refs/tags/v2"].should eq(Git::FetchUpdate::Status::New)
+      statuses["refs/remotes/origin/main"].should eq(Git::Fetch::Update::Status::FastForward)
+      statuses["refs/remotes/origin/feature"].should eq(Git::Fetch::Update::Status::Forced)
+      statuses["refs/remotes/origin/topic"].should eq(Git::Fetch::Update::Status::New)
+      statuses["refs/tags/v2"].should eq(Git::Fetch::Update::Status::New)
       result.object_count.should be > 0
 
       # A second fetch transfers nothing.
       again = repo.fetch
-      again.received.should be_nil
+      again.pack.should be_nil
       again.updates.all? { |update| update.status.up_to_date? || update.status.fetch_head_only? }.should be_true
 
       # Pruning removes a branch deleted upstream; reflogs were written.
@@ -234,13 +234,13 @@ describe "Git remote operations" do
           refused.success?.should be_false
           refused.rejected.first.reason.should eq("fetch first")
           fetched = repo.fetch(actor: SIG)
-          fetched.updates.find { |update| update.local_ref == "refs/remotes/origin/main" }.not_nil!.status.should eq(Git::FetchUpdate::Status::FastForward)
+          fetched.updates.find { |update| update.local_ref == "refs/remotes/origin/main" }.not_nil!.status.should eq(Git::Fetch::Update::Status::FastForward)
           repo.push("origin").rejected.first.reason.should eq("non-fast-forward")
           repo.push("origin", force: true).success?.should be_true
           GitOracle.run(served, "rev-parse", "main").stdout.strip.should eq(local)
 
           # Delete over HTTP.
-          repo.push("origin", [":native-branch"]).updates.first.status.should eq(Git::PushUpdate::Status::Deleted)
+          repo.push("origin", [":native-branch"]).updates.first.status.should eq(Git::Push::Update::Status::Deleted)
           GitOracle.run(served, "rev-parse", "--verify", "-q", "refs/heads/native-branch", check: false).success?.should be_false
           repo.resolve_ref?("refs/remotes/origin/native-branch").should be_nil
 
@@ -269,7 +269,7 @@ describe "Git remote operations" do
       result = repo.push
       result.success?.should be_true
       GitOracle.run(bare, "rev-parse", "main").stdout.strip.should eq(first)
-      repo.push.updates.first.status.should eq(Git::PushUpdate::Status::UpToDate)
+      repo.push.updates.first.status.should eq(Git::Push::Update::Status::UpToDate)
 
       # Tags are not moved without force.
       repo.create_tag("moving")
@@ -296,7 +296,7 @@ describe "Git remote operations" do
       other.stage_file("c.txt")
       other.commit_staged(author: SIG, committer: SIG, message: "c\n")
       denied = other.push("origin", ["main"])
-      denied.updates.first.status.should eq(Git::PushUpdate::Status::RemoteRejected)
+      denied.updates.first.status.should eq(Git::Push::Update::Status::RemoteRejected)
       denied.updates.first.reason.should eq("branch is currently checked out")
       GitOracle.run(bare, "fsck", "--strict", "--no-dangling")
     end
@@ -334,19 +334,19 @@ describe "Git remote operations" do
   end
 
   it "REMOTE-O07 parses and maps refspecs like Git" do
-    spec = Git::Refspec.parse("+refs/heads/*:refs/remotes/origin/*")
+    spec = Git::Remote::Refspec.parse("+refs/heads/*:refs/remotes/origin/*")
     spec.force?.should be_true
     spec.pattern?.should be_true
     spec.map_source("refs/heads/feature/x").should eq("refs/remotes/origin/feature/x")
     spec.map_source("refs/tags/v1").should be_nil
     spec.map_destination("refs/remotes/origin/main").should eq("refs/heads/main")
-    Git::Refspec.parse("refs/heads/main:refs/heads/main").map_source("refs/heads/main").should eq("refs/heads/main")
-    Git::Refspec.parse("refs/heads/*/suffix:refs/x/*").map_source("refs/heads/a/b/suffix").should eq("refs/x/a/b")
-    Git::Refspec.parse("^refs/heads/secret").negative?.should be_true
-    Git::Refspec.parse(":refs/heads/gone", fetch: false).source.should eq("")
-    Git::Refspec.dwim("main", ["refs/tags/main", "refs/heads/main"]).should eq("refs/tags/main")
+    Git::Remote::Refspec.parse("refs/heads/main:refs/heads/main").map_source("refs/heads/main").should eq("refs/heads/main")
+    Git::Remote::Refspec.parse("refs/heads/*/suffix:refs/x/*").map_source("refs/heads/a/b/suffix").should eq("refs/x/a/b")
+    Git::Remote::Refspec.parse("^refs/heads/secret").negative?.should be_true
+    Git::Remote::Refspec.parse(":refs/heads/gone", fetch: false).source.should eq("")
+    Git::RefName.expand("main", ["refs/tags/main", "refs/heads/main"]).should eq("refs/tags/main")
     ["refs/heads/*:refs/remotes/*/x/*", "refs/heads/*:refs/remotes/main", "refs/heads/a..b:x", "^a:b"].each do |bad|
-      expect_raises(Git::Error) { Git::Refspec.parse(bad) }
+      expect_raises(Git::Error) { Git::Remote::Refspec.parse(bad) }
     end
   end
 end

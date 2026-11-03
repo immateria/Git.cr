@@ -13,8 +13,8 @@ module Git
     getter name : String
     getter urls : Array(String)
     getter push_urls : Array(String)
-    getter fetch_refspecs : Array(Refspec)
-    getter push_refspecs : Array(Refspec)
+    getter fetch_refspecs : Array(Remote::Refspec)
+    getter push_refspecs : Array(Remote::Refspec)
     getter tag_mode : TagMode
     getter prune : Bool?
 
@@ -73,8 +73,8 @@ module Git
                  else                  Remote::TagMode::Auto
                  end
       Remote.new(name, values.call("url"), values.call("pushurl"),
-        values.call("fetch").map { |spec| Refspec.parse(spec, fetch: true) },
-        values.call("push").map { |spec| Refspec.parse(spec, fetch: false) },
+        values.call("fetch").map { |spec| Remote::Refspec.parse(spec, fetch: true) },
+        values.call("push").map { |spec| Remote::Refspec.parse(spec, fetch: false) },
         tag_mode, config.boolean?(prefix + "prune"))
     end
 
@@ -89,7 +89,7 @@ module Git
       raise Error.new("invalid Git remote name #{name.inspect}") unless Remote.valid_name?(name)
       raise Error.new("Git remote #{name} already exists") if remote?(name)
       specs = fetch || [Remote.default_fetch_refspec(name)]
-      specs.each { |spec| Refspec.parse(spec, fetch: true) }
+      specs.each { |spec| Remote::Refspec.parse(spec, fetch: true) }
       Config::FileEditor.set(local_config_path, "remote.#{name}.url", url)
       specs.each { |spec| Config::FileEditor.add(local_config_path, "remote.#{name}.fetch", spec) }
       case tag_mode
@@ -124,7 +124,7 @@ module Git
       end
       tracking = existing.fetch_refspecs.compact_map(&.destination)
       references("refs/").each do |ref|
-        next unless tracking.any? { |destination| Refspec.matches?(destination, ref.name, destination.includes?('*')) }
+        next unless tracking.any? { |destination| Remote::Refspec.matches?(destination, ref.name, destination.includes?('*')) }
         if ref.symbolic?
           delete_symbolic_ref(ref.name)
         elsif oid = ref.oid
@@ -170,6 +170,20 @@ module Git
       end
       change_refs(changes, max_changes: changes.size) unless changes.empty?
       symbolic.each { |name, target| set_symbolic_ref(name, target) }
+    end
+
+    # The remote-tracking ref for a branch's upstream merge ref, by the
+    # remote's fetch refspecs ("." is the local repository).
+    def upstream_tracking_ref(remote_name : String, merge_ref : String) : String?
+      return merge_ref if remote_name == "."
+      remote = remote?(remote_name) || return nil
+      remote.fetch_refspecs.each do |spec|
+        next if spec.negative?
+        if mapped = spec.map_source(merge_ref)
+          return mapped
+        end
+      end
+      nil
     end
 
     # The upstream of a local branch: {remote name, merge ref}.

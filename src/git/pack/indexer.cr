@@ -7,7 +7,7 @@ module Git
     # bases outside the pack) are completed by appending the bases from a
     # caller-supplied object source, as `index-pack --fix-thin` does.
     class Indexer
-      record Result, checksum : String, entries : Array(Entry), appended : Int32,
+      record Result, checksum : String, entries : Array(IndexEntry), appended : Int32,
         types : Hash(String, String)
 
       DEFAULT_MAX_OBJECT_BYTES = 2_147_483_646_i64
@@ -15,7 +15,7 @@ module Git
       private struct Parsed
         getter offset : Int64
         getter data_offset : Int64
-        getter type_code : Int32
+        getter entry_type : EntryType
         getter size : Int64
         getter base_offset : Int64
         getter base_oid : String?
@@ -23,11 +23,11 @@ module Git
         property oid : String?
         property type : String?
 
-        def initialize(@offset, @data_offset, @type_code, @size, @base_offset, @base_oid, @crc, @oid, @type)
+        def initialize(@offset, @data_offset, @entry_type, @size, @base_offset, @base_oid, @crc, @oid, @type)
         end
 
         def delta? : Bool
-          @type_code >= 6
+          @entry_type.delta?
         end
       end
 
@@ -80,7 +80,7 @@ module Git
           reader.begin_entry
           offset = reader.position
           byte = reader.read_byte || raise Git::Error.new("Git pack stream truncated")
-          type_code = ((byte >> 4) & 7).to_i32
+          entry_type = EntryType.from_code(((byte >> 4) & 7).to_i32)
           size = (byte & 0x0f).to_i64
           shift = 4
           while (byte & 0x80) != 0
@@ -91,9 +91,8 @@ module Git
           end
           base_offset = -1_i64
           base_oid = nil.as(String?)
-          case type_code
-          when 1, 2, 3, 4
-          when 6
+          case entry_type
+          when .ofs_delta?
             byte = reader.read_byte || raise Git::Error.new("Git pack stream truncated")
             distance = (byte & 0x7f).to_i64
             while (byte & 0x80) != 0
@@ -103,21 +102,20 @@ module Git
             end
             base_offset = offset - distance
             raise Git::Error.new("invalid Git delta base offset") unless distance > 0 && by_offset.has_key?(base_offset)
-          when 7
+          when .ref_delta?
             base_oid = reader.read_exact(@format.bytesize).hexstring
           else
-            raise Git::Error.new("unsupported Git pack entry type #{type_code}")
           end
           data_offset = reader.position
           data = reader.inflate(size, @max_object_bytes)
           oid = nil.as(String?)
           type = nil.as(String?)
-          unless type_code >= 6
-            type = ObjectDatabase::PackFiles.type_name(type_code)
+          unless entry_type.delta?
+            type = entry_type.object_type
             oid = ObjectId.digest(type, data, @format)
           end
           by_offset[offset] = entries.size
-          entries << Parsed.new(offset, data_offset, type_code, size, base_offset, base_oid,
+          entries << Parsed.new(offset, data_offset, entry_type, size, base_offset, base_oid,
             reader.crc, oid, type)
         end
         body = reader.body_checksum
@@ -164,7 +162,7 @@ module Git
           raise Git::Error.new("Git pack has #{remaining} unresolved deltas") unless remaining == 0
         end
         checksum = finish_checksum(file, appended > 0)
-        result = entries.map { |entry| Entry.new(entry.oid.not_nil!, entry.offset, entry.crc) }
+        result = entries.map { |entry| IndexEntry.new(entry.oid.not_nil!, entry.offset, entry.crc) }
         Result.new(checksum.hexstring, result, appended, types)
       end
 
@@ -181,7 +179,7 @@ module Git
           entry = entries[index]
           next if entry.oid
           delta = read_data(file, entry)
-          result = ObjectDatabase::PackFiles.apply_delta(base, delta, @max_object_bytes)
+          result = Delta.apply(base, delta, @max_object_bytes)
           oid = ObjectId.digest(base_type, result, @format)
           entry.oid = oid
           entry.type = base_type
@@ -235,25 +233,17 @@ module Git
         appended = [] of Parsed
         bases.each do |(oid, type, content)|
           offset = file.pos.to_i64
-          type_code = ObjectDatabase::PackFiles.type_code(type)
-          header = IO::Memory.new(16)
+          entry_type = EntryType.for_object(type)
           size = content.bytesize.to_i64
-          byte = ((type_code << 4) | (size & 0x0f)).to_u8
-          rest = size >> 4
-          while rest != 0
-            header.write_byte(byte | 0x80)
-            byte = (rest & 0x7f).to_u8
-            rest >>= 7
-          end
-          header.write_byte(byte)
+          header = EntryHeader.encode(entry_type, size)
           compressed = IO::Memory.new
           Compress::Zlib::Writer.open(compressed) { |zlib| zlib.write(content.to_slice) }
-          crc = Digest::CRC32.update(header.to_slice, Digest::CRC32.initial)
+          crc = Digest::CRC32.update(header, Digest::CRC32.initial)
           crc = Digest::CRC32.update(compressed.to_slice, crc)
           data_offset = offset + header.size
-          file.write(header.to_slice)
+          file.write(header)
           file.write(compressed.to_slice)
-          appended << Parsed.new(offset, data_offset, type_code, size, -1_i64, nil, crc, oid, type)
+          appended << Parsed.new(offset, data_offset, entry_type, size, -1_i64, nil, crc, oid, type)
         end
         file.seek(8)
         file.write_bytes((existing + bases.size).to_u32, IO::ByteFormat::BigEndian)

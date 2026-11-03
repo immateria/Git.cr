@@ -40,6 +40,25 @@ module Git
       end
     end
 
+    # Decode a raw tree body: yields each entry's mode ("40000" for trees,
+    # however it is stored), name and object ID, in stored order.
+    def self.each_entry(raw : String, format : ObjectId::Format, & : String, String, String ->) : Nil
+      position = 0
+      size = raw.bytesize
+      while position < size
+        space = raw.byte_index(' '.ord, position) || raise Error.new("Git tree mode truncated")
+        nul = raw.byte_index(0, space + 1) || raise Error.new("Git tree name truncated")
+        raise Error.new("Git tree OID truncated") if nul + 1 + format.bytesize > size
+        mode = raw.byte_slice(position, space - position)
+        mode = "40000" if mode == "040000"
+        name = raw.byte_slice(space + 1, nul - space - 1)
+        raise Error.new("invalid Git tree entry name") if name.empty? || name.includes?('/')
+        oid = raw.to_slice[nul + 1, format.bytesize].hexstring
+        yield mode, name, oid
+        position = nul + 1 + format.bytesize
+      end
+    end
+
     private def self.canonical_mode(mode : String) : String
       case mode
       when "040000", "40000"                      then "40000"

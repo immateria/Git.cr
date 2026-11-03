@@ -19,6 +19,12 @@ module Git
       end
     end
 
+    # The all-zero ID Git uses for "no object" (a ref that does not exist
+    # yet, in reflogs and push commands).
+    def self.zero(format : Format) : String
+      "0" * format.hexsize
+    end
+
     def self.valid!(oid : String, format : Format = Format::SHA1) : String
       unless oid.bytesize == format.hexsize && oid.each_byte.all? { |byte| (48 <= byte <= 57) || (97 <= byte <= 102) }
         raise Git::Error.new("unsupported Git OID (#{format == Format::SHA1 ? "SHA-1" : "SHA-256"} required)")
