@@ -180,9 +180,11 @@ the same oracle Git on macOS 15.4.1 arm64. That sets the `crystal:` floor:
 1.12.0 and earlier put `system_fsync` on the File layer, where a bare
 `IO::FileDescriptor` has no `fsync`.
 
-On 2026-11-03 all 675 examples passed with Crystal 1.22.2 and Git 2.47.3 built
-from source on Linux x86-64 (Ubuntu 24.04), including the pack, remote,
-transport, porcelain and maintenance specs. A native clone of
+On 2026-11-03 all 678 examples passed with Crystal 1.13.3, 1.21.1 and 1.22.2
+and Git 2.47.3 built from source on Linux x86-64 (Ubuntu 24.04), including the
+pack, remote, transport, porcelain and maintenance specs. Crystal 1.13 resolves
+the oracle's `git` through the restricted `PATH` it is given, so set
+`GIT_ORACLE_BINARY` to the 2.47.3 binary's full path there. A native clone of
 `github.com/crystal-lang/crystal` (depth 1, 2,749 files) through an HTTPS
 CONNECT proxy passed `git fsck` and left a clean `git status`.
 

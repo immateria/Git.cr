@@ -1,3 +1,5 @@
+require "file_utils"
+
 module Git
   class Repository
     # `git clone`: create a repository at path (an empty or missing
@@ -21,12 +23,35 @@ module Git
       end
       raise Error.new("invalid Git remote name #{remote_name.inspect}") unless Remote.valid_name?(remote_name)
       target = File.expand_path(path)
+      created = false
       if File.exists?(target)
         raise Error.new("Git clone destination #{path} exists and is not an empty directory") unless Dir.exists?(target) && Dir.empty?(target)
       else
         Dir.mkdir_p(target)
+        created = true
       end
+      begin
+        clone_into(transport, target, stored_url, bare: bare, branch: branch, depth: depth,
+          remote_name: remote_name, checkout: checkout, tags: tags, actor: actor,
+          progress: progress, max_files: max_files, max_search_entries: max_search_entries,
+          check: check)
+      rescue ex
+        # As Git does, remove what the failed clone wrote: the directory it
+        # created, or the contents of the empty directory it was given.
+        if created
+          FileUtils.rm_rf(target)
+        else
+          Dir.children(target).each { |child| FileUtils.rm_rf(File.join(target, child)) } if Dir.exists?(target)
+        end
+        raise ex
+      end
+    end
 
+    private def self.clone_into(transport : Transport::Base, target : String, stored_url : String, *,
+                                bare : Bool, branch : String?, depth : Int32?, remote_name : String,
+                                checkout : Bool, tags : Remote::TagMode, actor : Signature?,
+                                progress : Proc(String, Nil)?, max_files : Int32,
+                                max_search_entries : Int32, check : Proc(Nil)?) : Repository
       # Learn the object format and the remote HEAD before creating anything.
       connection = transport.connect(Transport::Service::UploadPack)
       format, advertised = begin

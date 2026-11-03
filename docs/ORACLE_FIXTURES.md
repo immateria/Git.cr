@@ -82,6 +82,9 @@ installation; the native code never starts them itself.
 | REMOTE-O06 | `remote_spec.cr` | Remote add/rename/remove match `git remote -v`, `git config` and tracking refs |
 | REMOTE-O07 | `remote_spec.cr` | Refspec parsing, pattern mapping, DWIM and refusals |
 | TRANSPORT-O01..O04 | `transport_spec.cr` | Round trips through `git upload-pack`/`receive-pack` as programs, through `git daemon`, and through ssh (argument layout and quoting checked by a recording stand-in); ssh URL parsing |
+| TRANSPORT-O05 | `transport_spec.cr` | HTTP credentials are requested after a 401 and retried; wrong ones fail; credentials are never sent to a redirect target on another origin |
+| TRANSPORT-O06 | `transport_spec.cr` | Advertised ref names that are not valid refs are ignored |
+| REMOTE-O08 | `remote_spec.cr` | A failed clone removes the directory it created, or empties the empty directory it was given, and never touches a non-empty one |
 | PORCELAIN-O01 | `porcelain_spec.cr` | `rev_parse` equals `rev-parse --verify` for 29 expressions and fails where Git fails for 8 |
 | PORCELAIN-O02 | `porcelain_spec.cr` | `rev_list` equals `rev-list` for `A..B`, `A...B`, `^A B`; `ahead_behind` equals `--left-right --count` |
 | PORCELAIN-O03 | `porcelain_spec.cr` | Branch listing, delete, rename and tag delete leave refs, reflogs and config as Git does |

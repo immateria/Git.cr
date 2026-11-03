@@ -350,3 +350,25 @@ describe "Git remote operations" do
     end
   end
 end
+
+describe "Git clone failure" do
+  it "REMOTE-O08 removes what a failed clone created" do
+    base = File.tempname("git-clone-failure", dir: File.realpath(Dir.tempdir))
+    Dir.mkdir_p(base)
+    begin
+      fresh = File.join(base, "fresh")
+      expect_raises(Git::Error) { Git::Repository.clone(File.join(base, "missing"), fresh) }
+      File.exists?(fresh).should be_false
+      given = File.join(base, "given")
+      Dir.mkdir(given)
+      expect_raises(Git::Error) { Git::Repository.clone(File.join(base, "missing"), given) }
+      Dir.exists?(given).should be_true
+      Dir.empty?(given).should be_true
+      File.write(File.join(given, "keep.txt"), "mine")
+      expect_raises(Git::Error, /not an empty directory/) { Git::Repository.clone(File.join(base, "missing"), given) }
+      File.read(File.join(given, "keep.txt")).should eq("mine")
+    ensure
+      FileUtils.rm_rf(base)
+    end
+  end
+end
