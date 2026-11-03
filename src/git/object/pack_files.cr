@@ -124,6 +124,79 @@ module Git
         nil
       end
 
+      # The pack and offset of an object without verifying its entry CRC.
+      def locate(oid : String) : {String, Int64}?
+        wanted = oid.hexbytes
+        index_paths.each do |idx_path|
+          index = load_index(idx_path) || next
+          if row = index.lookup(wanted)
+            return {index.pack_path, index.offset_at(row)}
+          end
+        end
+        nil
+      end
+
+      # Type and inflated size of the object at offset, from entry headers
+      # and delta headers only. base_type names REF_DELTA bases in other
+      # packs. The result is not verified against the object ID.
+      def entry_info(file : String, offset : Int64, base_type : Proc(String, String)) : {String, Int64}
+        index = @mutex.synchronize { @indexes.values.find { |candidate| candidate.pack_path == file } }
+        File.open(file) do |io|
+          size = nil.as(Int64?)
+          current = offset
+          hops = 0
+          loop do
+            raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < io.size - @object_format.bytesize
+            io.seek(current)
+            header = PackFiles.read_entry_header(io, current, @object_format.bytesize)
+            return {PackFiles.type_name(header.type_code), size || header.size} if header.type_code < 6
+            if size.nil?
+              io.seek(header.data_offset)
+              prefix = Compress::Zlib::Reader.open(io) do |zlib|
+                buffer = IO::Memory.new
+                IO.copy(zlib, buffer, 20)
+                buffer.to_slice
+              end
+              position = 0
+              2.times do |field|
+                value = 0_i64
+                shift = 0
+                loop do
+                  raise Git::Error.new("truncated Git delta header") if position >= prefix.size || shift > 56
+                  byte = prefix[position]
+                  position += 1
+                  value |= (byte & 0x7f).to_i64 << shift
+                  shift += 7
+                  break if (byte & 0x80) == 0
+                end
+                size = value if field == 1
+              end
+            end
+            hops += 1
+            raise Git::Error.new("Git delta chain too deep") if hops >= @max_delta_depth
+            if base_offset = header.base_offset
+              current = base_offset
+            else
+              base_oid = header.base_oid.not_nil!
+              if index && (row = index.lookup(base_oid.hexbytes))
+                current = index.offset_at(row)
+              else
+                return {base_type.call(base_oid), size.not_nil!}
+              end
+            end
+          end
+        end
+      rescue ex : IO::Error | Compress::Zlib::Error
+        raise Git::Error.new("Git packed object header invalid: #{ex.class}")
+      end
+
+      # Whether some pack index lists the object; nothing is read from the
+      # pack itself.
+      def contains?(oid : String) : Bool
+        wanted = oid.hexbytes
+        index_paths.any? { |idx_path| load_index(idx_path).try(&.lookup(wanted)) }
+      end
+
       # Every object ID in every readable pack, in pack-name then ID order.
       # Duplicates across packs are reported once.
       def each_oid(& : String ->) : Nil
@@ -150,13 +223,14 @@ module Git
         directory = self.directory
         info = File.info?(directory, follow_symlinks: false)
         return [] of String unless info
-        raise Git::Error.new("Git pack directory redirected") unless info.directory? && File.realpath(directory) == directory
+        raise Git::Error.new("Git pack directory redirected") unless info.directory?
         @mutex.synchronize do
           cached = @listing
           previous = @listing_info
           if cached && previous && previous.same_file?(info) && previous.modification_time == info.modification_time
             return cached
           end
+          raise Git::Error.new("Git pack directory redirected") unless File.realpath(directory) == directory
           names = [] of String
           Dir.each_child(directory) do |entry|
             next unless entry.matches?(@pack_filename)
@@ -408,9 +482,13 @@ module Git
       # bases found in the same pack are followed iteratively; other
       # REF_DELTA bases are delegated to resolve_oid.
       def decode_pack(file : String, offset : Int64, max : Int32, depth : Int32, seen : Set(String), resolve_oid : Proc(String, Int32, Set(String), {String, String}), &check : -> Nil) : {String, String}
-        raise Git::Error.new("Git pack redirected") if File.symlink?(file) || File.realpath(file) != file
         raise Git::Error.new("Git delta chain too deep") if depth >= @max_delta_depth
         index = @mutex.synchronize { @indexes.values.find { |candidate| candidate.pack_path == file } }
+        # A pack reached through a verified index had its path checked when
+        # the index was loaded and its identity on this lookup.
+        unless index
+          raise Git::Error.new("Git pack redirected") if File.symlink?(file) || File.realpath(file) != file
+        end
         File.open(file) do |io|
           raise Git::Error.new("unsupported Git pack") unless read_bytes_exact(io, 4).hexstring == "5041434b"
           ver = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)

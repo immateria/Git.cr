@@ -138,13 +138,42 @@ module Git
       seen.delete(oid)
     end
 
+    # Type and size of an object from its stored headers, without
+    # inflating or hashing its contents. Not verified against the ID.
+    def object_header(oid : String, depth : Int32 = 0, &check : -> Nil) : {String, Int64}
+      raise Git::Error.new("Git object reference depth exceeded") if depth >= PackFiles::MAX_DELTA_DEPTH
+      ObjectId.valid!(oid, @object_format)
+      check.call
+      loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
+      if File.file?(loose)
+        raise Git::Error.new("Git object file redirected") if File.symlink?(loose)
+        header = File.open(loose) do |file|
+          Compress::Zlib::Reader.open(file) do |zlib|
+            buffer = IO::Memory.new
+            while (byte = zlib.read_byte) && byte != 0
+              buffer.write_byte(byte)
+              raise Git::Error.new("invalid loose Git object") if buffer.size > 64
+            end
+            buffer.to_s
+          end
+        end
+        type, length = parse_object_header(header)
+        return {type, length.to_i64}
+      end
+      location = @pack_files.locate(oid) || raise Git::Error.new("Git object not available locally (no alternates/promisor support)")
+      resolver = ->(base : String) { object_header(base, depth + 1) { check.call }[0] }
+      @pack_files.entry_info(location[0], location[1], resolver)
+    rescue ex : Compress::Zlib::Error | IO::Error
+      raise Git::Error.new("Git object header unreadable: #{ex.class}")
+    end
+
     # Whether the object is stored loose or in a pack, without reading or
     # verifying its contents.
     def has_object?(oid : String) : Bool
       ObjectId.valid!(oid, @object_format)
       loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
       return true if File.file?(loose)
-      !@pack_files.find_packed(oid).nil?
+      @pack_files.contains?(oid)
     end
 
     # Every loose and packed object ID, each once, in no particular order.

@@ -129,3 +129,96 @@ describe "Git::Pack" do
     end
   end
 end
+
+describe "Git::Pack::Delta" do
+  it "PACK-D01 round-trips encoded deltas through the pack reader's delta applier" do
+    random = Random.new(42)
+    sources = [
+      Bytes.new(0),
+      Bytes.new(15) { |i| i.to_u8 },
+      Bytes.new(200_000) { random.rand(256).to_u8 },
+      ("abcdefghijklmnop" * 9000).to_slice,
+    ]
+    sources.each do |source|
+      targets = [
+        source.dup,
+        Bytes.new(0),
+        Bytes.new(source.size // 2) { |i| source[i] },
+        Bytes.new(source.size + 1000) { |i| i < 500 ? 7_u8 : (i - 500 < source.size ? source[i - 500] : 9_u8) },
+        Bytes.new(source.size) { |i| i % 997 == 0 ? (source[i] ^ 0xff) : source[i] },
+        Bytes.new(300_000) { |i| source.empty? ? 1_u8 : source[(i * 7) % source.size] },
+      ]
+      targets.each do |target|
+        delta = Git::Pack::Delta.encode(source, target).not_nil!
+        Git::ObjectDatabase::PackFiles.apply_delta(String.new(source), String.new(delta), Int64::MAX).to_slice.should eq(target)
+      end
+    end
+    big = Bytes.new(100_000) { random.rand(256).to_u8 }
+    edited = big.dup
+    edited[50_000] ^= 1
+    Git::Pack::Delta.encode(big, edited).not_nil!.size.should be < 64
+    Git::Pack::Delta.encode(big, edited, max_size: 10).should be_nil
+  end
+end
+
+describe "Git::Pack::Builder" do
+  ["sha1", "sha256"].each do |format|
+    it "PACK-O05 builds delta-compressed full and thin packs that Git accepts (#{format})" do
+      GitOracle.with_repo(format: format) do |root|
+        pack_history(root, 14)
+        repo = Git::Repository.new(root)
+        head = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
+        items = repo.reachable_objects([head])
+        io = IO::Memory.new
+        stats = Git::Pack::Builder.new(repo).write(io, items)
+        stats.objects.should eq(items.size)
+        stats.deltas.should be > 0
+        stats.thin_deltas.should eq(0)
+        undeltified = Git::Pack::Builder.new(repo, window: 0).write(IO::Memory.new, items)
+        stats.bytes.should be < undeltified.bytes
+
+        base = File.dirname(root)
+        empty = File.join(base, "empty.git")
+        GitOracle.run(base, "init", "-q", "--bare", "--object-format=#{format}", empty)
+        GitOracle.run(empty, "index-pack", "--stdin", "--strict", input: io.to_s)
+        GitOracle.run(empty, "update-ref", "refs/heads/main", head)
+        GitOracle.run(empty, "fsck", "--strict", "--no-dangling")
+        GitOracle.run(empty, "rev-list", "--objects", "--all").stdout.lines.size.should eq(items.size)
+
+        # A thin pack of the last commit against its parent.
+        parent = GitOracle.run(root, "rev-parse", "HEAD~1").stdout.strip
+        new_items = repo.reachable_objects([head], [parent])
+        old_items = repo.reachable_objects([parent])
+        thin_io = IO::Memory.new
+        thin = Git::Pack::Builder.new(repo).write(thin_io, new_items, old_items)
+        thin.thin_deltas.should be > 0
+        partial = File.join(base, "partial.git")
+        GitOracle.run(base, "clone", "-q", "--bare", "--no-local", empty, partial)
+        GitOracle.run(partial, "update-ref", "refs/heads/main", parent)
+        GitOracle.run(partial, "repack", "-adq")
+        GitOracle.run(partial, "prune", "--expire=now")
+        GitOracle.run(partial, "index-pack", "--stdin", "--fix-thin", input: thin_io.to_s)
+        GitOracle.run(partial, "update-ref", "refs/heads/main", head)
+        GitOracle.run(partial, "fsck", "--strict", "--no-dangling")
+      end
+    end
+  end
+end
+
+describe "Git object headers" do
+  it "PACK-O06 reports type and size like git cat-file for loose, packed and deltified objects" do
+    GitOracle.with_repo do |root|
+      pack_history(root, 10)
+      repo = Git::Repository.new(root)
+      check = ->(label : String) do
+        GitOracle.run(root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype) %(objectsize)").stdout.lines.each do |line|
+          oid, type, size = line.split
+          {label, oid, repo.object_header(oid)}.should eq({label, oid, {type, size.to_i64}})
+        end
+      end
+      check.call("loose")
+      GitOracle.run(root, "repack", "-adf", "--depth=20", "--window=20")
+      check.call("packed")
+    end
+  end
+end

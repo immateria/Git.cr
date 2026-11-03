@@ -38,6 +38,12 @@ module GitOracle
   # cannot change the fixture semantics.
   def self.run(root : String, *args : String, input : String? = nil, check : Bool = true,
                extra_env : Hash(String, String)? = nil) : Result
+    run_args(root, args.to_a, input: input, check: check, extra_env: extra_env)
+  end
+
+  # The same as run, with the arguments as an array.
+  def self.run_args(root : String, args : Array(String), input : String? = nil, check : Bool = true,
+                    extra_env : Hash(String, String)? = nil) : Result
     verify_version!
     home = File.join(File.dirname(root), "oracle-home")
     Dir.mkdir_p(home)
@@ -61,7 +67,7 @@ module GitOracle
     extra_env.try &.each { |key, value| environment[key] = value }
     output = IO::Memory.new
     errors = IO::Memory.new
-    status = Process.run(GIT_BINARY, ["-C", root] + args.to_a,
+    status = Process.run(GIT_BINARY, ["-C", root] + args,
       env: environment, clear_env: true, input: input ? IO::Memory.new(input) : Process::Redirect::Close,
       output: output, error: errors)
     result = Result.new(output.to_s, errors.to_s, status.exit_code)
