@@ -110,7 +110,7 @@ module Git
     end
 
     def object(oid : String, max_bytes : Int32, depth : Int32 = 0, seen = Set(String).new, &check : -> Nil) : {String, String}
-      raise Git::Error.new("Git object reference depth exceeded") if depth >= 24 || seen.includes?(oid)
+      raise Git::Error.new("Git object reference depth exceeded") if depth >= PackFiles::MAX_DELTA_DEPTH || seen.includes?(oid)
       seen.add(oid)
       ObjectId.valid!(oid, @object_format)
       check.call
@@ -136,6 +136,42 @@ module Git
       {type, content}
     ensure
       seen.delete(oid)
+    end
+
+    # Whether the object is stored loose or in a pack, without reading or
+    # verifying its contents.
+    def has_object?(oid : String) : Bool
+      ObjectId.valid!(oid, @object_format)
+      loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
+      return true if File.file?(loose)
+      !@pack_files.find_packed(oid).nil?
+    end
+
+    # Every loose and packed object ID, each once, in no particular order.
+    def each_oid(& : String ->) : Nil
+      seen = Set(String).new
+      objects = File.join(@common, "objects")
+      if Dir.exists?(objects)
+        Dir.each_child(objects) do |fanout|
+          next unless fanout.bytesize == 2 && fanout.each_char.all? { |c| c.ascii_number? || ('a'..'f').includes?(c) }
+          directory = File.join(objects, fanout)
+          next if File.symlink?(directory) || !Dir.exists?(directory)
+          Dir.each_child(directory) do |rest|
+            next unless rest.bytesize == @object_format.hexsize - 2 && rest.each_char.all? { |c| c.ascii_number? || ('a'..'f').includes?(c) }
+            oid = fanout + rest
+            yield oid if seen.add?(oid)
+          end
+        end
+      end
+      @pack_files.each_oid { |oid| yield oid if seen.add?(oid) }
+    end
+
+    # The pack directory and its cached indexes.
+    getter pack_files : PackFiles
+
+    # Drop cached pack listings after a pack was added or removed.
+    def refresh_packs : Nil
+      @pack_files.refresh
     end
 
     private def parse_object_header(header : String) : {String, Int32}
