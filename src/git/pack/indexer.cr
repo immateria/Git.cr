@@ -39,6 +39,7 @@ module Git
                      @max_objects : Int64 = 40_000_000,
                      @local_object : Proc(String, {String, String}?)? = nil,
                      @fix_thin : Bool = false,
+                     @check_collisions : Bool = true,
                      @check : Proc(Nil)? = nil)
         raise ArgumentError.new("invalid Git pack indexing budgets") if @max_object_bytes < 1 || @max_objects < 1
       end
@@ -202,7 +203,7 @@ module Git
                        local : Bool = false) : Nil
         raise Git::Error.new("Git pack contains duplicate object #{oid}") if types.has_key?(oid)
         types[oid] = type
-        return if local
+        return if local || !@check_collisions
         if source = @local_object
           if existing = source.call(oid)
             unless existing[0] == type && existing[1] == content

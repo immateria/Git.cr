@@ -107,6 +107,18 @@ module Git
           end
         end
 
+        @rows_by_offset : Hash(Int64, Int64)? = nil
+
+        # The object ID stored at an entry offset.
+        def oid_at_offset(offset : Int64) : String?
+          rows = @rows_by_offset ||= begin
+            map = Hash(Int64, Int64).new(initial_capacity: @count.to_i)
+            @count.times { |row| map[offset_at(row)] = row }
+            map
+          end
+          rows[offset]?.try { |row| oid_at(row).hexstring }
+        end
+
         # The first byte after the entry at offset: the next entry's start or
         # the pack trailer.
         def entry_end(offset : Int64) : Int64
@@ -214,6 +226,44 @@ module Git
         end
       rescue ex : IO::Error | Compress::Zlib::Error
         raise Git::Error.new("Git packed object header invalid: #{ex.class}")
+      end
+
+      # A stored pack entry that can be copied into another pack: its header,
+      # its delta base by object ID (for OFS_DELTA too) and the bounds of
+      # its compressed data. The entry CRC has been verified.
+      record RawEntry, pack_path : String, offset : Int64, finish : Int64,
+        header : EntryHeader, base_oid : String?
+
+      def raw_entry(oid : String) : RawEntry?
+        wanted = oid.hexbytes
+        index_paths.each do |idx_path|
+          index = load_index(idx_path) || next
+          row = index.lookup(wanted) || next
+          offset = verified_offset(index, row)
+          finish = index.entry_end(offset)
+          header = File.open(index.pack_path) do |io|
+            io.seek(offset)
+            PackFiles.read_entry_header(io, offset, @object_format.bytesize)
+          end
+          base = header.base_oid
+          if base_offset = header.base_offset
+            base = index.oid_at_offset(base_offset) || return nil
+          end
+          return RawEntry.new(index.pack_path, offset, finish, header, base)
+        end
+        nil
+      rescue ex : IO::Error
+        raise Git::Error.new("Git pack entry unreadable: #{ex.class}")
+      end
+
+      # The compressed bytes of a raw entry (after its header).
+      def raw_data(entry : RawEntry) : Bytes
+        File.open(entry.pack_path) do |io|
+          io.seek(entry.header.data_offset)
+          bytes = Bytes.new((entry.finish - entry.header.data_offset).to_i)
+          io.read_fully(bytes)
+          bytes
+        end
       end
 
       # Packed object IDs that start with a lowercase hex prefix.

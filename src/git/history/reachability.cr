@@ -390,6 +390,11 @@ module Git
       @object_database.object_header(oid) { nil }
     end
 
+    # The pack directory reader (for copying stored entries).
+    def pack_files : ObjectDatabase::PackFiles
+      @object_database.pack_files
+    end
+
     # Every loose and packed object ID once.
     def each_object_id(& : String ->) : Nil
       @object_database.each_oid { |oid| yield oid }

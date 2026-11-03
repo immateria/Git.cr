@@ -52,6 +52,48 @@ module Git
         write_entry(7, delta.size.to_i64, base_oid.hexbytes, delta)
       end
 
+      # Copy an entry's already-compressed data from another pack. A delta
+      # is written against base_offset (OFS) or base_oid (REF).
+      def write_raw(type_code : Int32, size : Int64, compressed : Bytes, *,
+                    base_offset : Int64? = nil, base_oid : String? = nil) : {Int64, UInt32}
+        raise Git::Error.new("Git pack holds more objects than its header") if @written >= @count
+        offset = @position
+        @crc = Digest::CRC32.initial
+        if bo = base_offset
+          raise ArgumentError.new("Git OFS_DELTA base must precede the entry") unless bo >= 12 && bo < @position
+          type_code = 6
+        elsif base_oid
+          type_code = 7
+        end
+        header = IO::Memory.new(16)
+        byte = ((type_code << 4) | (size & 0x0f)).to_u8
+        rest = size >> 4
+        while rest != 0
+          header.write_byte(byte | 0x80)
+          byte = (rest & 0x7f).to_u8
+          rest >>= 7
+        end
+        header.write_byte(byte)
+        emit(header.to_slice)
+        if bo = base_offset
+          distance = @position - header.size - bo
+          encoded = Bytes.new(10)
+          index = encoded.size - 1
+          encoded[index] = (distance & 0x7f).to_u8
+          while (distance >>= 7) != 0
+            distance -= 1
+            index -= 1
+            encoded[index] = (0x80 | (distance & 0x7f)).to_u8
+          end
+          emit(encoded[index, encoded.size - index])
+        elsif oid = base_oid
+          emit(oid.hexbytes)
+        end
+        emit(compressed)
+        @written += 1
+        {offset, @crc}
+      end
+
       # Write the trailer; returns the pack checksum as hex.
       def finish : String
         raise Git::Error.new("Git pack object count differs from header (#{@written} of #{@count})") unless @written == @count

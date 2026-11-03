@@ -21,6 +21,9 @@ module Git
         property depth : Int32 = 0
         property offset : Int64 = -1_i64
         property order : Int32
+        # Stored entry copied verbatim; with reused_delta its base is kept.
+        property raw : ObjectDatabase::PackFiles::RawEntry? = nil
+        property reused_delta : Bool = false
 
         def initialize(@oid, @type, @name_hash, @size, @external, @data, @order)
         end
@@ -33,6 +36,7 @@ module Git
                      @delta_size_limit : Int32 = 64 * 1024 * 1024,
                      @max_object_bytes : Int32 = Int32::MAX - 129,
                      @compression_level : Int32 = Compress::Zlib::DEFAULT_COMPRESSION,
+                     @reuse : Bool = true,
                      @check : Proc(Nil)? = nil)
         raise ArgumentError.new("invalid Git pack window") if @window < 0 || @max_depth < 0 || @max_depth > 4095
       end
@@ -63,6 +67,7 @@ module Git
           seen << item.oid
           Candidate.new(item.oid, item.type, Builder.name_hash(item.path), 0, true, nil, -1)
         end
+        plan_reuse(candidates, bases) if @reuse
         find_deltas(candidates + bases) if @window > 0
         writer = Writer.new(io, @repository.object_format, candidates.size, @compression_level)
         entries = [] of Entry
@@ -82,6 +87,30 @@ module Git
                                   &block : Symbol ->) : Nil
         return if candidate.offset >= 0
         @check.try &.call
+        if raw = candidate.raw
+          data = @repository.pack_files.raw_data(raw)
+          base = candidate.base
+          if candidate.reused_delta && base
+            if base.external
+              offset, crc = writer.write_raw(7, raw.header.size, data, base_oid: base.oid)
+              block.call(:thin)
+            else
+              write_candidate(writer, base, entries, &block) if base.offset < 0
+              offset, crc = if @ofs_delta
+                              writer.write_raw(6, raw.header.size, data, base_offset: base.offset)
+                            else
+                              writer.write_raw(7, raw.header.size, data, base_oid: base.oid)
+                            end
+              block.call(:delta)
+            end
+          else
+            offset, crc = writer.write_raw(raw.header.type_code, raw.header.size, data)
+            block.call(:full)
+          end
+          candidate.offset = offset
+          entries << Entry.new(candidate.oid, offset, crc)
+          return
+        end
         if (base = candidate.base) && (delta = candidate.delta)
           if base.external
             offset, crc = writer.write_ref_delta(base.oid, delta)
@@ -105,9 +134,33 @@ module Git
         entries << Entry.new(candidate.oid, offset, crc)
       end
 
+      # Reuse stored entries: undeltified ones as they are, deltas whose
+      # base is also being written (or is a preferred base of a thin pack).
+      private def plan_reuse(candidates : Array(Candidate), bases : Array(Candidate)) : Nil
+        by_oid = {} of String => Candidate
+        candidates.each { |candidate| by_oid[candidate.oid] = candidate }
+        external = {} of String => Candidate
+        bases.each { |candidate| external[candidate.oid] = candidate }
+        candidates.each do |candidate|
+          @check.try &.call
+          entry = @repository.pack_files.raw_entry(candidate.oid) || next
+          if entry.header.type_code < 6
+            next unless ObjectDatabase::PackFiles.type_name(entry.header.type_code) == candidate.type
+            candidate.raw = entry
+          elsif base_oid = entry.base_oid
+            base = by_oid[base_oid]? || external[base_oid]?
+            next unless base && base != candidate
+            candidate.raw = entry
+            candidate.base = base
+            candidate.reused_delta = true
+          end
+        end
+      end
+
       # Sliding-window delta search over trees and blobs.
       private def find_deltas(all : Array(Candidate)) : Nil
-        list = all.select { |candidate| candidate.type == "tree" || candidate.type == "blob" }
+        # Reused deltas neither take new deltas nor serve as bases.
+        list = all.select { |candidate| (candidate.type == "tree" || candidate.type == "blob") && !candidate.reused_delta }
         list.each do |candidate|
           @check.try &.call
           _, size = @repository.object_header(candidate.oid) { @check.try &.call }
@@ -125,10 +178,13 @@ module Git
         list.each do |target|
           @check.try &.call
           data = load(target)
-          if data && !target.external && target.size >= 32 && target.size <= @delta_size_limit
+          if data && !target.external && target.raw.nil? && target.size >= 32 && target.size <= @delta_size_limit
             best_size = (target.size // 2 - @repository.object_format.bytesize).to_i64
             window.each do |base|
               next unless base.type == target.type
+              # A reused delta keeps its stored base; basing a new delta on
+              # it could close a cycle through that base.
+              next if base.reused_delta
               next if base.depth >= @max_depth
               next if base.size < target.size // 32 || target.size < base.size // 32
               source = base.data || next

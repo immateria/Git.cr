@@ -33,7 +33,7 @@ module Git
     # before the .idx that makes the pack visible; existing files are never
     # replaced. The objects are not yet referenced by any ref.
     def receive_pack(input : IO, *, fix_thin : Bool = true, keep : String? = nil,
-                     write_rev : Bool = true,
+                     write_rev : Bool = true, check_collisions : Bool = true,
                      max_object_bytes : Int64 = Pack::Indexer::DEFAULT_MAX_OBJECT_BYTES,
                      max_objects : Int64 = 40_000_000,
                      check : Proc(Nil)? = nil) : Pack::Received
@@ -49,7 +49,8 @@ module Git
           @object_database.has_object?(oid) ? @object_database.object(oid, max_object_bytes.clamp(1_i64, Int32::MAX.to_i64 - 129).to_i32) { check.try &.call } : nil
         end
         indexer = Pack::Indexer.new(@object_format, max_object_bytes: max_object_bytes,
-          max_objects: max_objects, local_object: local, fix_thin: fix_thin, check: check)
+          max_objects: max_objects, local_object: local, fix_thin: fix_thin,
+          check_collisions: check_collisions, check: check)
         result = indexer.index_stream(input, temp)
         if result.entries.empty?
           return Pack::Received.new(nil, nil, nil, result.entries, 0, nil)
