@@ -81,6 +81,32 @@ module Git
           nil
         end
 
+        # Object IDs starting with the hex prefix (even-length bytes plus an
+        # optional high nibble), in sorted order.
+        def each_prefix_match(prefix : String, & : String ->) : Nil
+          return if prefix.empty?
+          first = prefix.byte_slice(0, 2).ljust(2, '0').to_i(16)
+          low = first.zero? ? 0_i64 : fanout(first - 1)
+          high = fanout(first)
+          wanted = prefix.ljust(@hash_size * 2, '0').hexbytes
+          # Lower bound of the zero-padded prefix.
+          while low < high
+            mid = low + (high - low) // 2
+            if (oid_at(mid) <=> wanted) < 0
+              low = mid + 1
+            else
+              high = mid
+            end
+          end
+          row = low
+          while row < @count
+            hex = oid_at(row).hexstring
+            break unless hex.starts_with?(prefix)
+            yield hex
+            row += 1
+          end
+        end
+
         # The first byte after the entry at offset: the next entry's start or
         # the pack trailer.
         def entry_end(offset : Int64) : Int64
@@ -188,6 +214,19 @@ module Git
         end
       rescue ex : IO::Error | Compress::Zlib::Error
         raise Git::Error.new("Git packed object header invalid: #{ex.class}")
+      end
+
+      # Packed object IDs that start with a lowercase hex prefix.
+      def prefix_matches(prefix : String, limit : Int32 = 16) : Array(String)
+        found = [] of String
+        index_paths.each do |idx_path|
+          index = load_index(idx_path) || next
+          index.each_prefix_match(prefix) do |oid|
+            found << oid unless found.includes?(oid)
+            return found if found.size >= limit
+          end
+        end
+        found
       end
 
       # Whether some pack index lists the object; nothing is read from the

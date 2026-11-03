@@ -176,6 +176,30 @@ module Git
       @pack_files.contains?(oid)
     end
 
+    # Object IDs (loose or packed) that start with a lowercase hex prefix,
+    # up to limit of them.
+    def prefix_matches(prefix : String, limit : Int32 = 16) : Array(String)
+      raise Git::Error.new("invalid Git object ID prefix") unless prefix.bytesize >= 1 && prefix.bytesize <= @object_format.hexsize &&
+                                                                  prefix.each_char.all? { |c| c.ascii_number? || ('a'..'f').includes?(c) }
+      found = [] of String
+      if prefix.bytesize >= 2
+        directory = File.join(@common, "objects", prefix.byte_slice(0, 2))
+        if Dir.exists?(directory) && !File.symlink?(directory)
+          rest = prefix.byte_slice(2)
+          Dir.each_child(directory) do |name|
+            next unless name.bytesize == @object_format.hexsize - 2 && name.starts_with?(rest)
+            found << prefix.byte_slice(0, 2) + name
+            break if found.size >= limit
+          end
+        end
+      end
+      @pack_files.prefix_matches(prefix, limit).each do |oid|
+        break if found.size >= limit
+        found << oid unless found.includes?(oid)
+      end
+      found.sort
+    end
+
     # Every loose and packed object ID, each once, in no particular order.
     def each_oid(& : String ->) : Nil
       seen = Set(String).new
