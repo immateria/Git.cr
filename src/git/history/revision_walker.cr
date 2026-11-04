@@ -27,7 +27,7 @@ module Git
           elsif line.starts_with?("parent ")
             parents << ObjectId.valid!(line.byte_slice(7), format)
           elsif line.starts_with?("committer ")
-            close = line.rindex('>')
+            close = line.to_slice.rindex('>'.ord.to_u8)
             if close
               fields = line.byte_slice(close + 1).split(' ', remove_empty: true)
               time = fields[0]?.try(&.to_i64?) || 0_i64
@@ -142,32 +142,53 @@ module Git
         result.reject { |oid| flag?(oid, UNINTERESTING) }
       end
 
-      # The same commits with every commit before its parents, and otherwise
-      # newest first (`git rev-list --topo-order`). date_ordered must be in
-      # the order #commits returns.
-      def topological(date_ordered : Array(String)) : Array(String)
-        rank = {} of String => Int32
-        date_ordered.each_with_index { |oid, index| rank[oid] = index }
-        pending_children = Hash(String, Int32).new(0)
-        date_ordered.each do |oid|
-          commit_node(oid).parents.each { |parent| pending_children[parent] += 1 if rank.has_key?(parent) }
+      # The same commits with every commit before its parents, as Git's
+      # sort_in_topological_order does. by_date picks the next ready commit
+      # by committer date (`git rev-list --date-order`); otherwise ready
+      # commits form a stack, so one line of history is shown before the
+      # next (`--topo-order`). walk_ordered must be in the order #commits
+      # returns.
+      def topological(walk_ordered : Array(String), *, by_date : Bool) : Array(String)
+        # 1 for a listed commit, plus one per listed child not yet emitted.
+        indegree = {} of String => Int32
+        walk_ordered.each { |oid| indegree[oid] = 1 }
+        walk_ordered.each do |oid|
+          commit_node(oid).parents.each { |parent| indegree[parent] += 1 if indegree.has_key?(parent) }
         end
-        # Ready commits, newest last so the next one pops off the end.
-        ready = date_ordered.select { |oid| pending_children[oid] == 0 }.reverse!
+        tips = walk_ordered.select { |oid| indegree[oid] == 1 }
         ordered = [] of String
-        until ready.empty?
-          @check.try &.call
-          oid = ready.pop
-          ordered << oid
-          commit_node(oid).parents.each do |parent|
-            next unless rank.has_key?(parent)
-            pending_children[parent] -= 1
-            next unless pending_children[parent] == 0
-            position = ready.bsearch_index { |queued| rank[queued] < rank[parent] } || ready.size
-            ready.insert(position, parent)
+        if by_date
+          queue = DateQueue.new
+          tips.each { |oid| queue.push(oid, commit_node(oid).time) }
+          until queue.empty?
+            @check.try &.call
+            oid = queue.pop
+            release_parents(oid, indegree) { |parent| queue.push(parent, commit_node(parent).time) }
+            ordered << oid
+          end
+        else
+          # Tips pop in walk order; a commit's last parent is shown first.
+          stack = tips.reverse
+          until stack.empty?
+            @check.try &.call
+            oid = stack.pop
+            release_parents(oid, indegree) { |parent| stack << parent }
+            ordered << oid
           end
         end
         ordered
+      end
+
+      # Count oid as emitted for each listed parent, yielding a parent once
+      # all of its listed children have been emitted.
+      private def release_parents(oid : String, indegree : Hash(String, Int32), & : String ->) : Nil
+        commit_node(oid).parents.each do |parent|
+          count = indegree[parent]? || next
+          next if count == 0
+          indegree[parent] = count - 1
+          yield parent if count - 1 == 1
+        end
+        indegree[oid] = 0
       end
 
       # Every object reachable from wants and not from haves. With
@@ -255,6 +276,48 @@ module Git
           end
         end
         false
+      end
+
+      # Git's `merge-base --all` for two commits: paint down from both,
+      # newest first, collecting commits reached from both until only stale
+      # ones remain queued (paint_down_to_common), then drop any candidate
+      # another candidate reaches (remove_redundant).
+      def merge_bases(one : String, two : String, *, max_nodes : Int32 = 1_000_000) : Array(String)
+        return [one] if one == two
+        left = 1_u8
+        right = 2_u8
+        stale = 4_u8
+        found = 8_u8
+        paint = {one => left, two => right}
+        queue = DateQueue.new
+        queue.push(one, commit_node(one).time)
+        queue.push(two, commit_node(two).time)
+        results = [] of String
+        while queue.any? { |oid| (paint[oid] & stale) == 0 }
+          @check.try &.call
+          oid = queue.pop
+          flags = paint[oid] & (left | right | stale)
+          if flags == (left | right)
+            if (paint[oid] & found) == 0
+              paint[oid] |= found
+              results << oid
+            end
+            flags |= stale
+          end
+          commit_node(oid).parents.each do |parent|
+            current = paint.fetch(parent, 0_u8)
+            next if (current & flags) == flags
+            next unless @repository.has_object?(parent)
+            paint[parent] = current | flags
+            raise Error.new("Git merge-base node budget exceeded") if paint.size > max_nodes
+            queue.push(parent, commit_node(parent).time)
+          end
+        end
+        candidates = results.reject { |oid| (paint[oid] & stale) != 0 }
+        return candidates if candidates.size <= 1
+        candidates.reject do |candidate|
+          candidates.any? { |other| other != candidate && ancestor?(candidate, other, max_nodes: max_nodes) }
+        end
       end
 
       private def walk_tree(root : String, root_path : String, items : Array(ReachableObject)) : Nil

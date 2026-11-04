@@ -3,28 +3,6 @@ require "set"
 module Git
   # Bounded commit-DAG merge bases.
   module History
-    # Computes the reachable ancestors of a commit using bounded iterative
-    # traversal; `cache` deduplicates immutable commit objects across roots.
-    private def self.ancestors(repository : Repository, root : String,
-                               cache : Hash(String, Commit), max_nodes : Int32,
-                               max_bytes : Int32, check : Proc(Nil)?) : Set(String)
-      seen = Set(String).new
-      stack = [root]
-      until stack.empty?
-        check.try &.call
-        oid = stack.pop
-        next unless seen.add?(oid)
-        commit = cache[oid]? || begin
-          raise Error.new("Git merge-base node budget exceeded") if cache.size >= max_nodes
-          loaded = repository.read_commit(oid, max_bytes: max_bytes, check: check)
-          cache[oid] = loaded
-          loaded
-        end
-        commit.parents.each { |parent| stack << parent }
-      end
-      seen
-    end
-
     protected def self.merge_bases(repository : Repository, left : String, right : String, *,
                                    max_nodes : Int32 = 16_384, max_commit_bytes : Int32 = 8_388_608,
                                    check : Proc(Nil)? = nil) : Array(String)
@@ -32,20 +10,7 @@ module Git
       repository.check!
       left_oid = resolve_commit(repository, left, max_commit_bytes, check)
       right_oid = resolve_commit(repository, right, max_commit_bytes, check)
-      cache = {} of String => Commit
-      left_set = ancestors(repository, left_oid, cache, max_nodes, max_commit_bytes, check)
-      right_set = ancestors(repository, right_oid, cache, max_nodes, max_commit_bytes, check)
-      common = left_set & right_set
-      return [] of String if common.empty?
-      # Every ancestor of a common commit is common as well. Therefore a
-      # common node is a best base exactly when no other common node lists
-      # it as a parent. Multiple maximal nodes are valid criss-cross bases.
-      dominated = Set(String).new
-      common.each do |oid|
-        check.try &.call
-        cache[oid].parents.each { |parent| dominated.add(parent) if common.includes?(parent) }
-      end
-      common.reject { |oid| dominated.includes?(oid) }.to_a.sort
+      RevisionWalker.new(repository, check: check).merge_bases(left_oid, right_oid, max_nodes: max_nodes).sort
     end
   end
 

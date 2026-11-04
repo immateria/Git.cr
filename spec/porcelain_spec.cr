@@ -149,4 +149,26 @@ describe "Git porcelain" do
       GitOracle.run(clone, "fsck", "--strict", "--no-dangling")
     end
   end
+
+  it "PORCELAIN-O05 orders log like git rev-list, --date-order and --topo-order" do
+    GitOracle.with_repo do |root|
+      porcelain_history(root)
+      # A merge whose first parent is newer than its second, and a commit
+      # dated before its parent (clock skew).
+      GitOracle.run(root, "checkout", "-qb", "late", "HEAD~3")
+      commit_file(root, "late.txt", "late\n", 1_700_000_250)
+      commit_file(root, "skew.txt", "skew\n", 1_600_000_000)
+      GitOracle.run(root, "checkout", "-q", "main")
+      commit_file(root, "newer.txt", "newer\n", 1_700_000_800)
+      GitOracle.run(root, "merge", "-q", "--no-edit", "late", extra_env: at(1_700_000_900))
+      repo = Git::Repository.new(root)
+      {Git::History::Order::Default => nil, Git::History::Order::Date => "--date-order",
+       Git::History::Order::Topological => "--topo-order"}.each do |order, flag|
+        ["HEAD", "topic..HEAD", "refs/heads/late"].each do |revision|
+          expected = GitOracle.run_args(root, ["rev-list", flag, revision].compact).stdout.split
+          repo.log([revision], order: order, limit: 1_000).commits.map(&.oid).should eq(expected)
+        end
+      end
+    end
+  end
 end
