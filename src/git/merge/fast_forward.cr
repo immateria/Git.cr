@@ -4,11 +4,11 @@ module Git
   end
 
   class Repository
-    # `git merge --ff-only <source>`: advance the current branch to a
-    # descendant commit, only if the tracked worktree is clean and the index
-    # matches HEAD (unlike a hard reset, staged or unstaged edits are
-    # refused). ORIG_HEAD records the previous commit. With actor, the
-    # branch and HEAD reflogs get Git's "merge <source>: Fast-forward".
+    # `git merge --ff-only <source>`: advance the current branch (or detached
+    # HEAD) to a descendant commit, only if the tracked worktree is clean and
+    # the index matches HEAD (unlike a hard reset, staged or unstaged edits are
+    # refused). ORIG_HEAD records the previous commit. With actor, the branch
+    # (when attached) and HEAD reflogs get Git's "merge <source>: Fast-forward".
     # It shares the hard reset's write path, partial-publication error and
     # filesystem limits. No merge commit or conflict handling.
     def fast_forward(source : String, *,
@@ -38,8 +38,9 @@ module Git
       raise Error.new("Git fast-forward refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git fast-forward refuses in-progress rebase") if rebase_state?
       reference, old = head_ref_and_oid
-      raise Error.new("Git fast-forward requires an existing symbolic branch HEAD") unless reference &&
-                                                                                           reference.starts_with?("refs/heads/") && old
+      unless old && (reference.nil? || reference.starts_with?("refs/heads/"))
+        raise Error.new("Git fast-forward requires an existing branch or detached HEAD")
+      end
       target = History.resolve_commit(self, source, max_object_bytes, check)
       bases = merge_bases(old, target, max_nodes: max_history_nodes,
         max_commit_bytes: max_object_bytes, check: check)

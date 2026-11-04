@@ -1,9 +1,9 @@
 module Git
   class Repository
     # Create a two-parent merge commit only after all conflicts have been
-    # resolved into stage-zero index entries. The branch remains unchanged
-    # while conflicts are present; a stale HEAD or rewritten MERGE_HEAD fails.
-    # The reflog line defaults to Git's "commit (merge): <subject>".
+    # resolved into stage-zero index entries. The branch (or detached HEAD)
+    # remains unchanged while conflicts are present; a stale HEAD or rewritten
+    # MERGE_HEAD fails. The reflog line defaults to Git's "commit (merge): <subject>".
     protected def merge_continue(*, author : Signature, committer : Signature,
                                  message : String? = nil, reflog_message : String? = nil,
                                  max_object_bytes : Int32 = 8_388_608,
@@ -30,7 +30,7 @@ module Git
         end
         checked.call
         begin
-          update_ref(branch, oid, expected_oid: ours,
+          update_head_or_branch(branch, oid, expected_oid: ours,
             log: References::LogEntry.new(committer, reflog_message || "commit (merge): #{text.lines.first?.try(&.chomp) || ""}"),
             max_object_bytes: max_object_bytes, check: checked)
         rescue ex

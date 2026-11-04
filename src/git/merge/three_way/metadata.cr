@@ -25,12 +25,12 @@ module Git
     end
 
     private def merge_write_metadata!(admin : DescriptorPath::Directory,
-                                      branch : String, ours : String, theirs : String,
+                                      branch : String?, ours : String, theirs : String,
                                       message : String) : Nil
       # Publish MERGE_HEAD last: its presence implies that original state
       # and the message already exist and are fsynced. Failure in either
       # earlier file creates no apparently valid in-progress merge.
-      contents = {"CRYSTAL_MERGE_ORIG" => "#{branch}\n#{ours}\n",
+      contents = {"CRYSTAL_MERGE_ORIG" => "#{branch || "-"}\n#{ours}\n",
                   "MERGE_MSG" => message, "MERGE_HEAD" => "#{theirs}\n"}
       contents.each do |name, value|
         io = admin.open_file(name, LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o600)
@@ -46,7 +46,7 @@ module Git
     end
 
     private def merge_clear_metadata!(admin : DescriptorPath::Directory,
-                                      branch : String, ours : String, theirs : String) : Nil
+                                      branch : String?, ours : String, theirs : String) : Nil
       raise Error.new("Git merge admin directory redirected") unless admin.attached_at?(@git_dir)
       raise Error.new("Git merge HEAD state changed") unless merge_state? == {branch, ours, theirs}
       {"MERGE_HEAD", "MERGE_MSG", "CRYSTAL_MERGE_ORIG"}.each do |name|

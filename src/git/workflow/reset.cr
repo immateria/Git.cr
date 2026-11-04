@@ -6,7 +6,7 @@ module Git
       Hard
     end
 
-    record Result, reference : String, previous_oid : String, target_oid : String,
+    record Result, reference : String?, previous_oid : String, target_oid : String,
       mode : Mode, changed_index_paths : Array(String),
       changed_worktree_paths : Array(String) = [] of String
 
@@ -28,11 +28,11 @@ module Git
 
   class Repository
     # `git reset [--soft | --mixed | --hard] <source>`: move the current
-    # branch to a commit and optionally reset the index (Mixed) or the index
-    # and worktree (Hard, which discards tracked worktree changes) to its
-    # tree. ORIG_HEAD records the previous commit. With actor, the branch and
-    # HEAD reflogs get Git's "reset: moving to <source>". Detached HEAD and
-    # merge-in-progress state are not supported.
+    # branch (or detached HEAD) to a commit and optionally reset the index
+    # (Mixed) or the index and worktree (Hard, which discards tracked worktree
+    # changes) to its tree. ORIG_HEAD records the previous commit. With actor,
+    # the branch (when attached) and HEAD reflogs get Git's
+    # "reset: moving to <source>". Merge-in-progress state is refused.
     def reset(source : String = "HEAD", *, mode : Reset::Mode = Reset::Mode::Mixed,
               actor : Signature? = nil,
               max_object_bytes : Int32 = 8_388_608,
@@ -54,8 +54,9 @@ module Git
                                                               max_index_bytes < 128 || max_entries < 1 || max_entries > @max_search_entries
       check!
       original_ref, original_oid = head_ref_and_oid
-      raise Error.new("Git reset requires an existing symbolic branch HEAD") unless original_ref &&
-                                                                                    original_ref.starts_with?("refs/heads/") && original_oid
+      unless original_oid && (original_ref.nil? || original_ref.starts_with?("refs/heads/"))
+        raise Error.new("Git reset requires an existing branch or detached HEAD")
+      end
       reference = original_ref
       previous = original_oid
       target = History.resolve_commit(self, source, max_object_bytes, check)
@@ -66,7 +67,7 @@ module Git
             check.try &.call
             raise Error.new("Git reset HEAD changed") unless head_ref_and_oid == {reference, previous}
           end
-          update_ref(reference, target, expected_oid: previous, log: log,
+          update_head_or_branch(reference, target, expected_oid: previous, log: log,
             max_object_bytes: max_object_bytes, check: guard)
         elsif entry = log
           append_head_log(previous, previous, entry)
@@ -110,7 +111,7 @@ module Git
         guard.call
         write_orig_head(previous)
         if target != previous
-          update_ref(reference, target, expected_oid: previous, log: log,
+          update_head_or_branch(reference, target, expected_oid: previous, log: log,
             max_object_bytes: max_object_bytes, check: guard)
           ref_published = true
         elsif entry = log

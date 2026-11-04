@@ -122,9 +122,9 @@ agent tools and controls every grant; see
   clean up an interrupted run. Durable transactions share a per-common-directory advisory lock
   and refuse to start while a journal is pending. This is a recoverable intent
   record, not global crash atomicity or rollback.
-- **Workflows.** `switch` (to a branch; `create:` and `from:` as `-c`;
-  `detach:`; and Git's guess of a remote branch, with an upstream set as
-  `branch.autoSetupMerge` says), `restore`, `restore_staged`, `read_tree`, `reset`
+- **Workflows.** `switch` (to a branch or `"-"`; `create:` and `from:` as `-c`;
+  `force_create:` as `-C`; `detach:`; and Git's guess of a remote branch, with
+  an upstream set as `branch.autoSetupMerge` says), `restore`, `restore_staged`, `read_tree`, `reset`
   (soft, mixed or hard), `fast_forward`, `merge` (then `merge.continue`,
   `merge.abort` and `merge.conflicts`), the single-commit sequencer
   (`cherry_pick` and `revert`, then `cherry_pick.continue` and so on), linear
@@ -143,8 +143,8 @@ agent tools and controls every grant; see
   grammar.
 
 - **History.** `rev_parse` resolves Git's everyday revision grammar: full
-  and abbreviated IDs, ref lookup rules, `@`, `@{n}`, `@{upstream}`, `~`,
-  `^`, `^{type}`, `<rev>:<path>` and `:<path>`. `rev_list` and `log` take
+  and abbreviated IDs, ref lookup rules, `@`, `@{n}`, `@{-n}`, `@{upstream}`,
+  `~`, `^`, `^{type}`, `:/<text>`, `<rev>:<path>` and `:<path>`. `rev_list` and `log` take
   `^A`, `A..B` and `A...B`, and `log` orders by date or topologically
   (`History::Order`); `ahead_behind`, `merge_bases` and `ancestor?` answer
   ancestry questions; `reachable_objects` is `rev-list --objects`. `diff_trees` and `commit_changes` list added,
@@ -157,8 +157,9 @@ agent tools and controls every grant; see
   `git diff --no-color`: xdiff's Myers diff with its heuristics and the indent
   heuristic, function-name hunk headers, exact renames, mode and type changes,
   binary files, symlinks, gitlinks and C-style quoted paths.
-- **Branches and tags.** `branches.list` (`Git::Branch`, with upstream and
-  ahead/behind), `branches.create`, `branches.delete`, `branches.rename`,
+- **Branches and tags.** `branches.list` (`Git::Branch`, with upstream,
+  ahead/behind, and `merged:`/`no_merged:`/`contains:` filters),
+  `branches.create`, `branches.copy`, `branches.delete`, `branches.rename`,
   `branches.upstream` and `branches.set_upstream`; `tags.list`, `tags.create`
   and `tags.delete`.
 - **Packs.** Pack reads cache verified indexes and follow delta chains of any
@@ -216,20 +217,22 @@ results for three public repositories and what they found.
   partial clones, `rebase` pulls, similarity-based rename detection and copies,
   globs and pathspec magic; and full
   attribute and ignore parity (global excludes, case folding and the whole of
-  Git's wildmatch: Git's `?` and `[...]` match single bytes, the library's
-  whole characters). Reftable ref storage, split and sparse indexes, replace
+  Git's wildmatch: `Git::Ignore` matches `?` and `[...]` on single bytes as Git's `wildmatch` does and honours `core.excludesFile`). Reftable ref storage, split and sparse indexes, replace
   refs, grafts and alternate object directories are unsupported.
 - Clone's checkout writes the tree into an empty worktree; it does not apply
-  filters or attributes. Indexes the library writes (clone, checkout,
-  `stage`) carry no stat data, so the next `status`, Git's or the library's,
-  hashes every file; status trusts the stat data in indexes Git wrote.
+  clean/smudge filters. Indexes written by `clone`, `stage` and `stage_file`
+  record 32-bit stat data and preserve non-racy stat entries across updates;
+  `staged_changes` uses valid `TREE` cache-tree extensions to skip unchanged
+  subtrees.
 - Merges use a bounded text algorithm and handle UTF-8 text only. Diffs take
-  any bytes, but apply no attributes or textconv; hunk headers use Git's
-  default function-name rule, not the language drivers `.gitattributes` can
-  select (`*.c diff=cpp`), and IDs are abbreviated to at least 7 digits
-  rather than scaling with the object count (`abbrev:`).
-- A detached HEAD can be reached with `switch(detach: true)` and left with
-  `switch`, but `commit`, `amend`, `reset` and `merge` need a checked-out branch.
+  any bytes, honour `.gitattributes` `diff=<driver>`, `-diff` and `binary`
+  rules (including Git's built-in `userdiff` `xfuncname` drivers such as
+  `diff=cpp`, `diff=python` and `diff=rust`, plus `diff.<driver>.xfuncname`
+  from config), and scale the default `abbrev` length with the packed object
+  count.
+- A detached HEAD can be reached with `switch(detach: true)` and mutated with
+  `commit`, `amend`, `reset`, `fast_forward`, `merge`, `cherry_pick`, `revert`
+  and `rebase`.
 - `0b` and `0B` configuration integer prefixes follow a fixed binary-integer
   policy independent of the host libc.
 - Working-file status and diffs use a bounded regular-file reader and an ancestor

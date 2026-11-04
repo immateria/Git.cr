@@ -14,8 +14,9 @@ module Git
       raise Error.new("Git sequencer unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                 (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
       branch, old_oid = head_ref_and_oid
-      raise Error.new("Git sequencer requires an existing symbolic branch") unless branch &&
-                                                                                   branch.starts_with?("refs/heads/") && old_oid
+      unless old_oid && (branch.nil? || branch.starts_with?("refs/heads/"))
+        raise Error.new("Git sequencer requires an existing branch or detached HEAD")
+      end
       raise Error.new("Git sequencer refuses in-progress merge") if merge_state?
       raise Error.new("Git sequencer operation already in progress") if sequencer_state?
       if rebase = rebase_state?

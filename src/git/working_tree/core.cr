@@ -98,7 +98,7 @@ module Git
       end
       ignored_count = 0
       if include_untracked
-        ignore = Ignore.new(@root, @common, {max_bytes, @max_scan_bytes}.min, allowed_path)
+        ignore = Ignore.new(@root, @common, {max_bytes, @max_scan_bytes}.min, allowed_path, config: config)
         queue = [{"", 0}]
         visited = 0
         until queue.empty?

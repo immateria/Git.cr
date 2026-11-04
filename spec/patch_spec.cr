@@ -406,6 +406,29 @@ describe "Git patch line diff" do
     end
   end
 
+  it "applies .gitattributes built-in xfuncname diff drivers and -diff/binary rules" do
+    GitOracle.with_repo do |root|
+      write(root, ".gitattributes", "*.[ch] diff=cpp\n*.py diff=python\n*.dat -diff\n")
+      c_old = "int compute(int x)\n{\n  int a = 1;\n  int b = 2;\n  int c = 3;\nlabel_skip:\n  int d = 4;\n  int e = 5;\n  int f = 6;\n  return d + e + f;\n}\n"
+      c_new = c_old.sub("return d + e + f;", "return d + e;")
+      py_old = "  async def fetch_item(id):\n    a = 1\n    b = 2\n    c = 3\n    d = 4\n    return d\n"
+      py_new = py_old.sub("return d", "return d + 1")
+      write(root, "main.c", c_old)
+      write(root, "app.py", py_old)
+      write(root, "plain.dat", "text marked -diff\n")
+      commit_all(root, "attr-base")
+      write(root, "main.c", c_new)
+      write(root, "app.py", py_new)
+      write(root, "plain.dat", "changed text marked -diff\n")
+      repo = Git::Repository.new(root)
+      patch = repo.diff.to_s
+      patch.should contain("@@ -7,5 +7,5 @@ int compute(int x)")
+      patch.should contain("@@ -3,4 +3,4 @@ async def fetch_item(id):")
+      patch.should contain("Binary files a/plain.dat and b/plain.dat differ")
+      same(patch, oracle_diff(root))
+    end
+  end
+
   it "prints Git's function context after the hunk header" do
     GitOracle.with_repo do |root|
       body = (1..60).map { |i| i % 20 == 0 ? "def method_#{i}\n" : "  body #{i}\n" }.join

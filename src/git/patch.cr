@@ -10,7 +10,8 @@ module Git
       old_mode : String?, new_mode : String?, old_oid : String?, new_oid : String?,
       binary : Bool, text : String do
       # Whether Git treats the content as binary (a NUL in its first
-      # 8000 bytes); the text is then a "Binary files ... differ" line.
+      # 8000 bytes, or `-diff`/`binary` in `.gitattributes`); the text is
+      # then a "Binary files ... differ" line.
       def binary? : Bool
         binary
       end
@@ -48,13 +49,15 @@ module Git
     # new sides that are not stored objects (working-tree files), by path.
     protected def self.build(repository : Repository, changes : Array(TreeDiff::Change),
                              overrides : Hash(String, String), *, context : Int32, abbrev : Int32,
-                             indent_heuristic : Bool, max_bytes : Int32, max_lines : Int32,
+                             indent_heuristic : Bool, attributes : Bool = true,
+                             config : Config? = nil, max_bytes : Int32, max_lines : Int32,
                              check : Proc(Nil)?) : Patch
       raise ArgumentError.new("diff context must not be negative") if context < 0
       unless abbrev >= 4 && abbrev <= repository.object_format.hexsize
         raise ArgumentError.new("diff abbrev must be between 4 and #{repository.object_format.hexsize}")
       end
-      renderer = Renderer.new(repository, overrides, context, abbrev, indent_heuristic, max_bytes, max_lines, check)
+      renderer = Renderer.new(repository, overrides, context, abbrev, indent_heuristic,
+        attributes, config, max_bytes, max_lines, check)
       files = [] of File
       changes.each do |change|
         check.try &.call
@@ -70,20 +73,190 @@ module Git
     end
 
     # :nodoc:
+    # Evaluates `.gitattributes` and `$GIT_DIR/info/attributes` diff settings
+    # (`diff`, `-diff`, `binary`, `diff=<driver>`) for paths in a patch.
+    class Attributes
+      enum DiffKind
+        Unspecified
+        Text
+        Binary
+        Driver
+      end
+
+      record Setting, kind : DiffKind = DiffKind::Unspecified, driver : String? = nil
+      private record Rule, matcher : Ignore::Rule, tokens : Array(String)
+
+      @dir_cache = {} of String => Array(Rule)
+      @accumulated = {} of String => Array(Rule)
+      @info_rules : Array(Rule)
+      @macros = {"binary" => ["-diff", "-merge", "-text"]}
+
+      def initialize(@repository : Repository, @max_bytes : Int32)
+        if root = @repository.work_tree
+          # Load root .gitattributes first so any top-level [attr] macros are known.
+          @dir_cache[""] = load_file(::File.join(root, ".gitattributes"), "", allow_macros: true)
+        end
+        @info_rules = load_file(::File.join(@repository.git_dir, "info", "attributes"), "", allow_macros: true)
+      end
+
+      def resolve(path : String) : Setting
+        slash = path.to_slice.rindex('/'.ord.to_u8)
+        dir = slash ? path.byte_slice(0, slash) : ""
+        name = slash ? path.byte_slice(slash + 1) : path
+        rules = rules_through(dir) + @info_rules
+        setting = Setting.new
+        rules.each do |rule|
+          tail = if rule.matcher.base.empty?
+                   path
+                 elsif path.starts_with?(rule.matcher.base + "/")
+                   path.byte_slice(rule.matcher.base.bytesize + 1)
+                 else
+                   next
+                 end
+          next unless rule.matcher.matches?(rule.matcher.basename_only ? name : tail)
+          rule.tokens.each do |token|
+            setting = apply_token(setting, token)
+          end
+        end
+        setting
+      end
+
+      private def apply_token(current : Setting, token : String) : Setting
+        if token == "-diff" || token == "diff=false"
+          Setting.new(DiffKind::Binary, nil)
+        elsif token == "diff" || token == "diff=true"
+          Setting.new(DiffKind::Text, nil)
+        elsif token == "!diff"
+          Setting.new(DiffKind::Unspecified, nil)
+        elsif token.starts_with?("diff=")
+          driver = token.byte_slice(5)
+          driver.empty? ? current : Setting.new(DiffKind::Driver, driver)
+        elsif expanded = @macros[token]?
+          expanded.reduce(current) { |acc, sub| apply_token(acc, sub) }
+        else
+          current
+        end
+      end
+
+      private def rules_through(directory : String) : Array(Rule)
+        @accumulated[directory] ||= begin
+          if directory.empty?
+            rules_for("")
+          else
+            slash = directory.to_slice.rindex('/'.ord.to_u8)
+            rules_through(slash ? directory.byte_slice(0, slash) : "") + rules_for(directory)
+          end
+        end
+      end
+
+      private def rules_for(directory : String) : Array(Rule)
+        @dir_cache[directory] ||= begin
+          if root = @repository.work_tree
+            relative = directory.empty? ? ".gitattributes" : "#{directory}/.gitattributes"
+            load_file(::File.join(root, relative), directory, allow_macros: directory.empty?)
+          else
+            [] of Rule
+          end
+        end
+      end
+
+      private def load_file(full_path : String, base : String, *, allow_macros : Bool) : Array(Rule)
+        return [] of Rule unless ::File.exists?(full_path) && !::File.symlink?(full_path) && ::File.file?(full_path)
+        return [] of Rule if ::File.size(full_path) > @max_bytes
+        data = ::File.read(full_path)
+        return [] of Rule unless data.valid_encoding? && !data.includes?('\0')
+        rules = [] of Rule
+        data.each_line do |raw|
+          line = raw.chomp.strip
+          next if line.empty? || line.starts_with?('#')
+          pattern, rest = split_pattern(line)
+          next unless pattern && !rest.empty?
+          tokens = rest.split
+          if allow_macros && pattern.starts_with?("[attr]")
+            macro_name = pattern.byte_slice(6)
+            @macros[macro_name] = tokens unless macro_name.empty?
+            next
+          end
+          next if pattern.starts_with?('!') || pattern.ends_with?('/')
+          next if pattern.bytesize > 256
+          anchored = pattern.starts_with?('/')
+          pattern = pattern.byte_slice(1) if anchored
+          next if pattern.empty?
+          basename_only = !anchored && !pattern.includes?('/')
+          source, compiled_tokens = begin
+            Ignore.compile_pattern(pattern)
+          rescue Error
+            next
+          end
+          special = ->(text : String) { text.each_byte.any? { |byte| {'*'.ord, '?'.ord, '['.ord, '\\'.ord}.includes?(byte) } }
+          literal = special.call(pattern) ? nil : pattern
+          tail = pattern.byte_slice(1)
+          suffix = basename_only && pattern.starts_with?('*') && !tail.empty? && !special.call(tail) ? tail : nil
+          matcher = Ignore::Rule.new(Regex.new(source), false, false, basename_only, base, literal, suffix, compiled_tokens)
+          rules << Rule.new(matcher, tokens)
+        end
+        rules
+      end
+
+      private def split_pattern(line : String) : {String?, String}
+        if line.starts_with?('"')
+          out = IO::Memory.new
+          i = 1
+          while i < line.bytesize
+            ch = line.byte_at(i)
+            if ch == '"'.ord
+              return {out.to_s, line.byte_slice(i + 1).strip}
+            elsif ch == '\\'.ord && i + 1 < line.bytesize
+              i += 1
+              out.write_byte(line.byte_at(i))
+            else
+              out.write_byte(ch)
+            end
+            i += 1
+          end
+          {nil, ""}
+        else
+          parts = line.split(/\s+/, 2)
+          parts.size == 2 ? {parts[0], parts[1]} : {nil, ""}
+        end
+      end
+    end
+
+    # :nodoc:
     class Renderer
+      @attr_matcher : Attributes?
+
       def initialize(@repository : Repository, @overrides : Hash(String, String), @context : Int32,
-                     @abbrev : Int32, @indent_heuristic : Bool, @max_bytes : Int32, @max_lines : Int32,
+                     @abbrev : Int32, @indent_heuristic : Bool, @attributes : Bool,
+                     @config : Config?, @max_bytes : Int32, @max_lines : Int32,
                      @check : Proc(Nil)?)
         @abbreviations = {} of String => String
+        @attr_matcher = @attributes ? Attributes.new(@repository, @max_bytes) : nil
+        @custom_drivers = {} of String => Array(TextDiff::FuncRule)?
       end
 
       def section(status : Char, old_path : String?, new_path : String?, old_mode : String?, new_mode : String?,
                   old_oid : String?, new_oid : String?) : File
         old_data = content(old_mode, old_oid, nil)
         new_data = content(new_mode, new_oid, new_path)
-        binary = TextDiff.binary?(old_data.to_slice) || TextDiff.binary?(new_data.to_slice)
         shown_old = old_path || new_path.not_nil!
         shown_new = new_path || old_path.not_nil!
+        setting = @attr_matcher.try(&.resolve(shown_new)) || Attributes::Setting.new
+        driver = setting.driver
+        binary = case setting.kind
+                 when Attributes::DiffKind::Binary
+                   true
+                 when Attributes::DiffKind::Text
+                   false
+                 when Attributes::DiffKind::Driver
+                   if driver && (cfg_bin = effective_config.boolean?("diff.#{driver}.binary")) != nil
+                     cfg_bin.not_nil!
+                   else
+                     TextDiff.binary?(old_data.to_slice) || TextDiff.binary?(new_data.to_slice)
+                   end
+                 else
+                   TextDiff.binary?(old_data.to_slice) || TextDiff.binary?(new_data.to_slice)
+                 end
         label_old = PathBytes.quote("a/" + shown_old)
         label_new = PathBytes.quote("b/" + shown_new)
         text = String.build do |io|
@@ -108,8 +281,10 @@ module Git
             if binary
               io << "Binary files " << side_old << " and " << side_new << " differ\n"
             else
+              custom_rules = driver ? custom_driver_rules(driver) : nil
               body = TextDiff.hunks(old_data.to_slice, new_data.to_slice, @context,
-                indent_heuristic: @indent_heuristic, max_lines: @max_lines, check: @check)
+                indent_heuristic: @indent_heuristic, driver: driver, custom_rules: custom_rules,
+                max_lines: @max_lines, check: @check)
               unless body.empty?
                 io << "--- " << side_old << (old_mode && side_old.includes?(' ') ? "\t" : "") << '\n'
                 io << "+++ " << side_new << (new_mode && side_new.includes?(' ') ? "\t" : "") << '\n'
@@ -119,6 +294,21 @@ module Git
           end
         end
         File.new(status, old_path, new_path, old_mode, new_mode, old_oid, new_oid, binary, text)
+      end
+
+      private def effective_config : Config
+        @config ||= @repository.config
+      end
+
+      private def custom_driver_rules(driver : String) : Array(TextDiff::FuncRule)?
+        return @custom_drivers[driver] if @custom_drivers.has_key?(driver)
+        @custom_drivers[driver] = if pattern = effective_config.value?("diff.#{driver}.xfuncname")
+                                    [TextDiff::FuncRule.new(false, Regex.new(pattern))]
+                                  else
+                                    nil
+                                  end
+      rescue ArgumentError
+        @custom_drivers[driver] = nil
       end
 
       private def content(mode : String?, oid : String?, override_path : String?) : String
@@ -151,6 +341,18 @@ module Git
   end
 
   class Repository
+    # Git's default abbreviation length for this repository: at least 7 hex
+    # digits, growing by 1 for every 2 bits above 2^14 packed objects.
+    protected def default_abbrev : Int32
+      count = @object_database.pack_files.approximate_object_count
+      bits = 0
+      while count > 0
+        count >>= 1
+        bits += 1
+      end
+      {(bits + 1) // 2, 7}.max
+    end
+
     # The difference between two states as a patch (`git diff`). With no
     # revision it compares the index with the working tree; cached
     # compares HEAD (or the revision) with the index; two revisions
@@ -158,18 +360,22 @@ module Git
     # the working tree. paths limits the files, context sets the
     # unchanged lines around each hunk, and renames pairs identical
     # deleted and added files. abbrev is the least number of digits in
-    # `index` lines (Git picks more for repositories with 16384 or more
-    # objects). indent_heuristic is diff.indentHeuristic. config supplies
-    # core.filemode. Unmerged and intent-to-add paths raise Error;
-    # submodule working trees are not inspected.
+    # `index` lines (when nil, scaled with the packed object count as Git
+    # does, with a minimum of 7). attributes enables `.gitattributes`
+    # diff drivers (`diff=<driver>`, `-diff`, `binary`). indent_heuristic
+    # is diff.indentHeuristic. config supplies core.filemode and custom
+    # `diff.<driver>.xfuncname`. Unmerged and intent-to-add paths raise
+    # Error; submodule working trees are not inspected.
     def diff(old : String? = nil, new : String? = nil, *, cached : Bool = false,
              paths : Array(String) = [] of String, context : Int32 = 3, renames : Bool = true,
-             abbrev : Int32 = 7, indent_heuristic : Bool = true,
+             abbrev : Int32? = nil, indent_heuristic : Bool = true,
+             attributes : Bool = true,
              max_bytes : Int32 = 8_388_608, max_changes : Int32 = 1_000_000,
              max_lines : Int32 = 1_000_000, config : Config? = nil,
              check : Proc(Nil)? = nil) : Patch
       raise ArgumentError.new("a second revision needs a first one") if new && !old
       raise ArgumentError.new("cached compares one revision with the index") if new && cached
+      effective_abbrev = abbrev || default_abbrev
       overrides = {} of String => String
       changes = if old && new
                   TreeDiff.compare(self, diff_tree(old, max_bytes), diff_tree(new, max_bytes).not_nil!,
@@ -187,8 +393,9 @@ module Git
                     renames: renames, check: check)
                 end
       raise Error.new("Git diff change budget exceeded") if changes.size > max_changes
-      Patch.build(self, changes, overrides, context: context, abbrev: abbrev,
-        indent_heuristic: indent_heuristic, max_bytes: max_bytes, max_lines: max_lines, check: check)
+      Patch.build(self, changes, overrides, context: context, abbrev: effective_abbrev,
+        indent_heuristic: indent_heuristic, attributes: attributes, config: config,
+        max_bytes: max_bytes, max_lines: max_lines, check: check)
     end
 
     private def diff_tree(revision : String, max_bytes : Int32) : String

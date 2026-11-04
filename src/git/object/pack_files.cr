@@ -319,6 +319,12 @@ module Git
         index_paths.any? { |idx_path| load_index(idx_path).try(&.lookup(wanted)) }
       end
 
+      # Total entries across readable pack indexes, as Git's
+      # approximate_object_count uses when choosing a default abbreviation.
+      def approximate_object_count : Int64
+        index_paths.sum(0_i64) { |idx_path| load_index(idx_path).try(&.count) || 0_i64 }
+      end
+
       # Every object ID in every readable pack, in pack-name then ID order.
       # Duplicates across packs are reported once.
       def each_oid(& : String ->) : Nil

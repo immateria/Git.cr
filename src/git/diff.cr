@@ -39,6 +39,127 @@ module Git
       property hi : Int32 = 0
     end
 
+    # One xfuncname pattern in a built-in or configured diff driver.
+    record FuncRule, negated : Bool, regex : Regex
+
+    private def self.rule(pattern : String, *, negated : Bool = false, ignore_case : Bool = false) : FuncRule
+      options = ignore_case ? Regex::Options::IGNORE_CASE : Regex::Options::None
+      FuncRule.new(negated, Regex.new(pattern, options))
+    end
+
+    # Git's built-in userdiff.c xfuncname tables.
+    BUILT_IN_DRIVERS = {
+      "ada" => [
+        rule("^(.*[ \\t])?(is[ \\t]+new|renames|is[ \\t]+separate)([ \\t].*)?$", negated: true, ignore_case: true),
+        rule("^[ \\t]*with[ \\t].*$", negated: true, ignore_case: true),
+        rule("^[ \\t]*((procedure|function)[ \\t]+.*)$", ignore_case: true),
+        rule("^[ \\t]*((package|protected|task)[ \\t]+.*)$", ignore_case: true),
+      ],
+      "bash" => [
+        rule("^[ \\t]*(([a-zA-Z_][a-zA-Z0-9_]*[ \\t]*\\([ \\t]*\\))|(function[ \\t]+[a-zA-Z_][a-zA-Z0-9_]*(([ \\t]*\\([ \\t]*\\))|([ \\t]+))))"),
+      ],
+      "sh" => [
+        rule("^[ \\t]*(([a-zA-Z_][a-zA-Z0-9_]*[ \\t]*\\([ \\t]*\\))|(function[ \\t]+[a-zA-Z_][a-zA-Z0-9_]*(([ \\t]*\\([ \\t]*\\))|([ \\t]+))))"),
+      ],
+      "bibtex" => [
+        rule("(@[a-zA-Z]{1,}[ \\t]*\\{{0,1}[ \\t]*[^ \\t\"@',\\#}{~%]*).*$"),
+      ],
+      "cpp" => [
+        rule("^[ \\t]*[A-Za-z_][A-Za-z_0-9]*:[[:space:]]*($|/[/*])", negated: true),
+        rule("^((::[[:space:]]*)?[A-Za-z_].*)$"),
+      ],
+      "c" => [
+        rule("^[ \\t]*[A-Za-z_][A-Za-z_0-9]*:[[:space:]]*($|/[/*])", negated: true),
+        rule("^((::[[:space:]]*)?[A-Za-z_].*)$"),
+      ],
+      "csharp" => [
+        rule("^[ \\t]*(do|while|for|if|else|instanceof|new|return|switch|case|throw|catch|using)", negated: true),
+        rule("^[ \\t]*(((static|public|internal|private|protected|new|virtual|sealed|override|unsafe|async)[ \\t]+)*[\\[\\]<>@.~_[:alnum:]]+[ \\t]+[<>@._[:alnum:]]+[ \\t]*\\(.*\\))[ \\t]*$"),
+        rule("^[ \\t]*(((static|public|internal|private|protected|new|virtual|sealed|override|unsafe)[ \\t]+)*[\\[\\]<>@.~_[:alnum:]]+[ \\t]+[@._[:alnum:]]+)[ \\t]*$"),
+        rule("^[ \\t]*(((static|public|internal|private|protected|new|unsafe|sealed|abstract|partial)[ \\t]+)*(class|enum|interface|struct|record)[ \\t]+.*)$"),
+        rule("^[ \\t]*(namespace[ \\t]+.*)$"),
+      ],
+      "css" => [
+        rule("[:;][[:space:]]*$", negated: true),
+        rule("^[:\\[@.#]?[_a-z0-9].*$", ignore_case: true),
+      ],
+      "dts" => [
+        rule(";", negated: true),
+        rule("=", negated: true),
+        rule("^[ \\t]*((/[ \\t]*\\{|&?[a-zA-Z_]).*)"),
+      ],
+      "elixir" => [
+        rule("^[ \\t]*((def(macro|module|impl|protocol|p)?|test)[ \\t].*)$"),
+      ],
+      "fortran" => [
+        rule("^([C*]|[ \\t]*!)", negated: true, ignore_case: true),
+        rule("^[ \\t]*MODULE[ \\t]+PROCEDURE[ \\t]", negated: true, ignore_case: true),
+        rule("^[ \\t]*((END[ \\t]+)?(PROGRAM|MODULE|BLOCK[ \\t]+DATA|([^!'\" \\t]+[ \\t]+)*(SUBROUTINE|FUNCTION))[ \\t]+[A-Z].*)$", ignore_case: true),
+      ],
+      "fountain" => [
+        rule("^((\\.[^.]|(int|ext|est|int\\.?/ext|i/e)[. ]).*)$", ignore_case: true),
+      ],
+      "golang" => [
+        rule("^[ \\t]*(func[ \\t]*.*(\\{[ \\t]*)?)"),
+        rule("^[ \\t]*(type[ \\t].*(struct|interface)[ \\t]*(\\{[ \\t]*)?)"),
+      ],
+      "html" => [
+        rule("^[ \\t]*(<[Hh][1-6]([ \\t].*)?>.*)$"),
+      ],
+      "java" => [
+        rule("^[ \\t]*(catch|do|for|if|instanceof|new|return|switch|throw|while)", negated: true),
+        rule("^[ \\t]*(([a-z]+[ \\t]+)*(class|enum|interface)[ \\t]+[A-Za-z][A-Za-z0-9_$]*[ \\t]+.*)$"),
+        rule("^[ \\t]*(([A-Za-z_<>&][\\[\\]?&<>.,A-Za-z_0-9]*[ \\t]+)+[A-Za-z_][A-Za-z_0-9]*[ \\t]*\\([^;]*)$"),
+      ],
+      "kotlin" => [
+        rule("^[ \\t]*(([a-z]+[ \\t]+)*(fun|class|interface)[ \\t]+.*)$"),
+      ],
+      "markdown" => [
+        rule("^ {0,3}\#{1,6}[ \\t].*"),
+      ],
+      "matlab" => [
+        rule("^[[:space:]]*((classdef|function)[[:space:]].*)$|^(%%%?|##)[[:space:]].*$"),
+      ],
+      "objc" => [
+        rule("^[ \\t]*(do|for|if|else|return|switch|while)", negated: true),
+        rule("^[ \\t]*([-+][ \\t]*\\([ \\t]*[A-Za-z_][A-Za-z_0-9* \\t]*\\)[ \\t]*[A-Za-z_].*)$"),
+        rule("^[ \\t]*(([A-Za-z_][A-Za-z_0-9]*[ \\t]+)+[A-Za-z_][A-Za-z_0-9]*[ \\t]*\\([^;]*)$"),
+        rule("^(@(implementation|interface|protocol)[ \\t].*)$"),
+      ],
+      "pascal" => [
+        rule("^(((class[ \\t]+)?(procedure|function)|constructor|destructor|interface|implementation|initialization|finalization)[ \\t]*.*)$", ignore_case: true),
+        rule("^(.*=[ \\t]*(class|record).*)$", ignore_case: true),
+      ],
+      "perl" => [
+        rule("^package .*"),
+        rule("^sub [[:alnum:]_':]+[ \\t]*(\\([^)]*\\)[ \\t]*)?(:[^;#]*)?(\\{[ \\t]*)?(#.*)?$"),
+        rule("^(BEGIN|END|INIT|CHECK|UNITCHECK|AUTOLOAD|DESTROY)[ \\t]*(\\{[ \\t]*)?(#.*)?$"),
+        rule("^=head[0-9] .*"),
+      ],
+      "php" => [
+        rule("^[\\t ]*(((public|protected|private|static|abstract|final)[\\t ]+)*function.*)$", ignore_case: true),
+        rule("^[\\t ]*((((final|abstract)[\\t ]+)?class|enum|interface|trait).*)$", ignore_case: true),
+      ],
+      "python" => [
+        rule("^[ \\t]*((class|(async[ \\t]+)?def)[ \\t].*)$"),
+      ],
+      "ruby" => [
+        rule("^[ \\t]*((class|module|def)[ \\t].*)$"),
+      ],
+      "crystal" => [
+        rule("^[ \\t]*((class|module|struct|enum|lib|fun|macro|def)[ \\t].*)$"),
+      ],
+      "rust" => [
+        rule("^[\\t ]*((pub(\\([^\\)]+\\))?[\\t ]+)?((async|const|unsafe|extern([\\t ]+\"[^\"]+\"))[\\t ]+)?(struct|enum|union|mod|trait|fn|impl|macro_rules!)[< \\t]+[^;]*)$"),
+      ],
+      "scheme" => [
+        rule("^[\\t ]*(\\(((define|def(struct|syntax|class|method|rules|record|proto|alias)?)[-*/ \\t]|(library|module|struct|class)[*+ \\t]).*)$"),
+      ],
+      "tex" => [
+        rule("^(\\\\((sub)*section|chapter|part)\\*{0,1}\\{.*)$"),
+      ],
+    }
+
     SNAKE_COUNT     =   20
     HEURISTIC_COST  =  256
     MIN_MAX_COST    =  256
@@ -51,7 +172,9 @@ module Git
     # `git diff`'s patch, without file headers), or "" when they are
     # equal. max_lines bounds the lines of both sides together.
     def self.hunks(old_data : Bytes, new_data : Bytes, context : Int32 = 3, *,
-                   indent_heuristic : Bool = true, max_lines : Int32 = 1_000_000,
+                   indent_heuristic : Bool = true, driver : String? = nil,
+                   custom_rules : Array(FuncRule)? = nil,
+                   max_lines : Int32 = 1_000_000,
                    check : Proc(Nil)? = nil) : String
       raise ArgumentError.new("diff context must not be negative") if context < 0
       return "" if old_data == new_data
@@ -70,7 +193,8 @@ module Git
       search(old_side, new_side, check)
       compact(old_side, new_side, indent_heuristic, check)
       compact(new_side, old_side, indent_heuristic, check)
-      emit(old_side, new_side, build_script(old_side, new_side), context)
+      rules = custom_rules || driver.try { |name| BUILT_IN_DRIVERS[name]? }
+      emit(old_side, new_side, build_script(old_side, new_side), context, rules)
     end
 
     # Whether Git would treat this content as binary: a NUL byte in the
@@ -650,7 +774,8 @@ module Git
       script
     end
 
-    private def self.emit(a : Side, b : Side, script : Array({Int32, Int32, Int32, Int32}), context : Int32) : String
+    private def self.emit(a : Side, b : Side, script : Array({Int32, Int32, Int32, Int32}),
+                          context : Int32, rules : Array(FuncRule)? = nil) : String
       funcname = nil.as(Bytes?)
       func_scanned = -1
       String.build do |io|
@@ -672,7 +797,12 @@ module Git
 
           line = s1 - 1
           while line > func_scanned && line >= 0
-            if found = function_name(a.lines[line])
+            found = if active_rules = rules
+                      driver_function_name(a.lines[line], active_rules)
+                    else
+                      function_name(a.lines[line])
+                    end
+            if found
               funcname = found
               break
             end
@@ -723,11 +853,43 @@ module Git
     private def self.function_name(line : Bytes) : Bytes?
       first = line[0]?
       return nil unless first && (first.chr.ascii_letter? || first == 95_u8 || first == 36_u8)
-      size = {line.size, 80}.min
-      while size > 0 && {32_u8, 9_u8, 10_u8, 11_u8, 12_u8, 13_u8}.includes?(line[size - 1])
+      trim_funcname(line)
+    end
+
+    # Git's userdiff xfuncname rule evaluation: negated patterns reject the
+    # line immediately; positive patterns extract group 1 (or group 0 when
+    # group 1 did not participate), trimmed and capped at 80 bytes.
+    private def self.driver_function_name(line : Bytes, rules : Array(FuncRule)) : Bytes?
+      len = line.size
+      len -= 1 if len > 0 && line[len - 1] == 10_u8
+      len -= 1 if len > 0 && line[len - 1] == 13_u8
+      return nil if len == 0
+      slice = line[0, len]
+      ascii = if slice.all? { |b| b < 0x80 }
+                String.new(slice)
+              else
+                String.build(slice.size) do |io|
+                  slice.each { |b| io.write_byte(b < 0x80 ? b : 'a'.ord.to_u8) }
+                end
+              end
+      rules.each do |rule|
+        if match = rule.regex.match(ascii)
+          return nil if rule.negated
+          group = (match.size > 1 && match[1]?) ? 1 : 0
+          b_start = match.byte_begin(group)
+          b_end = match.byte_end(group)
+          return trim_funcname(slice[b_start, b_end - b_start])
+        end
+      end
+      nil
+    end
+
+    private def self.trim_funcname(slice : Bytes) : Bytes?
+      size = {slice.size, 80}.min
+      while size > 0 && {32_u8, 9_u8, 10_u8, 11_u8, 12_u8, 13_u8}.includes?(slice[size - 1])
         size -= 1
       end
-      line[0, size]
+      size > 0 ? slice[0, size] : nil
     end
   end
 end

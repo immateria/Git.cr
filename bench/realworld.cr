@@ -263,7 +263,7 @@ module RealWorld
             expected, spent = timed { git(args) }
             git_time += spent
             actual, spent = timed do
-              @repo.commit_patch(oid, abbrev: 12, max_bytes: 268_435_456, max_lines: 50_000_000).to_s
+              @repo.commit_patch(oid, abbrev: 12, attributes: attributes, max_bytes: 268_435_456, max_lines: 50_000_000).to_s
             end
             native_time += spent
             lines += expected.count('\n')
@@ -310,7 +310,7 @@ module RealWorld
             ok ? "#{expected.size} entries" : first_difference(expected, actual))
         end
         run("git diff of the edits") do
-          expected, git_time = timed { git(["--attr-source=#{EMPTY_TREE}", "diff", "--no-color", "--abbrev=12"]) }
+          expected, git_time = timed { git(["diff", "--no-color", "--abbrev=12"]) }
           actual, native_time = timed { @repo.diff(abbrev: 12, max_bytes: 268_435_456, max_lines: 50_000_000).to_s }
           ok = expected == actual
           Outcome.new("worktree diff", ok, expected.count('\n').to_i64, native_time, git_time,
@@ -323,7 +323,7 @@ module RealWorld
           git(["reset", "-q"])
           _, git_time = timed { git(["add", "-A"]) }
           git_index = git(["ls-files", "-s"])
-          git_patch = git(["--attr-source=#{EMPTY_TREE}", "diff", "--cached", "--no-color", "--abbrev=12"])
+          git_patch = git(["diff", "--cached", "--no-color", "--abbrev=12"])
           ok = native_index == git_index && native_patch == git_patch
           detail = if native_index != git_index
                      "index: #{first_difference(git_index.lines, native_index.lines)}"

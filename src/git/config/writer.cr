@@ -80,6 +80,31 @@ module Git
         found
       end
 
+      # Copy every section with this name to a new section name, as
+      # `git branch -c` copies branch.<old>.* to branch.<new>.*.
+      def self.copy_section(path : String, from : String, to : String, *, max_bytes : Int32 = MAX_BYTES) : Bool
+        old_name = normalize_section(from)
+        new_name = normalize_section(to)
+        found = false
+        transform(path, max_bytes) do |data|
+          sections, _ = scan(data)
+          copied = String.build do |builder|
+            sections.select { |candidate| candidate.name == old_name }.each do |candidate|
+              found = true
+              header_start = data.byte_index('['.ord, candidate.start).not_nil!
+              header_end = data.byte_index(']'.ord, candidate.start) || raise Error.new("invalid Git config section")
+              builder << data.byte_slice(candidate.start, header_start - candidate.start)
+              builder << render_header(new_name)
+              builder << data.byte_slice(header_end + 1, candidate.finish - (header_end + 1))
+            end
+          end
+          next data unless found
+          separator = data.bytesize > 0 && data.byte_at(data.bytesize - 1) != 10_u8 ? "\n" : ""
+          data + separator + copied
+        end
+        found
+      end
+
       # "Remote.Origin" => "remote.Origin": the section is case-insensitive,
       # the subsection is not.
       private def self.normalize_section(name : String) : String

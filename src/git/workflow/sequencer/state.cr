@@ -25,9 +25,14 @@ module Git
         original = sequencer_read_metadata?(admin, "CRYSTAL_SEQUENCER_ORIG") ||
                    raise Error.new("Git sequencer original state missing")
         lines = original.lines.map(&.strip)
-        raise Error.new("Git sequencer original state invalid") unless lines.size == 2 &&
-                                                                       lines[0].starts_with?("refs/heads/") &&
-                                                                       RefName.valid?(lines[0])
+        raise Error.new("Git sequencer original state invalid") unless lines.size == 2
+        branch = if lines[0] == "-"
+                   nil
+                 else
+                   raise Error.new("Git sequencer original state invalid") unless lines[0].starts_with?("refs/heads/") &&
+                                                                                  RefName.valid?(lines[0])
+                   lines[0]
+                 end
         original_head = ObjectId.valid!(lines[1], @object_format)
         parent_text = sequencer_read_metadata?(admin, "CRYSTAL_SEQUENCER_PARENT") ||
                       raise Error.new("Git sequencer parent state missing")
@@ -45,7 +50,7 @@ module Git
                       when "1" then true
                       else          raise Error.new("Git sequencer empty-state invalid")
                       end
-        Sequencer::State.new(kind, lines[0], original_head, source, parent,
+        Sequencer::State.new(kind, branch, original_head, source, parent,
           author, message, allow_empty)
       ensure
         admin.close

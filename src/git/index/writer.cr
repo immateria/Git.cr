@@ -1,6 +1,6 @@
 module Git
   class Index
-    record Put, path : String, mode : String, oid : String
+    record Put, path : String, mode : String, oid : String, stat : Stat? = nil
     record Remove, path : String
     # A complete set of unmerged index entries for one literal path. Git
     # represents a missing base/ours/theirs side by omitting that stage,
@@ -28,14 +28,15 @@ module Git
     # P18: one cooperative index transaction. The index is read only after
     # acquiring Git's exclusive .lock, then rebuilt in its existing DIRC
     # version (2, 3 or 4) and atomically published. Unsupported extensions
-    # are refused; supported flags including CE_VALID are preserved.
+    # are refused; supported flags including CE_VALID and stat data are preserved.
     protected def stage_entry(path : String, mode : String, oid : String, *,
+                              stat : Stat? = nil,
                               max_bytes : Int32 = 8_388_608, max_entries : Int32 = 100_000,
                               check : Proc(Nil)? = nil) : Nil
       PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH)
       raise Error.new("unsupported Git staging mode") unless {"100644", "100755", "120000", "160000"}.includes?(mode)
       ObjectId.valid!(oid, @object_format)
-      mutate_entry(path, Entry.new(path, mode, oid, 0, false, false),
+      mutate_entry(path, Entry.new(path, mode, oid, 0, false, false, false, stat),
         max_bytes: max_bytes, max_entries: max_entries, check: check)
     end
 
@@ -51,7 +52,7 @@ module Git
     # :nodoc:
     # Build a complete index image without publishing it. The result can be
     # journaled before any index or reference changes are made. Existing
-    # stages/flags and v2/v3/v4 representation are retained, or refused.
+    # stages/flags/stat data and v2/v3/v4 representation are retained, or refused.
     def prepare_changes(changes : Array(Edit), *, max_bytes : Int32 = 8_388_608,
                         max_entries : Int32 = 100_000,
                         check : Proc(Nil)? = nil) : Image
@@ -67,6 +68,7 @@ module Git
       raise Error.new("Git index change budget exceeded") if changes.size > max_entries
       @metadata.check!
       path_index = File.join(@metadata.git_dir, "index")
+      old_index_time = modified_at
       initial_raw = read_index_bounded(path_index, max_bytes)
       current = entries(max_bytes) { check.try &.call }
       observed_raw = read_index_bounded(path_index, max_bytes)
@@ -74,7 +76,16 @@ module Git
       version = observed_raw ? writable_index_version?(observed_raw) : 2_u32
       raise Error.new("unsupported Git index flags or extension for mutation") unless version
       by_path = {} of String => Array(Entry)
-      current.each { |entry| (by_path[entry.path] ||= [] of Entry) << entry }
+      current.each do |entry|
+        # Do not carry forward a racily-clean stat record into a newer index
+        # timestamp without re-hashing its file.
+        kept = if (recorded = entry.stat) && (old_index_time.nil? || recorded.mtime.to_i64 >= old_index_time.to_unix)
+                 Entry.new(entry.path, entry.mode, entry.oid, entry.stage, entry.intent, entry.skip_worktree, entry.assume_unchanged, nil)
+               else
+                 entry
+               end
+        (by_path[entry.path] ||= [] of Entry) << kept
+      end
       seen = Set(String).new
       changes.each do |change|
         check.try &.call
@@ -86,7 +97,7 @@ module Git
         when Put
           raise Error.new("unsupported Git staging mode") unless {"100644", "100755", "120000", "160000"}.includes?(change.mode)
           ObjectId.valid!(change.oid, @object_format)
-          by_path[path] = [Entry.new(path, change.mode, change.oid, 0, false, false)]
+          by_path[path] = [Entry.new(path, change.mode, change.oid, 0, false, false, false, change.stat)]
         when PutStages
           raise Error.new("empty Git conflict stages") if change.stages.empty? || change.stages.size > 3
           last_stage = 0
@@ -204,7 +215,7 @@ module Git
                              max_bytes : Int32, max_entries : Int32,
                              check : Proc(Nil)?) : Nil
       change = if entry = incoming
-                 Put.new(path, entry.mode, entry.oid).as(Edit)
+                 Put.new(path, entry.mode, entry.oid, entry.stat).as(Edit)
                else
                  Remove.new(path).as(Edit)
                end
@@ -315,10 +326,23 @@ module Git
       previous = ""
       items.each do |entry|
         start = data.size
-        6.times { write_u32(data, 0_u32) } # ctime, mtime, device, inode
-        write_u32(data, entry.mode.to_u32(8))
-        2.times { write_u32(data, 0_u32) } # uid, gid
-        write_u32(data, 0_u32)             # stat size (recheck on next use)
+        if recorded = entry.stat
+          write_u32(data, recorded.ctime)
+          write_u32(data, recorded.ctime_nsec)
+          write_u32(data, recorded.mtime)
+          write_u32(data, recorded.mtime_nsec)
+          write_u32(data, recorded.dev)
+          write_u32(data, recorded.ino)
+          write_u32(data, entry.mode.to_u32(8))
+          write_u32(data, recorded.uid)
+          write_u32(data, recorded.gid)
+          write_u32(data, recorded.size)
+        else
+          6.times { write_u32(data, 0_u32) } # ctime, mtime, device, inode
+          write_u32(data, entry.mode.to_u32(8))
+          2.times { write_u32(data, 0_u32) } # uid, gid
+          write_u32(data, 0_u32)             # stat size (recheck on next use)
+        end
         data.write(entry.oid.hexbytes)
         extended = entry.intent || entry.skip_worktree
         raise Error.new("Git index v2 cannot encode extended flags") if version == 2 && extended

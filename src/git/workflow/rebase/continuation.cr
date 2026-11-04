@@ -62,7 +62,7 @@ module Git
       if current != state.original_head
         raise Error.new("Git rebase abort HEAD changed") unless current == state.expected_head
         changed.concat(rebase_move_branch!(state, current, state.original_head,
-          log: References::LogEntry.new(committer, "rebase (abort): returning to #{state.branch}"),
+          log: References::LogEntry.new(committer, "rebase (abort): returning to #{state.branch || state.original_head}"),
           max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
           max_total_bytes: max_total_bytes, max_entries: max_entries, check: check))
       end

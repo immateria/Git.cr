@@ -98,4 +98,27 @@ describe "working tree status and the index stat cache" do
       Git::Repository.new(root).working_changes.map(&.path).should eq(["nested/"])
     end
   end
+
+  it "WS-06 records and preserves index stat data across native stage and clone, and uses cache-tree in staged_changes" do
+    GitOracle.with_repo do |root|
+      stat_fixture(root)
+      # Clean commit has a valid root TREE extension: staged_changes succeeds
+      # even when max_search_entries is 0 (no tree objects need to be walked).
+      fast_repo = Git::Repository.new(root, max_search_entries: 10)
+      fast_repo.staged_changes.to_a.should be_empty
+
+      # Native stage_file and stage record Stat for old files and preserve
+      # existing non-racy Stat entries on untouched files.
+      extra = File.join(root, "extra.txt")
+      File.write(extra, "extra\n")
+      past = Time.utc - 1.hour
+      File.utime(past, past, extra)
+      Git::Repository.new(root).stage_file("extra.txt")
+      # With Stat preserved on large.bin and recorded on extra.txt, a 1024-byte
+      # scan budget does not need to read large.bin (100_000 bytes).
+      tight = Git::Repository.new(root, max_scan_bytes: 1024)
+      tight.working_changes.to_a.should be_empty
+      tight.diff.to_s.should eq("")
+    end
+  end
 end

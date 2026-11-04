@@ -55,7 +55,8 @@ module Git
           ensure
             io.close
           end
-          edits << Index::Put.new(path, mode == "100755" ? "100755" : "100644", oid)
+          normalized_mode = mode == "100755" ? "100755" : "100644"
+          edits << Index::Put.new(path, normalized_mode, oid, Index.stat_for(destination, normalized_mode))
         when "120000"
           kind, data = object(oid, max_object_bytes) { check.try &.call }
           raise Error.new("Git checkout entry #{path} is not a blob") unless kind == "blob"

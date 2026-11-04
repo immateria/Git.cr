@@ -1,9 +1,9 @@
 module Git
   struct Merge
-    # A merge stopped for conflict resolution: the branch it is on, that
-    # branch's commit when the merge started and the commit being merged
-    # (MERGE_HEAD).
-    record State, branch : String, ours : String, theirs : String
+    # A merge stopped for conflict resolution: the branch it is on (nil when
+    # HEAD is detached), HEAD's commit when the merge started and the commit
+    # being merged (MERGE_HEAD).
+    record State, branch : String?, ours : String, theirs : String
 
     record Result, ours : String, theirs : String, base : String?,
       changed_paths : Array(String), conflicts : Array(String), commit_oid : String?

@@ -13,6 +13,28 @@ module Git
     record Stat, ctime : UInt32, ctime_nsec : UInt32, mtime : UInt32, mtime_nsec : UInt32,
       dev : UInt32, ino : UInt32, mode : UInt32, uid : UInt32, gid : UInt32, size : UInt32
 
+    # Build the 32-bit stat record Git stores for a regular file on disk,
+    # or nil when the path is not a regular file or cannot be lstat'd.
+    protected def self.stat_for(full_path : String, mode : String) : Stat?
+      return nil unless mode == "100644" || mode == "100755"
+      stat = uninitialized LibC::Stat
+      return nil unless LibC.lstat(full_path, pointerof(stat)) == 0
+      return nil unless (stat.st_mode & LibC::S_IFMT) == LibC::S_IFREG
+      mtime, ctime = {% if flag?(:darwin) %}{stat.st_mtimespec, stat.st_ctimespec}{% else %}{stat.st_mtim, stat.st_ctim}{% end %}
+      Stat.new(
+        ctime.tv_sec.to_u32!,
+        ctime.tv_nsec.to_u32!,
+        mtime.tv_sec.to_u32!,
+        mtime.tv_nsec.to_u32!,
+        stat.st_dev.to_u32!,
+        stat.st_ino.to_u32!,
+        mode.to_u32(8),
+        stat.st_uid.to_u32!,
+        stat.st_gid.to_u32!,
+        stat.st_size.to_u32!
+      )
+    end
+
     record Change, path : String, status : String, head_oid : String?,
       index_oid : String?, stage : Int32?, head_mode : String?, index_mode : String? do
       def to_json(json : JSON::Builder) : Nil
@@ -57,14 +79,20 @@ module Git
                    @max_search_entries : Int32)
     end
 
-    # Compare HEAD's full tracked tree with the staged index. No worktree
-    # reads, ignores, filters, hooks, or executable invocation are needed.
+    # Compare HEAD's full tracked tree with the staged index. Uses valid
+    # cache-tree (`TREE` extension) entries when present to skip unchanged
+    # subtrees without reading their tree objects.
     protected def changes(max_bytes : Int32, limit : Int32, &check : -> Nil) : {Array(Change), Bool}
       check.call
-      staged = entries(max_bytes) { check.call }
+      staged, cache_trees = entries_with_cache_tree(max_bytes) { check.call }
+      clean_stages = staged.all? { |entry| entry.stage == 0 && !entry.intent }
       head_files = {} of String => {String, String}
+      skipped_prefixes = [] of String
       if head_oid = @metadata.head[1]
         tree_oid = Commit.read(@object_database, head_oid, @object_format, max_bytes) { check.call }.tree
+        if clean_stages && cache_trees[""]? == {staged.size, tree_oid}
+          return {[] of Change, false}
+        end
         nodes = [{"", tree_oid, 0}]
         visited = 0
         until nodes.empty?
@@ -79,7 +107,13 @@ module Git
             path = prefix + name
             validate_index_path!(path)
             if mode == "40000"
-              nodes << {path + "/", entry_oid, depth + 1}
+              sub_prefix = path + "/"
+              if clean_stages && (cached = cache_trees[sub_prefix]?) && cached[1] == entry_oid &&
+                 prefix_entry_count(staged, sub_prefix) == cached[0]
+                skipped_prefixes << sub_prefix
+              else
+                nodes << {sub_prefix, entry_oid, depth + 1}
+              end
             else
               head_files[path] = {mode, entry_oid}
             end
@@ -90,6 +124,7 @@ module Git
       changes = [] of Change
       staged.each do |entry|
         check.call
+        next if skipped_prefixes.any? { |sub_prefix| entry.path.starts_with?(sub_prefix) }
         # Git may track or stage workspace lease metadata and hidden
         # credentials. Do not reveal paths forbidden by the host policy.
         present.add(entry.path)
@@ -123,6 +158,17 @@ module Git
       {changes.first(limit), changes.size > limit}
     end
 
+    private def prefix_entry_count(staged : Array(Entry), prefix : String) : Int32
+      start = staged.bsearch_index { |entry| entry.path >= prefix } || return 0
+      count = 0
+      i = start
+      while i < staged.size && staged[i].path.starts_with?(prefix)
+        count += 1
+        i += 1
+      end
+      count
+    end
+
     # Versions 2/3 use 8-byte padded entries. Version 4 shares the stat
     # header but prefix-compresses names and has no padding. Unsupported
     # required extensions (notably sparse/split index) must fail closed.
@@ -133,9 +179,13 @@ module Git
     end
 
     protected def entries(max_bytes : Int32, &check : -> Nil) : Array(Entry)
+      entries_with_cache_tree(max_bytes) { check.call }[0]
+    end
+
+    protected def entries_with_cache_tree(max_bytes : Int32, &check : -> Nil) : {Array(Entry), Hash(String, {Int32, String})}
       file = File.join(@metadata.git_dir, "index")
       raise Git::Error.new("Git index symlink refused") if File.symlink?(file)
-      return [] of Entry unless File.exists?(file)
+      return {[] of Entry, {} of String => {Int32, String}} unless File.exists?(file)
       raise Git::Error.new("Git index is not a regular file") unless File.file?(file) && File.realpath(file) == file
       raise Git::Error.new("Git index byte budget exceeded") if max_bytes < 12 + @object_format.bytesize
       buffer = IO::Memory.new
@@ -204,15 +254,27 @@ module Git
         if previous > path || (previous == path && (stage <= previous_stage || stage == 0 || previous_stage == 0))
           raise Git::Error.new("Git index entries out of order or mixed conflict stages")
         end
-        stat = Stat.new(index_u32(raw, start), index_u32(raw, start + 4), index_u32(raw, start + 8),
-          index_u32(raw, start + 12), index_u32(raw, start + 16), index_u32(raw, start + 20),
-          raw_mode, index_u32(raw, start + 28), index_u32(raw, start + 32), index_u32(raw, start + 36))
+        ctime = index_u32(raw, start)
+        ctime_nsec = index_u32(raw, start + 4)
+        mtime = index_u32(raw, start + 8)
+        mtime_nsec = index_u32(raw, start + 12)
+        dev = index_u32(raw, start + 16)
+        ino = index_u32(raw, start + 20)
+        uid = index_u32(raw, start + 28)
+        gid = index_u32(raw, start + 32)
+        size = index_u32(raw, start + 36)
+        stat = if ctime == 0 && mtime == 0 && dev == 0 && ino == 0 && uid == 0 && gid == 0 && size == 0
+                 nil
+               else
+                 Stat.new(ctime, ctime_nsec, mtime, mtime_nsec, dev, ino, raw_mode, uid, gid, size)
+               end
         entries << Entry.new(path, mode, oid, stage,
           (extended & 0x2000) != 0, (extended & 0x4000) != 0,
           (flags & 0x8000) != 0, stat)
         previous = path
         previous_stage = stage
       end
+      cache_trees = {} of String => {Int32, String}
       while pos < body_len
         check.call
         raise Git::Error.new("Git index extension truncated") if pos + 8 > body_len
@@ -222,11 +284,47 @@ module Git
         raise Git::Error.new("Git index extension exceeds bounds") if size > body_len - pos
         first = signature.byte_at(0)
         raise Git::Error.new("unsupported required Git index extension") unless first >= 65 && first <= 90
+        if signature == "TREE"
+          cache_trees = parse_cache_tree(raw, pos, pos + size.to_i, hash_size)
+        end
         pos += size.to_i
       end
-      entries
+      {entries, cache_trees}
     rescue ex : IO::Error
       raise Git::Error.new("Git index I/O invalid: #{ex.class}")
+    end
+
+    private def parse_cache_tree(raw : String, start_pos : Int32, end_pos : Int32, hash_size : Int32) : Hash(String, {Int32, String})
+      trees = {} of String => {Int32, String}
+      pos = start_pos
+      stack = [{"", 1}]
+      while !stack.empty? && pos < end_pos
+        prefix, remaining = stack.pop
+        next if remaining <= 0
+        stack << {prefix, remaining - 1} if remaining > 1
+        nul = raw.byte_index(0, pos)
+        return {} of String => {Int32, String} unless nul && nul < end_pos
+        name = raw.byte_slice(pos, nul - pos)
+        pos = nul + 1
+        nl = raw.byte_index('\n'.ord.to_u8, pos)
+        return {} of String => {Int32, String} unless nl && nl < end_pos
+        header = raw.byte_slice(pos, nl - pos)
+        pos = nl + 1
+        space = header.byte_index(' '.ord.to_u8)
+        return {} of String => {Int32, String} unless space
+        entry_count = header.byte_slice(0, space).to_i?
+        subtrees = header.byte_slice(space + 1).to_i?
+        return {} of String => {Int32, String} unless entry_count && subtrees && subtrees >= 0
+        current_prefix = name.empty? ? prefix : "#{prefix}#{name}/"
+        if entry_count >= 0
+          return {} of String => {Int32, String} if pos + hash_size > end_pos
+          oid = raw.byte_slice(pos, hash_size).to_slice.hexstring
+          pos += hash_size
+          trees[current_prefix] = {entry_count, oid}
+        end
+        stack << {current_prefix, subtrees} if subtrees > 0
+      end
+      pos == end_pos && stack.empty? ? trees : {} of String => {Int32, String}
     end
 
     private def index_u16(raw : String, pos : Int32) : UInt16

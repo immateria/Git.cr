@@ -38,8 +38,9 @@ module Git
       raise Error.new("Git three-way merge unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                       (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
       branch, old_oid = head_ref_and_oid
-      raise Error.new("Git three-way merge requires an existing symbolic branch") unless branch &&
-                                                                                         branch.starts_with?("refs/heads/") && old_oid
+      unless old_oid && (branch.nil? || branch.starts_with?("refs/heads/"))
+        raise Error.new("Git three-way merge requires an existing branch or detached HEAD")
+      end
       raise Error.new("Git merge is already in progress") if merge_state?
       raise Error.new("Git merge refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git merge refuses in-progress rebase") if rebase_state?

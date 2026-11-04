@@ -28,7 +28,7 @@ module Git
       end
       checked.call
       begin
-        update_ref(state.branch, oid, expected_oid: state.original_head,
+        update_head_or_branch(state.branch, oid, expected_oid: state.original_head,
           log: References::LogEntry.new(committer, "#{Sequencer.label(state.kind)}: #{text.lines.first? || ""}"),
           max_object_bytes: max_object_bytes, check: checked)
       rescue ex

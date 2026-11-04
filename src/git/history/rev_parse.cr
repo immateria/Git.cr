@@ -61,6 +61,7 @@ module Git
       def parse(expression : String) : String
         raise Error.new("empty Git revision") if expression.empty?
         raise Error.new("Git revision too long") if expression.bytesize > 4096
+        return search_commit_message(expression.byte_slice(2)) if expression.starts_with?(":/")
         return index_path(expression.byte_slice(1)) if expression.starts_with?(':')
         if colon = top_level_colon(expression)
           tree = Revision.peel(@repository, parse(expression.byte_slice(0, colon)), "tree", @max_object_bytes)
@@ -102,6 +103,28 @@ module Git
         nil
       end
 
+      # The nth previous branch or commit checked out according to HEAD's
+      # reflog (`@{-n}` or `git switch -`).
+      def prior_checkout(nth : Int32) : String
+        raise Error.new("invalid Git prior checkout count #{nth}") if nth < 1
+        path = File.join(@repository.git_dir, "logs", "HEAD")
+        raise Error.new("Git HEAD has no reflog") unless File.file?(path)
+        found = 0
+        File.read(path).lines.reverse_each do |line|
+          next if line.empty?
+          tab = line.byte_index('\t'.ord) || next
+          message = line.byte_slice(tab + 1)
+          next unless message.starts_with?("checkout: moving from ")
+          rest = message.byte_slice(22)
+          split = rest.byte_index(" to ") || next
+          from = rest.byte_slice(0, split)
+          next if from.empty?
+          found += 1
+          return from if found == nth
+        end
+        raise Error.new("Git reflog has fewer than #{nth} prior checkouts")
+      end
+
       # :<path> or :<stage>:<path>.
       private def index_path(rest : String) : String
         stage = 0
@@ -114,8 +137,12 @@ module Git
         entry.oid
       end
 
-      # <ref>@{upstream} and <ref>@{n}.
+      # <ref>@{upstream}, <ref>@{n} and @{-n}.
       private def resolve_selector(name : String, selector : String) : String
+        if name.empty? && selector.starts_with?('-') && (nth = selector.byte_slice(1).to_i?) && nth >= 1
+          target = prior_checkout(nth)
+          return resolve_name(target) || raise Error.new("unknown Git revision #{target}")
+        end
         ref = if name.empty? || name == "HEAD"
                 @repository.head_ref_and_oid[0] || "HEAD"
               else
@@ -132,6 +159,34 @@ module Git
         else
           raise Error.new("unsupported Git revision selector @{#{selector}}")
         end
+      end
+
+      private def search_commit_message(query : String) : String
+        raise Error.new("empty Git commit search query") if query.empty?
+        regex = begin
+          Regex.new(query)
+        rescue ArgumentError
+          Regex.new(Regex.escape(query))
+        end
+        tips = [] of String
+        @repository.head_ref_and_oid[1].try { |oid| tips << oid }
+        @repository.references("refs/").each do |ref|
+          ref.oid.try do |oid|
+            begin
+              tips << Revision.peel(@repository, oid, "commit", @max_object_bytes)
+            rescue Error
+            end
+          end
+        end
+        tips.uniq!
+        walker.commits(tips, [] of String).each do |oid|
+          raw = @repository.read_object(oid, max_bytes: @max_object_bytes)
+          next unless raw.type.commit?
+          separator = raw.data.byte_index("\n\n") || next
+          message = raw.data.byte_slice(separator + 2, raw.data.bytesize - separator - 2)
+          return oid if regex.matches?(message)
+        end
+        raise Error.new("no Git commit matches :/#{query}")
       end
 
       private def resolve_name(name : String) : String?
@@ -258,8 +313,8 @@ module Git
     # Resolve a revision to an object ID, as `git rev-parse --verify` does,
     # for Git's everyday grammar: full or abbreviated (4+ hex) IDs, ref
     # names with Git's lookup rules, HEAD and the other pseudo-refs, @,
-    # <ref>@{n}, <branch>@{upstream} (@{u}), ~N, ^N, ^{type}, ^{},
-    # <rev>:<path> and :<path> / :<stage>:<path> (the index).
+    # <ref>@{n}, @{-n}, <branch>@{upstream} (@{u}), ~N, ^N, ^{type}, ^{},
+    # :/text, <rev>:<path> and :<path> / :<stage>:<path> (the index).
     def rev_parse(expression : String, *, max_object_bytes : Int32 = 268_435_456) : String
       check!
       Revision::Parser.new(self, max_object_bytes).parse(expression)
