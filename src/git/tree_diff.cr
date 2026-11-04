@@ -82,11 +82,10 @@ module Git
       by_name
     end
 
-    # :nodoc:
     # The changes between two flat path-to-(mode, oid) maps, sorted by
     # path, for sides that are not trees (the index, a working tree).
-    def self.compare_flat(old_entries : Hash(String, {String, String}), new_entries : Hash(String, {String, String}), *,
-                          renames : Bool = false, check : Proc(Nil)? = nil) : Array(Change)
+    protected def self.compare_flat(old_entries : Hash(String, {String, String}), new_entries : Hash(String, {String, String}), *,
+                                    renames : Bool = false, check : Proc(Nil)? = nil) : Array(Change)
       changes = [] of Change
       (old_entries.keys + new_entries.keys).uniq.each do |path|
         check.try &.call
@@ -115,8 +114,7 @@ module Git
       end
     end
 
-    # :nodoc:
-    def self.selected?(path : String, paths : Array(String)) : Bool
+    protected def self.selected?(path : String, paths : Array(String)) : Bool
       return true if paths.empty?
       paths.any? do |selected|
         selected = selected.rchop('/')

@@ -54,14 +54,12 @@ module Git
         @expected.nil?
       end
 
-      # :nodoc:
-      def covers?(remote_ref : String) : Bool
+      protected def covers?(remote_ref : String) : Bool
         names = @expected.try(&.keys) || @refs
         names.nil? || names.any? { |name| Lease.names?(name, remote_ref) }
       end
 
-      # :nodoc:
-      def explicit_expectation(remote_ref : String) : String?
+      protected def explicit_expectation(remote_ref : String) : String?
         @expected.try(&.each { |name, oid| return oid if Lease.names?(name, remote_ref) })
         nil
       end
@@ -224,7 +222,8 @@ module Git
     # What the remote ref is expected to hold under *lease* (nil: absent).
     private def lease_expectation(lease : Push::Lease, remote_ref : String, remote : Remote?) : String?
       return lease.explicit_expectation(remote_ref) unless lease.tracking?
-      remote.try &.fetch_refspecs.each do |spec|
+      return nil unless remote
+      remote.fetch_refspecs.each do |spec|
         next if spec.negative?
         if tracking_ref = spec.map_source(remote_ref)
           return resolve_ref?(tracking_ref)

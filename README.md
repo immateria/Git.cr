@@ -29,10 +29,11 @@ repository.rev_parse("main~2:src/app.cr")    # => blob ID
 repository.log(["origin/main..HEAD"], limit: 20).commits.each { |commit| puts commit.subject }
 
 me = Git::Signature.new("Me", "me@example.com", Time.utc.to_unix, 0)
-repository.branches.create("feature", from: "main")
-repository.switch("feature")
-repository.stage_file("src/app.cr")
+repository.switch("feature", create: true, from: "main", actor: me) # git switch -c
+repository.stage                                # git add -A
+print repository.diff(cached: true)             # git diff --cached
 repository.commit(author: me, committer: me, message: "Fix the app")
+repository.amend(committer: me, message: "Fix the app properly")
 repository.stash.push(actor: me) # nil when there is nothing to stash
 ```
 
@@ -57,6 +58,8 @@ repository = Git::Repository.clone(transport, "/tmp/project",
   url: "https://example.com/project.git")
 repository.fetch("origin", transport: transport)
 repository.push("origin", ["main"], transport: transport)
+repository.push("origin", ["main"], transport: transport,
+  lease: Git::Push::Lease.tracking) # --force-with-lease
 repository.fetch(transport, ["+refs/heads/*:refs/remotes/mirror/*"]) # no configured remote
 ```
 
@@ -92,8 +95,7 @@ agent tools and controls every grant; see
   provenance. Paths are
   byte-exact (`Git::PathBytes`), including invalid UTF-8 on Linux; callers must not
   normalize them for lookup or permission decisions. `Git::RefName.valid?` follows
-  the byte-level `git check-ref-format` grammar. `Git::TextDiff` emits Git's
-  C-style quoted path headers and accepts only UTF-8 text. `Git::Ignore` evaluates
+  the byte-level `git check-ref-format` grammar. `Git::Ignore` evaluates
   repository `.gitignore`, nested `.gitignore` and `info/exclude`, parent before
   child, so an ignored parent cannot be re-included by negating a child.
 - **Writing objects.** `init` makes a repository and probes its file system as
@@ -102,8 +104,11 @@ agent tools and controls every grant; see
   `write_tag` publish loose objects, and `branches.create` and `tags.create`
   create refs. `Config::FileEditor` makes explicit file-scoped configuration edits with an
   exclusive `.lock` and atomic replace.
-- **Index and refs.** `stage_blob`, `stage_file`, `remove_from_index`,
-  `write_index_tree` and `commit` stage and commit with index versions 2 to
+- **Index and refs.** `stage` is `git add -A` (or `-u` with `tracked_only:`)
+  over the whole tree, files or directories, in one index write; `remove` is
+  `git rm` with Git's safety checks (`cached:`, `force:`, `recursive:`).
+  `stage_blob`, `stage_file`, `remove_from_index`, `write_index_tree`, `commit`
+  and `amend` (`git commit --amend`) stage and commit with index versions 2 to
   4. `refs.update` and `refs.delete` are single-ref compare-and-swap updates and
   `refs.apply` takes a mixed create/update/delete batch, with packed-refs
   rewriting, optional reflog appends and explicit partial-publication
@@ -117,7 +122,9 @@ agent tools and controls every grant; see
   clean up an interrupted run. Durable transactions share a per-common-directory advisory lock
   and refuse to start while a journal is pending. This is a recoverable intent
   record, not global crash atomicity or rollback.
-- **Workflows.** `switch`, `restore`, `restore_staged`, `read_tree`, `reset`
+- **Workflows.** `switch` (to a branch; `create:` and `from:` as `-c`;
+  `detach:`; and Git's guess of a remote branch, with an upstream set as
+  `branch.autoSetupMerge` says), `restore`, `restore_staged`, `read_tree`, `reset`
   (soft, mixed or hard), `fast_forward`, `merge` (then `merge.continue`,
   `merge.abort` and `merge.conflicts`), the single-commit sequencer
   (`cherry_pick` and `revert`, then `cherry_pick.continue` and so on), linear
@@ -129,6 +136,11 @@ agent tools and controls every grant; see
   Git-compatible index stages and worktree leaves, and rebase keeps commits that
   were empty in their source history unless the caller says otherwise. Repeated-line
   alignment and Git's full `ort` conflict layout are intentionally bounded.
+  Given an `actor:` (or, for `merge` and `pull`, the committer), `switch`,
+  `reset`, `fast_forward`, `merge`, `pull` and `branches.create` write Git's
+  reflog lines, and `reset`, `merge`, `fast_forward`, `pull` and `rebase`
+  record `ORIG_HEAD`. Commands that take a commit accept the `rev_parse`
+  grammar.
 
 - **History.** `rev_parse` resolves Git's everyday revision grammar: full
   and abbreviated IDs, ref lookup rules, `@`, `@{n}`, `@{upstream}`, `~`,
@@ -138,6 +150,13 @@ agent tools and controls every grant; see
   ancestry questions; `reachable_objects` is `rev-list --objects`. `diff_trees` and `commit_changes` list added,
   deleted, modified, type-changed and (exactly) renamed paths between trees as
   `TreeDiff::Change` values, as `git diff-tree -r` does.
+- **Diffs.** `diff` mirrors `git diff`'s forms (index against worktree,
+  `cached:` for HEAD or a revision against the index, a revision against the
+  worktree, two trees) and `commit_patch` is a commit against its first parent.
+  Both return a `Git::Patch`, per-file sections whose text is byte for byte
+  `git diff --no-color`: xdiff's Myers diff with its heuristics and the indent
+  heuristic, function-name hunk headers, exact renames, mode and type changes,
+  binary files, symlinks, gitlinks and C-style quoted paths.
 - **Branches and tags.** `branches.list` (`Git::Branch`, with upstream and
   ahead/behind), `branches.create`, `branches.delete`, `branches.rename`,
   `branches.upstream` and `branches.set_upstream`; `tags.list`, `tags.create`
@@ -152,8 +171,8 @@ agent tools and controls every grant; see
   `remotes.set_url` and `Remote::Refspec`;
   `clone`, `fetch` (from a remote name or a `Transport`; tag following, prune,
   shallow `depth:`, FETCH_HEAD),
-  `pull` (fast-forward or merge), `push` (fast-forward rules, force, atomic,
-  deletes) and `ls_remote`, reporting `Fetch::Result`, `Pull::Result` and
+  `pull` (fast-forward or merge), `push` (fast-forward rules, force,
+  `lease:` for `--force-with-lease`, atomic, deletes) and `ls_remote`, reporting `Fetch::Result`, `Pull::Result` and
   `Push::Result`. Fetch speaks protocol v2 (`Protocol::UploadPack::Client`);
   push speaks receive-pack v0/v1 (`Protocol::ReceivePack::Client`), and both
   services have native servers. Every `Git::Transport` is one of `Local`
@@ -190,16 +209,20 @@ profiles. In an umbrella workspace that vendors this shard,
 - Not implemented: worktree and submodule lifecycle; hooks, filters and
   signing; credential helpers; protocol v0/v1 fetch (servers must speak
   protocol v2 for fetching, as Git servers have by default since 2.26),
-  partial clones, `--force-with-lease`, `rebase` pulls, similarity-based rename
-  detection and textual patches between commits; and full
+  partial clones, `rebase` pulls, similarity-based rename detection and copies,
+  globs and pathspec magic; and full
   attribute and ignore parity (global excludes, case folding and the whole of
   Git's wildmatch). Reftable ref storage, split and sparse indexes, replace
   refs, grafts and alternate object directories are unsupported.
 - Clone's checkout writes the tree into an empty worktree; it does not apply
   filters or attributes. The index it writes carries no stat data, so Git
   rehashes files on its first `status`.
-- Text diffs and merges use bounded algorithms and handle UTF-8 text only, not
-  binary or very large patches. `0b` and `0B` configuration integer prefixes follow
+- Merges use a bounded text algorithm and handle UTF-8 text only. Diffs take
+  any bytes, but apply no attributes, textconv or userdiff function patterns,
+  and abbreviate IDs to at least 7 digits rather than scaling with the object
+  count (`abbrev:`).
+- A detached HEAD can be reached with `switch(detach: true)` and left with
+  `switch`, but `commit`, `amend`, `reset` and `merge` need a checked-out branch. `0b` and `0B` configuration integer prefixes follow
   a fixed binary-integer policy independent of the host libc.
 - Working-file status and diffs use a bounded regular-file reader and an ancestor
   symlink check. They reject observed redirection and concurrent change but are not
