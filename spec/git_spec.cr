@@ -179,7 +179,12 @@ end
 describe "Git text patch path encoding" do
   it "quotes unusual filenames exactly as Git does" do
     git_fixture do |root|
-      names = ["space name", "quote\"name", "back\\slash", "line\nfeed", "caf\u00e9", "with space\ttab", String.new(Bytes[0xff]), "src/valid-file.cr"]
+      names = ["space name", "quote\"name", "back\\slash", "line\nfeed", "caf\u00e9", "with space\ttab", "src/valid-file.cr"]
+      # APFS cannot represent filenames that are not valid UTF-8, so the
+      # raw-byte name is only exercised where the filesystem accepts it.
+      {% unless flag?(:darwin) %}
+        names << String.new(Bytes[0xff])
+      {% end %}
       names.each do |name|
         Dir.mkdir_p(File.dirname(File.join(root, name)))
         File.write(File.join(root, name), "before\n")
