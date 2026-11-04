@@ -204,6 +204,10 @@ The remote specs also run `git http-backend`, `git daemon`, `git upload-pack` an
 profiles. In an umbrella workspace that vendors this shard,
 `scripts/test-all git-differential` runs a bounded routine oracle suite.
 
+`bench/realworld.cr` checks the library against Git on a clone of any real
+repository and times both; [docs/REAL_WORLD.md](docs/REAL_WORLD.md) has the
+results for three public repositories and what they found.
+
 ## Current limits
 
 - Not implemented: worktree and submodule lifecycle; hooks, filters and
@@ -212,18 +216,22 @@ profiles. In an umbrella workspace that vendors this shard,
   partial clones, `rebase` pulls, similarity-based rename detection and copies,
   globs and pathspec magic; and full
   attribute and ignore parity (global excludes, case folding and the whole of
-  Git's wildmatch). Reftable ref storage, split and sparse indexes, replace
+  Git's wildmatch: Git's `?` and `[...]` match single bytes, the library's
+  whole characters). Reftable ref storage, split and sparse indexes, replace
   refs, grafts and alternate object directories are unsupported.
 - Clone's checkout writes the tree into an empty worktree; it does not apply
-  filters or attributes. The index it writes carries no stat data, so Git
-  rehashes files on its first `status`.
+  filters or attributes. Indexes the library writes (clone, checkout,
+  `stage`) carry no stat data, so the next `status`, Git's or the library's,
+  hashes every file; status trusts the stat data in indexes Git wrote.
 - Merges use a bounded text algorithm and handle UTF-8 text only. Diffs take
-  any bytes, but apply no attributes, textconv or userdiff function patterns,
-  and abbreviate IDs to at least 7 digits rather than scaling with the object
-  count (`abbrev:`).
+  any bytes, but apply no attributes or textconv; hunk headers use Git's
+  default function-name rule, not the language drivers `.gitattributes` can
+  select (`*.c diff=cpp`), and IDs are abbreviated to at least 7 digits
+  rather than scaling with the object count (`abbrev:`).
 - A detached HEAD can be reached with `switch(detach: true)` and left with
-  `switch`, but `commit`, `amend`, `reset` and `merge` need a checked-out branch. `0b` and `0B` configuration integer prefixes follow
-  a fixed binary-integer policy independent of the host libc.
+  `switch`, but `commit`, `amend`, `reset` and `merge` need a checked-out branch.
+- `0b` and `0B` configuration integer prefixes follow a fixed binary-integer
+  policy independent of the host libc.
 - Working-file status and diffs use a bounded regular-file reader and an ancestor
   symlink check. They reject observed redirection and concurrent change but are not
   kernel-atomic against hostile replacement.
