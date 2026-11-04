@@ -101,7 +101,7 @@ describe "P24 index-only restore and reset" do
         expect_raises(Git::Error, /neither indexed nor in source/) { repo.restore_staged(["missing"]) }
         expect_raises(Git::Error, /duplicate/) { repo.restore_staged(["tracked", "tracked"]) }
         expect_raises(ArgumentError, /budget/) { repo.read_tree(max_entries: 0) }
-        expect_raises(Git::Error, /resolved/) { repo.read_tree("refs/heads/unknown") }
+        expect_raises(Git::Error, /unknown Git revision/) { repo.read_tree("refs/heads/unknown") }
         File.write(File.join(root, ".git", "index.lock"), "foreign")
         begin
           expect_raises(Git::Error) { repo.restore_staged(["tracked"]) }

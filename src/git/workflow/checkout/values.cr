@@ -2,7 +2,9 @@ module Git
   # Local, conservative checkout plumbing. This is a bounded files-backend
   # transition, not a worktree-wide atomic transaction or a Git CLI emulator.
   module Checkout
-    record Result, reference : String, commit_oid : String, changed_paths : Array(String)
+    # What a switch did. reference is the branch HEAD now names, nil when
+    # HEAD is detached.
+    record Result, reference : String?, commit_oid : String, changed_paths : Array(String)
     record FileState, mode : String, oid : String
     # :nodoc:
     record Write, path : String, mode : String, oid : String, data : String

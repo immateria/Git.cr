@@ -82,6 +82,30 @@ module Git
       by_name
     end
 
+    # The changes between two flat path-to-(mode, oid) maps, sorted by
+    # path, for sides that are not trees (the index, a working tree).
+    protected def self.compare_flat(old_entries : Hash(String, {String, String}), new_entries : Hash(String, {String, String}), *,
+                                    renames : Bool = false, check : Proc(Nil)? = nil) : Array(Change)
+      changes = [] of Change
+      (old_entries.keys + new_entries.keys).uniq.each do |path|
+        check.try &.call
+        before = old_entries[path]?
+        after = new_entries[path]?
+        next if before == after
+        if before && after
+          status = kind(before[0]) == kind(after[0]) ? 'M' : 'T'
+          changes << Change.new(status, path, path, before[0], after[0], before[1], after[1])
+        elsif before
+          changes << Change.new('D', path, nil, before[0], nil, before[1], nil)
+        elsif after
+          changes << Change.new('A', nil, path, nil, after[0], nil, after[1])
+        end
+      end
+      changes = pair_exact_renames(changes) if renames
+      changes.sort_by! { |change| change.path.to_slice }
+      changes
+    end
+
     private def self.kind(mode : String) : Symbol
       case mode
       when "120000" then :symlink
@@ -90,7 +114,7 @@ module Git
       end
     end
 
-    private def self.selected?(path : String, paths : Array(String)) : Bool
+    protected def self.selected?(path : String, paths : Array(String)) : Bool
       return true if paths.empty?
       paths.any? do |selected|
         selected = selected.rchop('/')
@@ -145,6 +169,24 @@ module Git
       oid = Revision.peel(self, rev_parse(revision), "commit")
       parent = History::RevisionWalker.new(self, check: check).commit_node(oid).parents.first?
       diff_trees(parent, oid, renames: renames, check: check)
+    end
+
+    # The commit's patch against its first parent, or against the empty
+    # tree for a root commit (the diff of `git show --format=
+    # --first-parent`). Options as for #diff.
+    def commit_patch(revision : String = "HEAD", *, context : Int32 = 3, renames : Bool = true,
+                     paths : Array(String) = [] of String, abbrev : Int32 = 7,
+                     indent_heuristic : Bool = true, max_bytes : Int32 = 8_388_608,
+                     max_changes : Int32 = 1_000_000, max_lines : Int32 = 1_000_000,
+                     check : Proc(Nil)? = nil) : Patch
+      oid = Revision.peel(self, rev_parse(revision), "commit")
+      parent = History::RevisionWalker.new(self, check: check).commit_node(oid).parents.first?
+      old_tree = parent.try { |commit| Revision.peel(self, commit, "tree") }
+      new_tree = Revision.peel(self, oid, "tree")
+      changes = TreeDiff.compare(self, old_tree, new_tree, renames: renames, paths: paths,
+        max_object_bytes: max_bytes, max_changes: max_changes, check: check)
+      Patch.build(self, changes, {} of String => String, context: context, abbrev: abbrev,
+        indent_heuristic: indent_heuristic, max_bytes: max_bytes, max_lines: max_lines, check: check)
     end
   end
 end

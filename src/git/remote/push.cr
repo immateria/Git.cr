@@ -22,6 +22,53 @@ module Git
       end
     end
 
+    # Which remote refs a push may overwrite, and the value each is
+    # expected to have: `git push --force-with-lease`. A ref under a lease
+    # is updated even when not a fast-forward, but only if the remote still
+    # holds the expected value; otherwise it is rejected as "stale info".
+    struct Lease
+      # `--force-with-lease[=<ref>]...`: the expectation is the
+      # remote-tracking ref of each pushed ref (all of them, or only
+      # *refs*). A missing tracking ref expects the remote ref not to exist.
+      def self.tracking(refs : Array(String)? = nil) : Lease
+        new(refs, nil)
+      end
+
+      # `--force-with-lease=<ref>:<oid>`: each named ref (short names are
+      # expanded as Git does) is expected to hold exactly the given object
+      # ID; nil expects it not to exist. Other refs are not leased.
+      def self.expect(expected : Hash(String, V)) : Lease forall V
+        explicit = {} of String => String?
+        expected.each { |name, oid| explicit[name] = oid }
+        new(nil, explicit)
+      end
+
+      getter refs : Array(String)?
+      getter expected : Hash(String, String?)?
+
+      protected def initialize(@refs : Array(String)?, @expected : Hash(String, String?)?)
+      end
+
+      # Whether the expectations come from remote-tracking refs.
+      def tracking? : Bool
+        @expected.nil?
+      end
+
+      protected def covers?(remote_ref : String) : Bool
+        names = @expected.try(&.keys) || @refs
+        names.nil? || names.any? { |name| Lease.names?(name, remote_ref) }
+      end
+
+      protected def explicit_expectation(remote_ref : String) : String?
+        @expected.try(&.each { |name, oid| return oid if Lease.names?(name, remote_ref) })
+        nil
+      end
+
+      protected def self.names?(name : String, remote_ref : String) : Bool
+        name == remote_ref || RefName.expand(name, [remote_ref]) == remote_ref
+      end
+    end
+
     # The outcome of a push and how many objects its pack carried.
     record Result, url : String, updates : Array(Update), pack_objects : Int32 do
       def success? : Bool
@@ -41,17 +88,22 @@ module Git
     # (or the same name), as push.default=simple does; transport overrides
     # how it is reached and, with update_tracking, remote-tracking refs
     # follow successful updates. A transport needs explicit refspecs.
-    # Non-fast-forward updates are refused unless forced.
+    # Non-fast-forward updates are refused unless forced; a lease
+    # (`--force-with-lease`) forces a ref only while the remote still holds
+    # the value it expects, else the ref is rejected as "stale info". A
+    # tracking lease needs a named remote (its remote-tracking refs).
     def push(remote : String | Transport = "origin", refspecs : Array(String)? = nil, *,
              transport : Transport? = nil, force : Bool = false,
              atomic : Bool = false, update_tracking : Bool = true,
-             actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
+             lease : Push::Lease? = nil, actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
              check : Proc(Nil)? = nil) : Push::Result
+      lease.try &.expected.try &.each_value { |oid| ObjectId.valid!(oid, @object_format) if oid }
       if remote.is_a?(Transport)
+        raise ArgumentError.new("A tracking Git push lease needs a named remote") if lease.try(&.tracking?)
         raise ArgumentError.new("transport: applies to a named Git remote") if transport
         specs = refspecs || raise ArgumentError.new("Git push to a transport needs refspecs")
         return push_to(remote, specs, url: remote.url, force: force, atomic: atomic,
-          progress: progress, check: check)
+          lease: lease, tracking: nil, progress: progress, check: check)
       end
       configured = remote(remote)
       selected = transport || Transport.for_url(configured.push_url)
@@ -67,14 +119,14 @@ module Git
         end
       end
       result = push_to(selected, specs, url: configured.push_url, force: force, atomic: atomic,
-        progress: progress, check: check)
+        lease: lease, tracking: configured, progress: progress, check: check)
       update_tracking_after_push(configured, result, actor) if update_tracking
       result
     end
 
     protected def push_to(transport : Transport, refspecs : Array(String), *, url : String,
-                          force : Bool, atomic : Bool, progress : Proc(String, Nil)?,
-                          check : Proc(Nil)?) : Push::Result
+                          force : Bool, atomic : Bool, lease : Push::Lease?, tracking : Remote?,
+                          progress : Proc(String, Nil)?, check : Proc(Nil)?) : Push::Result
       check!
       specs = refspecs.map { |text| Remote::Refspec.parse(text, fetch: false) }
       connection = transport.connect(Transport::Service::ReceivePack, 0)
@@ -90,6 +142,14 @@ module Git
         commands = [] of Push::Update
         planned.each do |local_ref, remote_ref, new_oid, forced|
           old = remote_refs[remote_ref]?
+          leased = false
+          if lease && lease.covers?(remote_ref) && !(new_oid && old == new_oid)
+            if old != lease_expectation(lease, remote_ref, tracking)
+              updates << Push::Update.new(local_ref, remote_ref, old, new_oid, Push::Update::Status::Rejected, "stale info")
+              next
+            end
+            leased = true
+          end
           if new_oid.nil?
             if old.nil?
               updates << Push::Update.new(local_ref, remote_ref, nil, nil, Push::Update::Status::Rejected, "remote ref does not exist")
@@ -105,7 +165,7 @@ module Git
             next
           end
           reason = nil.as(String?)
-          if old && !forced
+          if old && !forced && !leased
             if remote_ref.starts_with?("refs/tags/")
               reason = "already exists"
             elsif !has_object?(old)
@@ -157,6 +217,19 @@ module Git
       ensure
         connection.close
       end
+    end
+
+    # What the remote ref is expected to hold under *lease* (nil: absent).
+    private def lease_expectation(lease : Push::Lease, remote_ref : String, remote : Remote?) : String?
+      return lease.explicit_expectation(remote_ref) unless lease.tracking?
+      return nil unless remote
+      remote.fetch_refspecs.each do |spec|
+        next if spec.negative?
+        if tracking_ref = spec.map_source(remote_ref)
+          return resolve_ref?(tracking_ref)
+        end
+      end
+      nil
     end
 
     # {local ref, remote ref, new oid (nil to delete), forced}

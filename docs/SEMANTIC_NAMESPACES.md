@@ -104,6 +104,18 @@ handles or hidden.
 | N157-12 | Public helpers on `Checkout`, `Merge`, `Sequencer`, `Revision`, `IndexRestore`, `References::Recovery`, `Repository::Admission`, `Index`, `WorkingTree`, `HeadTree` | `protected`, or `:nodoc:` where white-box specs call them; `Location`, `Metadata`, `ObjectDatabase`, `HeadTree`, `DescriptorPath`, `Revision`, `RevisionWalker`, `Transaction` and internal plans `:nodoc:` | The documented API is what callers use |
 | N157-13 | `Location::AdmissionSite`; string object types in `write_tag`, `Tag.encode`, `ReachableObject` and the pack plumbing; the `SSH.parse` tuple | `Repository::Admission::Site`; `ObjectType`; `SSH#user`, `#host`, `#port` and `#path` | The admission hook's argument belongs with `Admission::Identity`; an invalid object type no longer type-checks |
 
+## Local workflow decisions
+
+| ID      | Baseline | Decision / owner now | Reason |
+| ------- | -------- | -------------------- | ------ |
+| N158-01 | `stage_file` and `remove_from_index` only | `stage(paths, tracked_only:)` (`add -A`/`-u`) and `remove(paths, cached:, force:, recursive:)` (`rm`), raising `Staging::{IgnoredPaths, PathspecMismatch}` and `Removal::{Refused, NotRecursive, PartialRemoval}`; `stage_file` and `remove_from_index` stay as single-path primitives | Git's verbs over many paths in one index write; the primitives return a blob ID or skip the safety checks, which the verbs cannot |
+| N158-02 | `TextDiff.unified` over one `staged_file`/`working_file` comparison | `diff(old, new, cached:)` and `commit_patch(revision)` returning `Git::Patch` (`Indexable(Patch::File)`); `TextDiff` is the `:nodoc:` engine | One verb with `git diff`'s forms; a patch is a value with per-file sections, not a string the caller assembles |
+| N158-03 | `push(force:)` only | `push(lease: Push::Lease)`; `Lease.tracking(refs)` and `Lease.expect({ref => oid?})` | `--force-with-lease`'s two forms as constructors; a lease is pushed with the refs it covers |
+| N158-04 | `reset(log:)`, `fast_forward(log:)`, `branches.create(log:)` taking a `References::LogEntry` | `actor : Signature?`; the command writes Git's own message | The message is the command's, as in Git; `refs.update(log:)` keeps the free-form entry (`update-ref -m`) |
+| N158-05 | `switch(name)` for an existing branch only | `switch(target, create:, from:, detach:, guess:, track:, actor:)`; `Checkout::Result#reference` is nil when detached | `git switch`'s flags on one verb; a created branch is published with the checkout, not before it |
+| N158-06 | none | `amend(committer:, author:, message:, allow_empty:)` beside `commit` | Author and message are optional only when amending, which a `commit(amend: true)` flag could not express in the signature |
+| N158-07 | `History.resolve_commit` (branch and tag names, `~`/`^`) and `Revision.resolve_commit`; `refs.resolve?` for full names only | `History.resolve_commit` peels `rev_parse`; `Revision.resolve_commit` removed; `refs.resolve?` also reads HEAD and the other pseudo-refs | Every command taking a commit understands `origin/main`, `ORIG_HEAD` and `@{u}` as `git` does |
+
 ## Names retained
 
 | Name                                        | Actual owner and rationale                                                                                    |
@@ -114,7 +126,7 @@ handles or hidden.
 | `Git::PathBytes`                            | Preserves Git pathname bytes, handles presentation and validates paths without assuming Unicode    |
 | `Git::RefName`                              | Git-specific refname grammar and validation                                                                   |
 | `Git::Ignore` / `Ignore::Rule`              | Ignore-rule interpretation/cache and rule identity                                                            |
-| `Git::TextDiff`                             | Computes bounded text-only diffs; does not provide a general binary/merge engine                                        |
+| `Git::TextDiff` (`:nodoc:`)                 | xdiff's line diff (Myers, heuristics, compaction, indent heuristic) behind `Git::Patch`                       |
 | `Git::Config::{Scope,Source,Entry,Context}` | Represent configuration scope, origin, effective entry and include context                              |
 | `Git::Config::FileEditor`                   | Edits caller-selected config files with an exclusive `.lock` and atomic replace                      |
 | `Git::Error`                                | Shared Git-native error type used by all read and write subsystems                                            |
@@ -133,9 +145,11 @@ and metadata-ref operations; their prefixes alone do not justify separate types.
 - Every porcelain method still takes its own `max_*` budgets. A repository-wide
   `Limits` value would shorten every signature; it is a larger change to how
   callers bound work, so it is left for a separate decision.
-- Revision resolution has three entry points (`Revision::Parser`,
-  `Revision.resolve_commit` and `History.resolve_commit`); they are internal
-  now but should become one.
+- Revision resolution has two entry points: `Revision::Parser` (`rev_parse`)
+  and `History.resolve_commit`, which peels `rev_parse`'s answer to a commit.
+  `Revision.resolve_commit`, a third, narrower grammar, is gone (N158-07).
+- `WorkingTree::Change#status` and `Index::Change#status` are strings; they
+  should be an enum as `ObjectType` is.
 - `ObjectDatabase::PackFiles` keeps pack-index lookup and pack/delta decoding
   together. The entry format and delta application moved to `Git::Pack` once
   writers and an indexer used them (N156-06); index lookup and decoding still

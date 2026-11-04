@@ -139,10 +139,13 @@ module Git
           changed_paths << path
         end
         guard.call
+        write_orig_head(previous)
         if target != previous
           update_ref(reference, target, expected_oid: previous, log: log,
             max_object_bytes: max_object_bytes, check: guard)
           ref_published = true
+        elsif entry = log
+          append_head_log(previous, previous, entry)
         end
         if prepared = image
           check.try &.call

@@ -38,11 +38,15 @@ module Git
       @repository.list_branches(tracking: tracking, check: check)
     end
 
-    # Create a branch at a commit without switching to it. Refuses an
-    # existing name. Returns the commit ID.
-    def create(name : String, *, from : String = "HEAD", log : References::LogEntry? = nil,
-               max_object_bytes : Int32 = 8_388_608, check : Proc(Nil)? = nil) : String
-      @repository.create_branch(name, from: from, log: log,
+    # `git branch <name> [<from>]`: create a branch at a commit without
+    # switching to it. Refuses an existing name. With track, the new branch
+    # gets an upstream as branch.autoSetupMerge says (by default, when from
+    # is a remote-tracking branch). With actor, its reflog gets Git's
+    # "branch: Created from <from>". Returns the commit ID.
+    def create(name : String, *, from : String = "HEAD", track : Bool = true,
+               actor : Signature? = nil, max_object_bytes : Int32 = 8_388_608,
+               check : Proc(Nil)? = nil) : String
+      @repository.create_branch(name, from: from, track: track, actor: actor,
         max_object_bytes: max_object_bytes, check: check)
     end
 
@@ -88,15 +92,51 @@ module Git
     # Create a branch at an existing commit, without switching HEAD or
     # touching the worktree. A nil expected old OID ensures create-only
     # semantics even if the name exists only in packed-refs.
-    protected def create_branch(name : String, *, from : String = "HEAD",
-                                log : References::LogEntry? = nil,
+    protected def create_branch(name : String, *, from : String = "HEAD", track : Bool = true,
+                                actor : Signature? = nil,
                                 max_object_bytes : Int32 = 8_388_608,
                                 check : Proc(Nil)? = nil) : String
       reference = new_branch_ref(name)
       target = History.resolve_commit(self, from, max_object_bytes, check)
+      upstream = track ? start_point_upstream(name, from) : nil
+      log = actor.try { |who| References::LogEntry.new(who, "branch: Created from #{from}") }
       update_ref(reference, target, expected_oid: nil, log: log,
         max_object_bytes: max_object_bytes, check: check)
+      upstream.try { |remote_name, merge_ref| set_branch_upstream(name, remote_name, merge_ref) }
       target
+    end
+
+    # The upstream Git gives a new branch started at from, following
+    # branch.autoSetupMerge: by default (true) only a remote-tracking start
+    # point is tracked, "always" also tracks a local branch (remote "."),
+    # "simple" needs the remote branch to have the new branch's name,
+    # "inherit" copies from's own upstream, and false tracks nothing.
+    protected def start_point_upstream(name : String, from : String) : {String, String}?
+      mode = local_config.value?("branch.autoSetupMerge").try(&.downcase) || "true"
+      return nil if {"false", "no", "off", "0"}.includes?(mode)
+      full = expand_ref(from) || return nil
+      if mode == "inherit"
+        return full.starts_with?("refs/heads/") ? branch_upstream(full.byte_slice(11)) : nil
+      end
+      if full.starts_with?("refs/heads/")
+        return mode == "always" ? {".", full} : nil
+      end
+      return nil unless full.starts_with?("refs/remotes/")
+      found = [] of {String, String}
+      remote_names.each do |remote_name|
+        next unless remote = remote?(remote_name)
+        remote.fetch_refspecs.each do |spec|
+          next if spec.negative?
+          if source = spec.map_destination(full)
+            found << {remote_name, source}
+          end
+        end
+      end
+      found.uniq!
+      raise Error.new("Git cannot track #{full}: more than one remote maps to it") if found.size > 1
+      upstream = found.first? || return nil
+      return nil if mode == "simple" && upstream[1] != "refs/heads/#{name}"
+      upstream
     end
 
     # Local branches, with upstream tracking counts (`git branch -vv`).

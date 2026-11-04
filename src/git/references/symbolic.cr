@@ -61,10 +61,31 @@ module Git
       check!
       ObjectId.valid!(oid, @object_format)
       raise Error.new("Git object #{oid} is not a commit") unless object_header(oid).type.commit?
-      path = File.join(@git_dir, "HEAD")
+      write_git_dir_ref("HEAD", oid)
+    end
+
+    # Record where HEAD was before a command moved it (reset, merge, pull,
+    # rebase), as Git does for `ORIG_HEAD`.
+    protected def write_orig_head(oid : String) : Nil
+      check!
+      ObjectId.valid!(oid, @object_format)
+      write_git_dir_ref("ORIG_HEAD", oid)
+    end
+
+    # Append a line to HEAD's own reflog for a change that moves HEAD
+    # without updating the branch it names, such as a checkout.
+    protected def append_head_log(old_oid : String?, new_oid : String, log : References::LogEntry) : Nil
+      References::Transaction.append_log(@git_dir, "HEAD",
+        log.encode(old_oid || ObjectId.zero(@object_format), new_oid))
+    end
+
+    # Write a direct ref that lives in the Git directory (HEAD, ORIG_HEAD)
+    # through an exclusive .lock renamed into place.
+    private def write_git_dir_ref(name : String, oid : String) : Nil
+      path = File.join(@git_dir, name)
       lock = path + ".lock"
       fd = LibC.open(lock, LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL | LibC::O_CLOEXEC | LibC::O_NOFOLLOW, 0o644)
-      raise Error.new("Git HEAD.lock exists or cannot be created") if fd < 0
+      raise Error.new("Git #{name}.lock exists or cannot be created") if fd < 0
       begin
         io = IO::FileDescriptor.new(fd)
         begin

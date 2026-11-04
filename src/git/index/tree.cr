@@ -99,5 +99,56 @@ module Git
         check: checked)
       oid
     end
+
+    # `git commit --amend`: replace the current branch's commit with one of
+    # the staged index, keeping its parents. The author and message are the
+    # original commit's unless given. Like Git, an amend that leaves no
+    # changes against the first parent (or an empty root) is refused unless
+    # allow_empty; merge commits are exempt. The branch and HEAD reflogs get
+    # "commit (amend): <subject>". Returns the new commit's ID. Extra
+    # headers of the original (signatures, encoding) are not carried over.
+    def amend(*, committer : Signature, author : Signature? = nil,
+              message : String? = nil, allow_empty : Bool = false,
+              max_index_bytes : Int32 = 8_388_608,
+              max_object_bytes : Int64 = Int64::MAX,
+              check : Proc(Nil)? = nil) : String
+      check!
+      raise Error.new("Git amend refuses in-progress merge") if merge_state?
+      raise Error.new("Git amend refuses in-progress sequencer operation") if sequencer_state?
+      raise Error.new("Git amend refuses in-progress rebase") if rebase_state?
+      branch, previous = head_ref_and_oid
+      raise Error.new("Git amend requires a symbolic branch HEAD with a commit") unless branch &&
+                                                                                        branch.starts_with?("refs/heads/") && previous
+      index_snapshot = @index.snapshot_checksum(max_index_bytes)
+      commit_bytes = Math.min(max_object_bytes, 67_108_864_i64).to_i32
+      original = Sequencer.read_source(self, previous, commit_bytes, check)
+      tree = write_index_tree(max_index_bytes: max_index_bytes,
+        max_tree_bytes: max_object_bytes, check: check)
+      unless allow_empty || original.parents.size > 1
+        empty = if parent = original.parents.first?
+                  read_commit(parent, max_bytes: commit_bytes, check: check).tree == tree
+                else
+                  @index.entries(max_index_bytes) { check.try &.call }.empty?
+                end
+        raise Error.new("Git amend would make the commit empty") if empty
+      end
+      text = message || original.message
+      oid = write_commit(tree: tree, parents: original.parents, author: author || original.author,
+        committer: committer, message: text, max_bytes: max_object_bytes, check: check)
+      log = References::LogEntry.new(committer, "commit (amend): #{text.lines.first?.try(&.chomp) || ""}")
+      # An identical rewrite is the same object: like Git, only HEAD's
+      # reflog records it.
+      if oid == previous
+        append_head_log(previous, oid, log)
+        return oid
+      end
+      checked = -> do
+        check.try &.call
+        raise Error.new("Git index changed during amend") unless @index.snapshot_checksum(max_index_bytes) == index_snapshot
+      end
+      checked.call
+      update_ref(branch, oid, expected_oid: previous, log: log, check: checked)
+      oid
+    end
   end
 end
