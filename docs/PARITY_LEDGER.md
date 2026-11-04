@@ -7,6 +7,13 @@ divergent state. It does not provide crash atomicity, authorize arbitrary
 stale-lock deletion or exclude privileged or uncooperative filesystem writers.
 The table below tracks all 94 gaps.
 
+## Real repositories
+
+`bench/realworld.cr` compares the library with Git on clones of real
+repositories; [REAL_WORLD.md](REAL_WORLD.md) records the runs, the defects
+they found and the remaining differences. Fixture specs alone had missed
+all of them.
+
 ## Baseline and test profiles
 
 - Oracle: Git 2.47.3, selected by `GIT_ORACLE_BINARY` (default: `git` on

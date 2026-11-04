@@ -3,17 +3,51 @@ module Git
     # One owner for verifying on-disk working-file ancestors. Never follow a
     # symlinked parent, including when inspecting an indexed symlink itself.
     # Missing parents are allowed: a missing tracked file is a deletion.
-    private def verify_working_parents!(relative : String, &check : -> Nil) : Nil
+    # verified, when given, remembers directories already checked during
+    # one scan so each is checked once.
+    private def verify_working_parents!(relative : String, verified : Set(String)? = nil, &check : -> Nil) : Nil
       PathBytes.validate_relative!(relative, max_depth: Metadata::MAX_DEPTH)
       parent = @root
       relative.split('/')[0...-1].each do |part|
         check.call
         parent = File.join(parent, part)
+        next if verified && verified.includes?(parent)
         raise Error.new("Git working directory is a symlink") if File.symlink?(parent)
         if File.exists?(parent)
           raise Error.new("Git working directory redirected") unless Dir.exists?(parent) && File.realpath(parent) == parent
+          verified.try &.add(parent)
         end
       end
+    end
+
+    # Whether an indexed regular file is unchanged by its stat data alone,
+    # so it need not be read and hashed.
+    protected def stat_unchanged?(entry : Index::Entry, mode_sensitive : Bool, index_time : Time?,
+                                  verified : Set(String), &check : -> Nil) : Bool
+      return false unless entry.stat && index_time && entry.mode.starts_with?("100")
+      verify_working_parents!(entry.path, verified) { check.call }
+      stat = uninitialized LibC::Stat
+      return false unless LibC.lstat(File.join(@root, entry.path), pointerof(stat)) == 0
+      (stat.st_mode & LibC::S_IFMT) == LibC::S_IFREG && stat_clean?(entry, stat, index_time, mode_sensitive)
+    end
+
+    # Git's ce_match_stat for a regular file: the same times, inode, owner,
+    # size and (with core.filemode) executable bit as the index recorded,
+    # and not modified in the second the index was written or later
+    # (racily clean), which only reading the contents can settle. A
+    # recorded nanosecond field of zero compares seconds only.
+    private def stat_clean?(entry : Index::Entry, stat : LibC::Stat, index_time : Time?,
+                            mode_sensitive : Bool) : Bool
+      recorded = entry.stat
+      return false unless recorded && index_time
+      mtime, ctime = {% if flag?(:darwin) %}{stat.st_mtimespec, stat.st_ctimespec}{% else %}{stat.st_mtim, stat.st_ctim}{% end %}
+      return false unless recorded.mtime == mtime.tv_sec.to_u32! && recorded.ctime == ctime.tv_sec.to_u32!
+      return false unless recorded.mtime_nsec == 0 || recorded.mtime_nsec == mtime.tv_nsec.to_u32!
+      return false unless recorded.ctime_nsec == 0 || recorded.ctime_nsec == ctime.tv_nsec.to_u32!
+      return false unless recorded.ino == stat.st_ino.to_u32! && recorded.uid == stat.st_uid.to_u32! &&
+                          recorded.gid == stat.st_gid.to_u32! && recorded.size == stat.st_size.to_u32!
+      return false if mode_sensitive && (entry.mode == "100755") != (stat.st_mode & 0o100 != 0)
+      recorded.mtime.to_i64 < index_time.to_unix
     end
 
     # The working-tree state of one indexed path as (mode, object ID,

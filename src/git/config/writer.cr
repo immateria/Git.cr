@@ -84,7 +84,7 @@ module Git
       # the subsection is not.
       private def self.normalize_section(name : String) : String
         raise Error.new("unsupported Git config section") if name.empty? || name.to_slice.any? { |byte| byte == 0_u8 || byte == 10_u8 || byte == 13_u8 }
-        dot = name.index('.')
+        dot = name.byte_index('.')
         return name.downcase unless dot
         name.byte_slice(0, dot).downcase + name.byte_slice(dot, name.bytesize - dot)
       end
@@ -170,7 +170,7 @@ module Git
 
       private def self.rewrite(data : String, name : String, value : String?, operation : Operation) : String
         sections, variables = scan(data)
-        section_name = name.byte_slice(0, name.rindex('.').not_nil!)
+        section_name = name.byte_slice(0, name.to_slice.rindex('.'.ord.to_u8).not_nil!)
         matches = variables.select { |entry| entry.name == name }
         if {Operation::Unset, Operation::UnsetAll}.includes?(operation)
           raise Error.new("Git config key not found") if matches.empty?
@@ -179,7 +179,7 @@ module Git
           raise Error.new("Git config key has multiple values")
         end
         patches = [] of Patch
-        line = value ? "\t#{name.byte_slice(name.rindex('.').not_nil! + 1)} = #{encode(value)}\n" : ""
+        line = value ? "\t#{name.byte_slice(name.to_slice.rindex('.'.ord.to_u8).not_nil! + 1)} = #{encode(value)}\n" : ""
         case operation
         when .unset?, .unset_all?
           (operation.unset? ? matches.first(1) : matches).each do |entry|
@@ -225,7 +225,7 @@ module Git
       end
 
       private def self.render_header(name : String) : String
-        dot = name.index('.')
+        dot = name.byte_index('.')
         return "[#{name}]" unless dot
         section = name.byte_slice(0, dot)
         sub = name.byte_slice(dot + 1, name.bytesize - dot - 1)
@@ -344,7 +344,7 @@ module Git
           validate_header_subsection(sub)
           sub = sub.gsub(/\\([\\"])/) { $1 }
           section.downcase + "." + sub
-        elsif dot = section.index('.')
+        elsif dot = section.byte_index('.')
           section.byte_slice(0, dot).downcase + "." + section.byte_slice(dot + 1, section.bytesize - dot - 1).downcase
         else
           section.downcase

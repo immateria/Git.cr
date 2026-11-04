@@ -4,9 +4,12 @@ module Git
   module History
     # How Repository#log orders commits.
     enum Order
-      # Newest committer date first (`git log`).
+      # Newest committer date first, as the walk reaches commits (`git log`).
+      Default
+      # Every commit before its parents, otherwise newest committer date
+      # first (`git log --date-order`).
       Date
-      # Every commit before its parents, otherwise newest first
+      # Every commit before its parents, one line of history at a time
       # (`git log --topo-order`).
       Topological
     end
@@ -38,7 +41,7 @@ module Git
         raise Error.new("Git annotated tag target type mismatch") if expected_kind && kind != expected_kind
         return oid if kind == "commit"
         raise Error.new("Git revision does not resolve to a commit") unless kind == "tag"
-        separator = content.index("\n\n") || raise Error.new("invalid Git annotated tag")
+        separator = content.byte_index("\n\n") || raise Error.new("invalid Git annotated tag")
         headers = content.byte_slice(0, separator)
         target = nil.as(String?)
         target_type = nil.as(String?)

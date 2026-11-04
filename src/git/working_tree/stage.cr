@@ -118,7 +118,6 @@ module Git
         next if gitlinks.any? { |link| Staging.covers?(link, path) }
         existing = by_path[path]?
         status = change.status
-        next if status == "submodule_unsupported"
         next if status == "untracked" && embedded_repository?(path, embedded)
         full = File.join(@root, path)
         symlink = File.symlink?(full)

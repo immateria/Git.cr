@@ -102,7 +102,7 @@ module Git
       info = File.info?(path, follow_symlinks: false)
       raise Error.new("Git loose object target is not a regular file") unless info && info.type.file?
       raw = inflate_file(path, data.size + 128)
-      marker = raw.index('\0')
+      marker = raw.byte_index('\0')
       raise Error.new("Git existing loose object has invalid envelope") unless marker &&
                                                                                raw.byte_slice(0, marker) == "#{type} #{data.size}" &&
                                                                                raw.bytesize == marker + 1 + data.size &&
@@ -115,10 +115,21 @@ module Git
       seen.add(oid)
       ObjectId.valid!(oid, @object_format)
       check.call
+      # Packs first, as Git looks: most objects are packed and the lookup
+      # needs no file system access.
+      if pack = @pack_files.locate(oid)
+        packfile, offset = pack
+        resolver = ->(base_oid : String, next_depth : Int32, ancestors : Set(String)) do
+          object(base_oid, max_bytes, next_depth, ancestors) { check.call }
+        end
+        type, content = @pack_files.decode_pack(packfile, offset, max_bytes, depth, seen, resolver) { check.call }
+        verify_oid!(oid, type, content)
+        return {type, content}
+      end
       loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
       if File.file?(loose)
         data = inflate_file(loose, max_bytes + 128)
-        sep = data.index('\0') || raise Git::Error.new("invalid loose Git object")
+        sep = data.byte_index('\0') || raise Git::Error.new("invalid loose Git object")
         header = data.byte_slice(0, sep)
         type, length = parse_object_header(header)
         content = data.byte_slice(sep + 1, data.bytesize - sep - 1)
@@ -126,15 +137,7 @@ module Git
         verify_oid!(oid, type, content)
         return {type, content}
       end
-      pack = @pack_files.find_packed(oid)
-      raise Git::Error.new("Git object not available locally (no alternates/promisor support)") unless pack
-      packfile, offset = pack
-      resolver = ->(base_oid : String, next_depth : Int32, ancestors : Set(String)) do
-        object(base_oid, max_bytes, next_depth, ancestors) { check.call }
-      end
-      type, content = @pack_files.decode_pack(packfile, offset, max_bytes, depth, seen, resolver) { check.call }
-      verify_oid!(oid, type, content)
-      {type, content}
+      raise Git::Error.new("Git object not available locally (no alternates/promisor support)")
     ensure
       seen.delete(oid)
     end
@@ -145,6 +148,10 @@ module Git
       raise Git::Error.new("Git object reference depth exceeded") if depth >= PackFiles::MAX_DELTA_DEPTH
       ObjectId.valid!(oid, @object_format)
       check.call
+      if location = @pack_files.locate(oid)
+        resolver = ->(base : String) { object_header(base, depth + 1) { check.call }[0] }
+        return @pack_files.entry_info(location[0], location[1], resolver)
+      end
       loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
       if File.file?(loose)
         raise Git::Error.new("Git object file redirected") if File.symlink?(loose)
@@ -161,9 +168,7 @@ module Git
         type, length = parse_object_header(header)
         return {type, length.to_i64}
       end
-      location = @pack_files.locate(oid) || raise Git::Error.new("Git object not available locally (no alternates/promisor support)")
-      resolver = ->(base : String) { object_header(base, depth + 1) { check.call }[0] }
-      @pack_files.entry_info(location[0], location[1], resolver)
+      raise Git::Error.new("Git object not available locally (no alternates/promisor support)")
     rescue ex : Compress::Zlib::Error | IO::Error
       raise Git::Error.new("Git object header unreadable: #{ex.class}")
     end
@@ -172,9 +177,8 @@ module Git
     # verifying its contents.
     def has_object?(oid : String) : Bool
       ObjectId.valid!(oid, @object_format)
-      loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
-      return true if File.file?(loose)
-      @pack_files.contains?(oid)
+      return true if @pack_files.contains?(oid)
+      File.file?(File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2)))
     end
 
     # Object IDs (loose or packed) that start with a lowercase hex prefix,

@@ -33,6 +33,9 @@ private def remote_source(root : String) : Nil
   end
   GitOracle.run(root, "tag", "-a", "v1", "-m", "version 1\n", "HEAD~1", extra_env: at(1_700_001_000))
   GitOracle.run(root, "tag", "-a", "v1-outer", "-m", "nested\n", "v1", extra_env: at(1_700_001_000))
+  # A tag on a commit no branch reaches: git clone still takes it.
+  orphan = GitOracle.run(root, "commit-tree", "HEAD^{tree}", "-m", "orphan", extra_env: at(1_700_001_100)).stdout.strip
+  GitOracle.run(root, "tag", "orphan", orphan)
   GitOracle.run(root, "checkout", "-q", "-b", "feature", "HEAD~2")
   File.write(File.join(root, "feature.txt"), "feature\n")
   GitOracle.run(root, "add", "feature.txt")
@@ -143,7 +146,7 @@ describe "Git remote operations" do
         expected = refs_of(served, "refs/heads/").gsub(" refs/heads/", " refs/remotes/origin/")
         refs_of(clone, "refs/remotes/").lines(chomp: false).reject(&.includes?("origin/HEAD")).join.should eq(expected)
         GitOracle.run(clone, "rev-parse", "HEAD").stdout.should eq(GitOracle.run(served, "rev-parse", "main").stdout)
-        GitOracle.run(clone, "tag", "-l").stdout.lines.sort.should eq(["light", "v1", "v1-outer"])
+        GitOracle.run(clone, "tag", "-l").stdout.lines.sort.should eq(["light", "orphan", "v1", "v1-outer"])
         log.any? { |entry| entry.path.ends_with?("git-upload-pack") && entry.git_protocol == "version=2" }.should be_true
 
         # Push new history, then an incremental fetch from a second clone.

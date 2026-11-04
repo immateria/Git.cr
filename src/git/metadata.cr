@@ -177,9 +177,18 @@ module Git
       !File.symlink?(path) && Dir.exists?(path) && File.realpath(path) == path
     end
 
+    @packed_refs : {File::Info, Hash(String, String)}? = nil
+
+    # packed-refs, parsed once per file identity: Git replaces it by
+    # renaming a new file into place, so a rewrite changes the inode.
     private def read_packed_refs : Hash(String, String)
       path = File.join(@common, "packed-refs")
-      return {} of String => String unless File.exists?(path) || File.symlink?(path)
+      info = File.info?(path, follow_symlinks: false)
+      return {} of String => String unless info
+      if (cached = @packed_refs) && info.file? && cached[0].same_file?(info) &&
+         cached[0].size == info.size && cached[0].modification_time == info.modification_time
+        return cached[1]
+      end
       data = read_small(path, {8_i64 * 1024 * 1024, @max_scan_bytes.to_i64 * 8}.min.to_i)
       found = {} of String => String
       data.each_line do |line|
@@ -190,6 +199,7 @@ module Git
         found[parts[1]] = ObjectId.valid!(parts[0], @object_format)
         raise Git::Error.new("packed Git refs count exceeded") if found.size > @max_search_entries
       end
+      @packed_refs = {info, found}
       found
     end
   end

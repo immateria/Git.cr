@@ -46,7 +46,7 @@ module Git
             break if packet.flush?
             raise Violation.new("unexpected Git packet in push commands") unless packet.data?
             text = String.new(packet.data).chomp
-            if nul = text.index('\0')
+            if nul = text.byte_index('\0')
               text.byte_slice(nul + 1).split(' ', remove_empty: true).each { |capability| capabilities << capability }
               text = text.byte_slice(0, nul)
             end

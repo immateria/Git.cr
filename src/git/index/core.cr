@@ -4,7 +4,14 @@ module Git
     # The Git index is a snapshot of the staging area, not of the working
     # tree. These values deliberately carry no filesystem write authority.
     record Entry, path : String, mode : String, oid : String, stage : Int32,
-      intent : Bool, skip_worktree : Bool, assume_unchanged : Bool = false
+      intent : Bool, skip_worktree : Bool, assume_unchanged : Bool = false,
+      stat : Stat? = nil
+
+    # What the file system reported for an entry's file when Git last
+    # found it matching the entry, as the index stores it (32-bit fields;
+    # nanoseconds are zero where the writer did not record them).
+    record Stat, ctime : UInt32, ctime_nsec : UInt32, mtime : UInt32, mtime_nsec : UInt32,
+      dev : UInt32, ino : UInt32, mode : UInt32, uid : UInt32, gid : UInt32, size : UInt32
 
     record Change, path : String, status : String, head_oid : String?,
       index_oid : String?, stage : Int32?, head_mode : String?, index_mode : String? do
@@ -119,6 +126,12 @@ module Git
     # Versions 2/3 use 8-byte padded entries. Version 4 shares the stat
     # header but prefix-compresses names and has no padding. Unsupported
     # required extensions (notably sparse/split index) must fail closed.
+    # When the index file was last written, or nil without one: entries
+    # whose files changed in that second or later are racily clean.
+    protected def modified_at : Time?
+      File.info?(File.join(@metadata.git_dir, "index"), follow_symlinks: false).try(&.modification_time)
+    end
+
     protected def entries(max_bytes : Int32, &check : -> Nil) : Array(Entry)
       file = File.join(@metadata.git_dir, "index")
       raise Git::Error.new("Git index symlink refused") if File.symlink?(file)
@@ -191,9 +204,12 @@ module Git
         if previous > path || (previous == path && (stage <= previous_stage || stage == 0 || previous_stage == 0))
           raise Git::Error.new("Git index entries out of order or mixed conflict stages")
         end
+        stat = Stat.new(index_u32(raw, start), index_u32(raw, start + 4), index_u32(raw, start + 8),
+          index_u32(raw, start + 12), index_u32(raw, start + 16), index_u32(raw, start + 20),
+          raw_mode, index_u32(raw, start + 28), index_u32(raw, start + 32), index_u32(raw, start + 36))
         entries << Entry.new(path, mode, oid, stage,
           (extended & 0x2000) != 0, (extended & 0x4000) != 0,
-          (flags & 0x8000) != 0)
+          (flags & 0x8000) != 0, stat)
         previous = path
         previous_stage = stage
       end

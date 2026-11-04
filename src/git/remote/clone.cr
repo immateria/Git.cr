@@ -80,8 +80,12 @@ module Git
         repository.add_remote(remote_name, stored_url, tag_mode: tags)
       end
       refspecs = bare ? ["+refs/heads/*:refs/heads/*"] : nil
+      # Like git clone, a full clone takes every tag the remote has, not only
+      # those reachable from its branches, while the remote keeps following
+      # tags afterwards; a shallow clone (single-branch in Git) only follows.
+      initial_tags = tags.auto? && depth.nil? ? Remote::TagMode::All : tags
       result = repository.fetch(remote_name, refspecs, transport: transport, depth: depth,
-        tags: tags, actor: actor, progress: progress, write_fetch_head: false,
+        tags: initial_tags, actor: actor, progress: progress, write_fetch_head: false,
         update_head_ok: true, check: check)
       tracking_prefix = "refs/remotes/#{remote_name}/"
       branch_source = ->(name : String) { bare ? "refs/heads/#{name}" : "#{tracking_prefix}#{name}" }

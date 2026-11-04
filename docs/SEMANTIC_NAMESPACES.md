@@ -116,6 +116,19 @@ handles or hidden.
 | N158-06 | none | `amend(committer:, author:, message:, allow_empty:)` beside `commit` | Author and message are optional only when amending, which a `commit(amend: true)` flag could not express in the signature |
 | N158-07 | `History.resolve_commit` (branch and tag names, `~`/`^`) and `Revision.resolve_commit`; `refs.resolve?` for full names only | `History.resolve_commit` peels `rev_parse`; `Revision.resolve_commit` removed; `refs.resolve?` also reads HEAD and the other pseudo-refs | Every command taking a commit understands `origin/main`, `ORIG_HEAD` and `@{u}` as `git` does |
 
+## Real-world decisions
+
+Running the library against real repositories (docs/REAL_WORLD.md) changed
+these.
+
+| ID      | Baseline | Decision / owner now | Reason |
+| ------- | -------- | -------------------- | ------ |
+| N159-01 | `History::Order` `Date` and `Topological`, where `Topological` was Git's `--date-order` | `Default` (`git log`), `Date` (`--date-order`), `Topological` (`--topo-order`, Git's stack-based sort) | Git's three orders one to one; the old pair mislabelled one and lacked the other |
+| N159-02 | `Index::Entry` without stat data | `Index::Entry#stat : Index::Stat?`, the 32-bit fields Git records | Status and the worktree diff skip files whose lstat still matches, as Git's `ce_match_stat` does |
+| N159-03 | `Ignore#ignored?(path, directory)` | adds `parents_checked:` | A walk that never enters ignored directories tests only the last component |
+| N159-04 | `WorkingTree::Change` status `"submodule_unsupported"` | removed: a submodule is unchanged, or `"modified"` when its HEAD moved; an untracked nested repository is `"nested/"` | What `git status` reports |
+| N159-05 | `read_commit` refused commits that were not UTF-8 | text in a declared `encoding` is shown as UTF-8; undeclared bytes are kept | Real histories carry Latin-1; Git shows them the same way |
+
 ## Names retained
 
 | Name                                        | Actual owner and rationale                                                                                    |

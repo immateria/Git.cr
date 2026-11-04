@@ -107,7 +107,7 @@ module Git
         if subsection
           raise Error.new("invalid Git config subsection header") if name.includes?('.')
           {name.downcase, decode_quoted(subsection)}
-        elsif point = name.index('.')
+        elsif point = name.byte_index('.')
           {name.byte_slice(0, point).downcase, name.byte_slice(point + 1, name.bytesize - point - 1).downcase}
         else
           {name.downcase, nil}
@@ -239,7 +239,7 @@ module Git
             elsif bytes[i] == 63_u8
               builder << "[^/]"
             elsif bytes[i] == 91_u8 # [abc], [a-z], [!abc]
-              close = pattern.index(']', i + 1)
+              close = pattern.byte_index(']', i + 1)
               if close && close > i + 1
                 content = pattern.byte_slice(i + 1, close - i - 1)
                 if !content.includes?('/') && !content.includes?('\\')
@@ -266,8 +266,8 @@ module Git
     # Git section/subsection/key normalization is shared by loading and queries.
     private module Key
       def self.normalize(name : String) : String
-        dot = name.index('.')
-        last = name.rindex('.')
+        dot = name.byte_index('.')
+        last = name.to_slice.rindex('.'.ord.to_u8)
         raise ArgumentError.new("invalid Git config query name") unless dot && last && dot > 0 && last < name.bytesize - 1
         section = name.byte_slice(0, dot)
         key = name.byte_slice(last + 1, name.bytesize - last - 1)

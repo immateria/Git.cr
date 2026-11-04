@@ -3,9 +3,23 @@ module Git
   # This intentionally does not load external excludesFile, attributes, or
   # invoke git/configured programs. Unsupported constructs fail closed.
   class Ignore
-    record Rule, matcher : Regex, negated : Bool, directory_only : Bool, basename_only : Bool, base : String
+    record Rule, matcher : Regex, negated : Bool, directory_only : Bool, basename_only : Bool, base : String,
+      literal : String? = nil, suffix : String? = nil do
+      # Literal names and "*.ext" basename patterns, the common cases, are
+      # compared directly; the rest go through the translated pattern.
+      def matches?(candidate : String) : Bool
+        if exact = literal
+          candidate == exact
+        elsif ending = suffix
+          candidate.ends_with?(ending)
+        else
+          matcher.matches?(candidate)
+        end
+      end
+    end
 
     @cache = {} of String => Array(Rule)
+    @accumulated = {} of String => Array(Rule)
     @global : Array(Rule)
     @bytes_read = 0
     @rule_count = 0
@@ -15,32 +29,51 @@ module Git
       @global = load_rules(File.join(@git_dir, "info", "exclude"), "")
     end
 
-    def ignored?(relative : String, is_directory : Bool) : Bool
+    # Whether relative is ignored. Git does not descend into an ignored
+    # directory, so a negation for a child cannot restore it. A caller
+    # walking the tree that already skipped ignored directories passes
+    # parents_checked to test only the last component.
+    def ignored?(relative : String, is_directory : Bool, *, parents_checked : Bool = false) : Bool
       parts = relative.split('/')
-      rules = @global.dup
-      rules.concat(rules_for(""))
       prefix = ""
-      ignored = false
       parts.each_with_index do |part, index|
+        parent = prefix
         prefix = prefix.empty? ? part : "#{prefix}/#{part}"
-        directory = index < parts.size - 1 || is_directory
-        ignored = false
-        rules.each do |rule|
-          next if rule.directory_only && !directory
-          tail = if rule.base.empty?
-                   prefix
-                 elsif prefix.starts_with?(rule.base + "/")
-                   prefix.byte_slice(rule.base.bytesize + 1)
-                 else
-                   next
-                 end
-          candidate = rule.basename_only ? part : tail
-          ignored = !rule.negated if rule.matcher.matches?(candidate)
+        last = index == parts.size - 1
+        next if parents_checked && !last
+        ignored = match?(rules_through(parent), prefix, part, !last || is_directory)
+        return ignored if last
+        return true if ignored
+      end
+      false
+    end
+
+    # The rules that apply inside directory, lowest precedence first:
+    # info/exclude, then each .gitignore from the root down to directory.
+    private def rules_through(directory : String) : Array(Rule)
+      @accumulated[directory] ||= begin
+        if directory.empty?
+          @global + rules_for("")
+        else
+          slash = directory.to_slice.rindex('/'.ord.to_u8)
+          rules_through(slash ? directory.byte_slice(0, slash) : "") + rules_for(directory)
         end
-        # Git will not descend an excluded parent directory, so a negation
-        # for a child cannot restore it until the parent itself is unignored.
-        return true if ignored && directory
-        rules.concat(rules_for(prefix)) if index < parts.size - 1
+      end
+    end
+
+    # The last matching rule decides.
+    private def match?(rules : Array(Rule), path : String, name : String, directory : Bool) : Bool
+      ignored = false
+      rules.each do |rule|
+        next if rule.directory_only && !directory
+        tail = if rule.base.empty?
+                 path
+               elsif path.starts_with?(rule.base + "/")
+                 path.byte_slice(rule.base.bytesize + 1)
+               else
+                 next
+               end
+        ignored = !rule.negated if rule.matches?(rule.basename_only ? name : tail)
       end
       ignored
     end
@@ -124,13 +157,21 @@ module Git
             elsif ch == '?'
               builder << "[^/]"
             elsif ch == '['
-              end_bracket = line.index(']', i + 1)
+              end_bracket = line.byte_index(']', i + 1)
               raise Error.new("unsupported Git ignore character class") unless end_bracket
               char_class = line.byte_slice(i + 1, end_bracket - i - 1)
               raise Error.new("unsupported Git ignore character class") if char_class.empty? || char_class.includes?('\\') || char_class.includes?('/')
               char_class = "^" + char_class.byte_slice(1) if char_class.starts_with?('!')
               builder << '[' << char_class << ']'
               i = end_bracket
+            elsif line.byte_at(i) >= 0x80
+              # A multibyte character: escape its whole UTF-8 sequence.
+              stop = i + 1
+              while stop < line.bytesize && line.byte_at(stop) & 0xC0 == 0x80
+                stop += 1
+              end
+              builder << Regex.escape(line.byte_slice(i, stop - i))
+              i = stop - 1
             else
               builder << Regex.escape(ch.to_s)
             end
@@ -138,7 +179,11 @@ module Git
           end
           builder << "\\z"
         end
-        rules << Rule.new(Regex.new(source), negated, directory_only, basename_only, base)
+        special = ->(text : String) { text.each_byte.any? { |byte| {'*'.ord, '?'.ord, '['.ord, '\\'.ord}.includes?(byte) } }
+        literal = special.call(line) ? nil : line
+        rest = line.byte_slice(1)
+        suffix = basename_only && line.starts_with?('*') && !rest.empty? && !special.call(rest) ? rest : nil
+        rules << Rule.new(Regex.new(source), negated, directory_only, basename_only, base, literal, suffix)
         @rule_count += 1
         raise Error.new("Git ignore rule budget exceeded") if @rule_count > 4096
       end

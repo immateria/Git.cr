@@ -172,7 +172,7 @@ module Git
         if Remote::Refspec.object_id?(source)
           next
         elsif spec.pattern?
-          prefixes << source.byte_slice(0, source.index('*').not_nil!)
+          prefixes << source.byte_slice(0, source.byte_index('*').not_nil!)
         elsif source.starts_with?("refs/")
           prefixes << source
         else
@@ -319,7 +319,7 @@ module Git
         next if spec.negative? || !spec.pattern?
         destination = spec.destination || next
         next if destination.starts_with?("refs/tags/")
-        prefix = destination.byte_slice(0, destination.index('*').not_nil!)
+        prefix = destination.byte_slice(0, destination.byte_index('*').not_nil!)
         references(prefix).each do |ref|
           next if ref.symbolic?
           source = spec.map_destination(ref.name) || next

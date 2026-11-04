@@ -22,8 +22,7 @@ module Git
                                    check : Proc(Nil)?) : Source
       object_kind, raw = repository.object(oid, max_bytes) { check.try &.call }
       raise Error.new("Git sequencer source is not a commit") unless object_kind == "commit"
-      raise Error.new("invalid Git sequencer commit text") unless raw.valid_encoding?
-      separator = raw.index("\n\n") || raise Error.new("Git sequencer commit missing header separator")
+      separator = raw.byte_index("\n\n") || raise Error.new("Git sequencer commit missing header separator")
       headers = raw.byte_slice(0, separator)
       message = raw.byte_slice(separator + 2, raw.bytesize - separator - 2)
       tree = nil.as(String?)
