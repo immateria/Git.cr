@@ -99,7 +99,7 @@ module Git
       if url.starts_with?("git://")
         Daemon.new(url)
       elsif url.starts_with?("ssh://") || url.starts_with?("git+ssh://") || url.starts_with?("ssh+git://") ||
-            ((colon = url.index(':')) && !url.byte_slice(0, colon).includes?('/') && !url.includes?("://"))
+            ((colon = url.byte_index(':')) && !url.byte_slice(0, colon).includes?('/') && !url.includes?("://"))
         SSH.new(url, ssh_command: ssh_command)
       else
         for_url(url)

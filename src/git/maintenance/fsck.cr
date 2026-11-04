@@ -71,7 +71,7 @@ module Git
       case kind
       when "commit"
         node = History::CommitNode.parse(raw, @object_format)
-        header_end = raw.index("\n\n") || raise Error.new("commit has no message separator")
+        header_end = raw.byte_index("\n\n") || raise Error.new("commit has no message separator")
         headers = raw.byte_slice(0, header_end)
         raise Error.new("commit does not start with a tree") unless headers.starts_with?("tree ")
         raise Error.new("commit has no author") unless headers.includes?("\nauthor ")

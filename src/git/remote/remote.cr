@@ -65,7 +65,7 @@ module Git
       names = [] of String
       local_config.entries.each do |entry|
         next unless entry.name.starts_with?("remote.")
-        dot = entry.name.rindex('.').not_nil!
+        dot = entry.name.to_slice.rindex('.'.ord.to_u8).not_nil!
         next if dot <= 7
         name = entry.name.byte_slice(7, dot - 7)
         names << name unless names.includes?(name)

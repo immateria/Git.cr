@@ -66,7 +66,7 @@ module Git
         lines.each_with_index do |line, index|
           text = String.new(line)
           text = text.chomp
-          if index == 0 && (nul = text.index('\0'))
+          if index == 0 && (nul = text.byte_index('\0'))
             text.byte_slice(nul + 1).split(' ', remove_empty: true).each do |capability|
               key, _, value = capability.partition('=')
               if key == "symref"

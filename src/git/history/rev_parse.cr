@@ -32,12 +32,12 @@ module Git
       haves = [] of String
       commit_of = ->(text : String) { peel(repository, repository.rev_parse(text.empty? ? "HEAD" : text), "commit") }
       revisions.each do |revision|
-        if index = revision.index("...")
+        if index = revision.byte_index("...")
           left = commit_of.call(revision.byte_slice(0, index))
           right = commit_of.call(revision.byte_slice(index + 3))
           wants << left << right
           haves.concat(repository.merge_bases(left, right))
-        elsif index = revision.index("..")
+        elsif index = revision.byte_index("..")
           haves << commit_of.call(revision.byte_slice(0, index))
           wants << commit_of.call(revision.byte_slice(index + 2))
         elsif revision.starts_with?('^')
@@ -285,7 +285,7 @@ module Git
     # them, in order. An unborn HEAD contributes nothing. Raises when the
     # range holds more than max_commits commits.
     def log(revisions : Array(String) = ["HEAD"], *, limit : Int32 = 100,
-            order : History::Order = History::Order::Date,
+            order : History::Order = History::Order::Default,
             max_commits : Int32 = 1_000_000, max_commit_bytes : Int32 = 8_388_608,
             check : Proc(Nil)? = nil) : History::Result
       raise ArgumentError.new("invalid Git log budgets") if limit < 0 || max_commits < 1 || max_commit_bytes < 128
@@ -295,7 +295,7 @@ module Git
       wants, haves = Revision.ranges(self, born)
       walker = History::RevisionWalker.new(self, check: check)
       oids = walker.commits(wants, haves, max_commits: max_commits)
-      oids = walker.topological(oids) if order.topological?
+      oids = walker.topological(oids, by_date: order.date?) unless order.default?
       commits = oids.first(limit).map { |oid| read_commit(oid, max_bytes: max_commit_bytes, check: check) }
       History::Result.new(commits, oids.size > limit, oids.size)
     end

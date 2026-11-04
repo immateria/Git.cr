@@ -39,7 +39,7 @@ module Git
           path = uri.path
           path = path.byte_slice(1) if path.starts_with?("/~")
           {uri.user, host, uri.port, path}
-        elsif (colon = url.index(':')) && !url.byte_slice(0, colon).includes?('/')
+        elsif (colon = url.byte_index(':')) && !url.byte_slice(0, colon).includes?('/')
           authority = url.byte_slice(0, colon)
           path = url.byte_slice(colon + 1)
           user, _, host = authority.rpartition('@')

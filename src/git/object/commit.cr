@@ -18,7 +18,7 @@ module Git
       kind, raw = objects.object(ObjectId.valid!(oid, format), max_bytes) { check.call }
       raise Git::Error.new("Git object is not a commit") unless kind == "commit"
       raise Git::Error.new("invalid Git commit text") unless raw.valid_encoding?
-      separator = raw.index("\n\n") || raise Git::Error.new("Git commit missing header separator")
+      separator = raw.byte_index("\n\n") || raise Git::Error.new("Git commit missing header separator")
       header = raw.byte_slice(0, separator)
       message = raw.byte_slice(separator + 2, raw.bytesize - separator - 2)
       tree = nil.as(String?)

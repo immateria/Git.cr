@@ -73,7 +73,7 @@ module Git
         return nil unless source_matches?(name)
         destination = @destination || return nil
         return destination unless @pattern
-        star = @source.index('*').not_nil!
+        star = @source.byte_index('*').not_nil!
         middle = name.byte_slice(star, name.bytesize - (@source.bytesize - 1))
         destination.sub('*', middle)
       end
@@ -83,14 +83,14 @@ module Git
         destination = @destination || return nil
         return nil unless Refspec.matches?(destination, name, @pattern)
         return @source unless @pattern
-        star = destination.index('*').not_nil!
+        star = destination.byte_index('*').not_nil!
         middle = name.byte_slice(star, name.bytesize - (destination.bytesize - 1))
         @source.sub('*', middle)
       end
 
       def self.matches?(side : String, name : String, pattern : Bool) : Bool
         return side == name unless pattern
-        star = side.index('*').not_nil!
+        star = side.byte_index('*').not_nil!
         prefix = side.byte_slice(0, star)
         suffix = side.byte_slice(star + 1)
         name.bytesize >= prefix.bytesize + suffix.bytesize && name.starts_with?(prefix) && name.ends_with?(suffix)

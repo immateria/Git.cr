@@ -124,13 +124,21 @@ module Git
             elsif ch == '?'
               builder << "[^/]"
             elsif ch == '['
-              end_bracket = line.index(']', i + 1)
+              end_bracket = line.byte_index(']', i + 1)
               raise Error.new("unsupported Git ignore character class") unless end_bracket
               char_class = line.byte_slice(i + 1, end_bracket - i - 1)
               raise Error.new("unsupported Git ignore character class") if char_class.empty? || char_class.includes?('\\') || char_class.includes?('/')
               char_class = "^" + char_class.byte_slice(1) if char_class.starts_with?('!')
               builder << '[' << char_class << ']'
               i = end_bracket
+            elsif line.byte_at(i) >= 0x80
+              # A multibyte character: escape its whole UTF-8 sequence.
+              stop = i + 1
+              while stop < line.bytesize && line.byte_at(stop) & 0xC0 == 0x80
+                stop += 1
+              end
+              builder << Regex.escape(line.byte_slice(i, stop - i))
+              i = stop - 1
             else
               builder << Regex.escape(ch.to_s)
             end
