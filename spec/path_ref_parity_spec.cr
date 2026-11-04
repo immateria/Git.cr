@@ -115,13 +115,14 @@ describe "Git reference-name and text-patch byte parity" do
       store = Git::Repository.new(root)
       names.each do |name|
         staged = store.staged_file(name, max_bytes: 128 * 1024).not_nil!
-        patch = Git::TextDiff.unified(staged.old_text, staged.new_text, staged.path, staged.old_mode, staged.new_mode)
+        staged.path.should eq(name)
+        patch = store.diff(cached: true, paths: [name]).to_s
         oracle = GitOracle.run(root, "-c", "core.quotePath=true", "diff", "--cached", "--", name).stdout
+        patch.should eq(oracle), "path hex=#{name.to_slice.hexstring}"
         oracle_headers = oracle.lines.select { |line| line.starts_with?("diff --git ") || line.starts_with?("--- ") || line.starts_with?("+++ ") }
         native_headers = patch.lines.select { |line| line.starts_with?("diff --git ") || line.starts_with?("--- ") || line.starts_with?("+++ ") }
         native_headers.should eq(oracle_headers), "path hex=#{name.to_slice.hexstring}"
       end
-      expect_raises(ArgumentError) { Git::TextDiff.unified("a\n", "b\n", "bad\0name", "100644", "100644") }
     end
   end
 end

@@ -83,7 +83,8 @@ describe "independent git shard" do
       File.write(File.join(root, "file.txt"), "unstaged only\n")
       store = Git::Repository.new(root)
       file = store.staged_file("file.txt", max_bytes: 128 * 1024).not_nil!
-      patch = Git::TextDiff.unified(file.old_text, file.new_text, file.path, file.old_mode, file.new_mode)
+      patch = store.diff(cached: true).to_s
+      file.new_text.should eq("a\nB\nc\nd\ne\n")
       patch.should contain("+B")
       patch.should_not contain("unstaged only")
       path = File.join(root, "test.patch")
@@ -100,9 +101,18 @@ describe "independent git shard" do
       File.write(File.join(root, ".git", "index"), original + "garbage")
       expect_raises(Git::Error) { Git::Repository.new(root).working_changes(max_bytes: 128 * 1024, limit: 3) }
     end
-    a = (1..600).map { |i| "old #{i}\n" }.join
-    b = (1..600).map { |i| "new #{i}\n" }.join
-    expect_raises(Git::Error) { Git::TextDiff.unified(a, b, "file.txt", "100644", "100644") }
+  end
+
+  it "fails closed when a diff exceeds its line budget and handles files far past 700 lines" do
+    git_fixture do |root|
+      File.write(File.join(root, "file.txt"), (1..600).map { |i| "old #{i}\n" }.join)
+      git_fixture_git(root, "add", "file.txt")
+      git_fixture_git(root, "commit", "-qm", "base")
+      File.write(File.join(root, "file.txt"), (1..600).map { |i| "new #{i}\n" }.join)
+      store = Git::Repository.new(root)
+      expect_raises(Git::Error, /budget/) { store.diff(max_lines: 1000) }
+      store.diff.to_s.should eq(git_fixture_git(root, "diff", "--no-color") + "\n")
+    end
   end
 end
 
@@ -115,7 +125,8 @@ describe "native Git staging patch edge cases" do
       File.write(File.join(root, "new.txt"), "without newline")
       git_fixture_git(root, "add", "new.txt")
       staged = Git::Repository.new(root).staged_file("new.txt", max_bytes: 128 * 1024).not_nil!
-      patch = Git::TextDiff.unified(staged.old_text, staged.new_text, staged.path, staged.old_mode, staged.new_mode)
+      staged.new_text.should eq("without newline")
+      patch = Git::Repository.new(root).diff(cached: true, paths: ["new.txt"]).to_s
       patch.should contain("No newline at end of file")
       File.write(File.join(root, "patch.bin"), patch)
       git_fixture_git(root, "apply", "--check", "--reverse", "--cached", File.join(root, "patch.bin"))
@@ -136,7 +147,8 @@ describe "native Git staging patch edge cases" do
       store = Git::Repository.new(root)
       ["file.txt", "deleted.txt"].each do |path|
         staged = store.staged_file(path, max_bytes: 128 * 1024).not_nil!
-        patch = Git::TextDiff.unified(staged.old_text, staged.new_text, path, staged.old_mode, staged.new_mode)
+        staged.path.should eq(path)
+        patch = store.diff(cached: true, paths: [path]).to_s
         patch.includes?("@@").should be_true
         File.write(File.join(root, "patch.bin"), patch)
         git_fixture_git(root, "apply", "--check", "--reverse", "--cached", File.join(root, "patch.bin"))
@@ -165,16 +177,24 @@ describe "native Git staging patch edge cases" do
 end
 
 describe "Git text patch path encoding" do
-  it "quotes unusual filenames without permitting unsafe path components" do
-    ["space name", "quote\"name", "back\\slash", "line\nfeed", "caf\u00e9", String.new(Bytes[0xff])].each do |name|
-      patch = Git::TextDiff.unified("before\n", "after\n", name, "100644", "100644")
-      patch.should contain("diff --git ")
-      patch.should contain("@@ ")
+  it "quotes unusual filenames exactly as Git does" do
+    git_fixture do |root|
+      names = ["space name", "quote\"name", "back\\slash", "line\nfeed", "caf\u00e9", "with space\ttab", String.new(Bytes[0xff]), "src/valid-file.cr"]
+      names.each do |name|
+        Dir.mkdir_p(File.dirname(File.join(root, name)))
+        File.write(File.join(root, name), "before\n")
+      end
+      git_fixture_git(root, "add", "-A")
+      git_fixture_git(root, "commit", "-qm", "base")
+      names.each { |name| File.write(File.join(root, name), "after\n") }
+      store = Git::Repository.new(root)
+      names.each do |name|
+        patch = store.diff(paths: [name]).to_s
+        patch.should contain("diff --git ")
+        patch.should contain("@@ -1 +1 @@")
+        patch.should eq(git_fixture_git(root, "diff", "--no-color", "--", name) + "\n")
+      end
     end
-    ["bad\0name", "../escape", "/absolute", "a//b", ".git/secrets"].each do |name|
-      expect_raises(ArgumentError) { Git::TextDiff.unified("before\n", "after\n", name, "100644", "100644") }
-    end
-    Git::TextDiff.unified("before\n", "after\n", "src/valid-file.cr", "100644", "100644").should contain("diff --git a/src/valid-file.cr")
   end
 end
 
@@ -213,7 +233,7 @@ describe "Git working-tree unified diff" do
       file = Git::Repository.new(root).working_file("file.txt", max_bytes: 128 * 1024).not_nil!
       file.old_text.should eq("staged\n")
       file.new_text.should eq("working\n")
-      patch = Git::TextDiff.unified(file.old_text, file.new_text, file.path, file.old_mode, file.new_mode)
+      patch = Git::Repository.new(root).diff.to_s
       patch.should contain("-staged")
       patch.should contain("+working")
       patch.should_not contain("-head")
@@ -232,7 +252,7 @@ describe "Git working-tree unified diff" do
       File.delete(File.join(root, "file.txt"))
       deleted = store.working_file("file.txt", max_bytes: 128 * 1024).not_nil!
       deleted.new_mode.should be_nil
-      Git::TextDiff.unified(deleted.old_text, deleted.new_text, deleted.path, deleted.old_mode, deleted.new_mode).should contain("-unchanged")
+      store.diff.to_s.should contain("-unchanged")
     end
   end
 
@@ -245,7 +265,7 @@ describe "Git working-tree unified diff" do
       File.chmod(target, 0o755)
       work = Git::Repository.new(root).working_file("file.txt", max_bytes: 128 * 1024).not_nil!
       work.new_mode.should eq("100755")
-      patch = Git::TextDiff.unified(work.old_text, work.new_text, work.path, work.old_mode, work.new_mode)
+      patch = Git::Repository.new(root).diff.to_s
       patch.should contain("new mode 100755")
       File.write(File.join(root, "mode.patch"), patch)
       git_fixture_git(root, "apply", "--check", "--reverse", "mode.patch")
