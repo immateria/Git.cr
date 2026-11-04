@@ -106,4 +106,49 @@ describe "non-ASCII text in real repositories" do
     advertisement.refs.map(&.name).should eq(["refs/heads/fëature", "refs/tags/ünïcode"])
     advertisement.capability?("report-status").should be_true
   end
+
+  # Older commits often carry Latin-1 bytes: Git keeps undeclared bytes and
+  # shows text in a declared encoding as UTF-8.
+  it "NA-07 reads and logs commits that are not UTF-8" do
+    GitOracle.with_repo do |root|
+      commit_as(root, "a", "a\n", 1_700_000_000)
+      tree = GitOracle.run(root, "rev-parse", "HEAD^{tree}").stdout.strip
+      head = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
+      latin1 = String.new(Bytes[0x4d, 0xfc, 0x6c, 0x6c, 0x65, 0x72]) # "Müller" in Latin-1
+      raw = "tree #{tree}\nparent #{head}\nauthor #{latin1} <m@example.invalid> 1700000100 +0000\n" \
+            "committer #{latin1} <m@example.invalid> 1700000100 +0000\n\nGr#{String.new(Bytes[0xfc])}\u{df}e #{latin1}\n"
+      undeclared = GitOracle.run(root, "hash-object", "-t", "commit", "-w", "--stdin", input: raw).stdout.strip
+      declared_raw = "tree #{tree}\nparent #{undeclared}\nauthor #{latin1} <m@example.invalid> 1700000200 +0000\n" \
+                     "committer #{latin1} <m@example.invalid> 1700000200 +0000\nencoding ISO-8859-1\n\nSch#{String.new(Bytes[0xf6])}n\n"
+      declared = GitOracle.run(root, "hash-object", "-t", "commit", "-w", "--stdin", input: declared_raw).stdout.strip
+      GitOracle.run(root, "update-ref", "refs/heads/main", declared)
+      repo = Git::Repository.new(root)
+      commits = repo.log(["HEAD"]).commits
+      commits.map(&.oid).should eq(GitOracle.run(root, "rev-list", "HEAD").stdout.split)
+      commits[0].subject.should eq("Schön")
+      commits[0].author.should eq("Müller <m@example.invalid> 1700000200 +0000")
+      commits[1].author.to_slice.should eq("#{latin1} <m@example.invalid> 1700000100 +0000".to_slice)
+      commits[1].subject.valid_encoding?.should be_false
+    end
+  end
+
+  it "NA-08 cherry-picks a Latin-1 commit without changing its bytes" do
+    GitOracle.with_repo do |root|
+      commit_as(root, "a", "a\n", 1_700_000_000)
+      GitOracle.run(root, "checkout", "-qb", "side")
+      File.write(File.join(root, "b"), "b\n")
+      GitOracle.run(root, "add", "b")
+      latin1 = String.new(Bytes[0x4d, 0xfc, 0x6c, 0x6c, 0x65, 0x72])
+      GitOracle.run(root, "-c", "i18n.commitEncoding=binary", "commit", "-qm", "Fix by #{latin1}",
+        extra_env: {"GIT_AUTHOR_NAME" => latin1, "GIT_AUTHOR_DATE" => "1700000100 +0000"})
+      picked = GitOracle.run(root, "rev-parse", "HEAD").stdout.strip
+      GitOracle.run(root, "checkout", "-q", "main")
+      repo = Git::Repository.new(root)
+      repo.cherry_pick(picked, committer: UMLAUT)
+      original = GitOracle.run(root, "cat-file", "commit", picked).stdout
+      copied = GitOracle.run(root, "cat-file", "commit", "HEAD").stdout
+      copied.split("\n\n", 2)[1].to_slice.should eq(original.split("\n\n", 2)[1].to_slice)
+      copied.lines.find!(&.starts_with?("author ")).to_slice.should eq(original.lines.find!(&.starts_with?("author ")).to_slice)
+    end
+  end
 end

@@ -38,6 +38,7 @@ module Git
       index = @index.entries(max_bytes) { check.call }
       verified = Set(String).new
       tracked = Set(String).new
+      submodules = index.select { |entry| entry.mode == "160000" }.map(&.path).to_set
       changes = [] of Change
       bytes_scanned = 0_i64
       index.each do |entry|
@@ -75,7 +76,12 @@ module Git
           next
         end
         if entry.mode == "160000"
-          changes << Change.new(entry.path, "submodule_unsupported", entry.oid, nil)
+          # Like Git: an uninitialized submodule (no repository inside) is
+          # unchanged; a checked-out one is modified when its HEAD is not
+          # the recorded commit. Its own worktree is not inspected.
+          if (checked_out = submodule_head(entry.path)) && checked_out != entry.oid
+            changes << Change.new(entry.path, "modified", entry.oid, checked_out)
+          end
           next
         end
         unless File.file?(absolute) && !File.symlink?(absolute)
@@ -115,6 +121,13 @@ module Git
               next
             end
             if is_dir
+              # A submodule is one tracked path; an untracked repository is
+              # listed as itself ("nested/"), as Git lists both.
+              next if submodules.includes?(relative)
+              if File.exists?(File.join(full, ".git"))
+                changes << Change.new(relative + "/", "untracked", nil, nil)
+                next
+              end
               queue << {relative, depth + 1}
             elsif !tracked.includes?(relative)
               changes << Change.new(relative, "untracked", nil, nil)
@@ -124,6 +137,16 @@ module Git
       end
       changes.sort_by!(&.path)
       {changes.first(limit), changes.size > limit, ignored_count}
+    end
+
+    # The commit a checked-out submodule's HEAD names, or nil when the
+    # submodule directory holds no repository.
+    private def submodule_head(path : String) : String?
+      directory = File.join(@root, path)
+      return nil unless Dir.exists?(directory) && !File.symlink?(directory) && File.exists?(File.join(directory, ".git"))
+      Repository.new(directory).head.oid
+    rescue Error
+      nil
     end
 
     # Worktree changes, at most a caller-chosen number of them.

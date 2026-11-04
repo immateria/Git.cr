@@ -69,4 +69,33 @@ describe "working tree status and the index stat cache" do
       changes.map { |change| {change.path, change.status} }.sort.should eq([{"large.bin", "deleted"}, {"small.txt", "modified"}])
     end
   end
+
+  it "WS-05 reports submodules as git status does" do
+    GitOracle.with_repo do |root|
+      stat_fixture(root)
+      sub = File.join(root, "sub")
+      Dir.mkdir(sub)
+      GitOracle.run(sub, "init", "-q", "-b", "main")
+      File.write(File.join(sub, "inner.txt"), "inner\n")
+      GitOracle.run(sub, "add", ".")
+      GitOracle.run(sub, "commit", "-qm", "inner")
+      GitOracle.run(root, "add", "sub")
+      GitOracle.run(root, "commit", "-qm", "add submodule")
+      git_status(root).should be_empty
+      Git::Repository.new(root).working_changes.to_a.should be_empty
+      File.write(File.join(sub, "inner.txt"), "moved on\n")
+      GitOracle.run(sub, "commit", "-qam", "newer")
+      git_status(root).should eq([" M sub"])
+      Git::Repository.new(root).working_changes.map { |change| {change.path, change.status} }.should eq([{"sub", "modified"}])
+      FileUtils.rm_rf(File.join(sub, ".git"))
+      git_status(root).should be_empty
+      Git::Repository.new(root).working_changes.to_a.should be_empty
+      nested = File.join(root, "nested")
+      Dir.mkdir(nested)
+      GitOracle.run(nested, "init", "-q")
+      File.write(File.join(nested, "file.txt"), "x\n")
+      GitOracle.run(root, "status", "--porcelain=v1", "-uall").stdout.lines.should eq(["?? nested/"])
+      Git::Repository.new(root).working_changes.map(&.path).should eq(["nested/"])
+    end
+  end
 end

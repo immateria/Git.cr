@@ -17,7 +17,8 @@ module Git
                   max_bytes : Int32, &check : -> Nil) : Commit
       kind, raw = objects.object(ObjectId.valid!(oid, format), max_bytes) { check.call }
       raise Git::Error.new("Git object is not a commit") unless kind == "commit"
-      raise Git::Error.new("invalid Git commit text") unless raw.valid_encoding?
+      # Commit text is bytes. Text in a declared encoding is shown as UTF-8,
+      # as git log does; undeclared bytes are kept as they are.
       separator = raw.byte_index("\n\n") || raise Git::Error.new("Git commit missing header separator")
       header = raw.byte_slice(0, separator)
       message = raw.byte_slice(separator + 2, raw.bytesize - separator - 2)
@@ -25,6 +26,7 @@ module Git
       parents = [] of String
       author = ""
       committer = ""
+      encoding = nil.as(String?)
       header.each_line do |line|
         case
         when line.starts_with?("tree ") then tree = ObjectId.valid!(line.byte_slice(5).strip, format)
@@ -33,13 +35,25 @@ module Git
           parents << ObjectId.valid!(line.byte_slice(7).strip, format)
         when line.starts_with?("author ")    then author = line.byte_slice(7).strip
         when line.starts_with?("committer ") then committer = line.byte_slice(10).strip
+        when line.starts_with?("encoding ")  then encoding = line.byte_slice(9).strip
         end
       end
       raise Git::Error.new("invalid Git commit header") if tree.nil? || author.empty? || committer.empty?
+      if (declared = encoding) && !{"utf-8", "utf8"}.includes?(declared.downcase)
+        author, committer, message = {author, committer, message}.map { |text| to_utf8(text, declared) }
+      end
       subject = message.lines.first? || ""
       # Keep the output predictable and bounded regardless of message size.
       Commit.new(oid, tree.not_nil!, parents, author.byte_slice(0, {author.bytesize, 512}.min),
         committer.byte_slice(0, {committer.bytesize, 512}.min), subject.byte_slice(0, {subject.bytesize, 1024}.min))
+    end
+
+    # text in a commit's declared encoding, as UTF-8; unchanged when the
+    # encoding is unknown or the bytes do not convert.
+    private def self.to_utf8(text : String, encoding : String) : String
+      String.new(text.to_slice, encoding)
+    rescue ArgumentError
+      text
     end
   end
 end
