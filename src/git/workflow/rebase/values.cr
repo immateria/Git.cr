@@ -3,11 +3,11 @@ module Git
   # replays a linear first-parent commit stack; merge-preserving/interactive
   # todo syntax is outside this checkpoint.
   struct Rebase
-    record State, branch : String, original_head : String, upstream : String,
+    record State, branch : String?, original_head : String, upstream : String,
       onto : String, todo : Array(String), next_index : Int32,
       expected_head : String, keep_empty : Bool
 
-    record Result, branch : String, original_head : String, onto : String,
+    record Result, branch : String?, original_head : String, onto : String,
       current_head : String, next_index : Int32, total : Int32,
       conflicts : Array(String), completed : Bool
 

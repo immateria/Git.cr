@@ -1,10 +1,11 @@
 module Git
   class Repository
-    # Rebase the current symbolic branch onto `upstream`, or onto an explicit
-    # alternate commit while still selecting commits relative to `upstream`.
-    # The selected branch-only history must be a linear first-parent chain.
-    # Clean items replay synchronously; conflicts leave REBASE_HEAD plus the
-    # normal index stages and can be resumed with rebase_continue/skip/abort.
+    # Rebase the current symbolic branch (or detached HEAD) onto `upstream`,
+    # or onto an explicit alternate commit while still selecting commits
+    # relative to `upstream`. The selected branch-only history must be a linear
+    # first-parent chain. Clean items replay synchronously; conflicts leave
+    # REBASE_HEAD plus the normal index stages and can be resumed with
+    # rebase_continue/skip/abort.
     def rebase(upstream : String, *, committer : Signature,
                onto : String? = nil, keep_empty : Bool = false,
                max_commits : Int32 = 512, max_graph_nodes : Int32 = 16_384,
@@ -25,8 +26,9 @@ module Git
       raise Error.new("Git rebase refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git rebase already in progress") if rebase_state?
       branch, original_head = head_ref_and_oid
-      raise Error.new("Git rebase requires an existing symbolic branch") unless branch &&
-                                                                                branch.starts_with?("refs/heads/") && original_head
+      unless original_head && (branch.nil? || branch.starts_with?("refs/heads/"))
+        raise Error.new("Git rebase requires an existing branch or detached HEAD")
+      end
       upstream_oid = History.resolve_commit(self, upstream, max_object_bytes, check)
       onto_oid = History.resolve_commit(self, onto || upstream, max_object_bytes, check)
       base, todo = rebase_plan(original_head, upstream_oid,
@@ -79,8 +81,13 @@ module Git
       begin
         return nil unless parent.stat?("rebase-merge")
         child = parent.open_directory("rebase-merge")
-        branch = rebase_read_file!(child, "head-name", 4_096).strip
-        raise Error.new("Git rebase branch state invalid") unless branch.starts_with?("refs/heads/") && RefName.valid?(branch)
+        raw_branch = rebase_read_file!(child, "head-name", 4_096).strip
+        branch = if raw_branch == "detached HEAD"
+                   nil
+                 else
+                   raise Error.new("Git rebase branch state invalid") unless raw_branch.starts_with?("refs/heads/") && RefName.valid?(raw_branch)
+                   raw_branch
+                 end
         original_head = ObjectId.valid!(rebase_read_file!(child, "orig-head", 256).strip, @object_format)
         upstream = ObjectId.valid!(rebase_read_file!(child, "upstream", 256).strip, @object_format)
         onto = ObjectId.valid!(rebase_read_file!(child, "onto", 256).strip, @object_format)

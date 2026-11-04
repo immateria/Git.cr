@@ -12,7 +12,7 @@ module Git
 
     record Source, oid : String, tree : String, parents : Array(String),
       author : Signature, message : String
-    record State, kind : Kind, branch : String, original_head : String,
+    record State, kind : Kind, branch : String?, original_head : String,
       source : String, parent : String?, author : Signature, message : String,
       allow_empty : Bool
     record Result, kind : Kind, original_head : String, source : String,

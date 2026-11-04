@@ -1,9 +1,9 @@
 module Git
   class Repository
     # Read a strictly bounded in-progress Git MERGE_HEAD, if present. The
-    # companion state records the original ref and commit for fail-closed
-    # continuation/abort after somebody switches branches externally.
-    protected def merge_state? : {String, String, String}?
+    # companion state records the original ref (or "-" when detached) and
+    # commit for fail-closed continuation/abort after external changes.
+    protected def merge_state? : {String?, String, String}?
       check!
       admin = DescriptorPath::Directory.open(@git_dir)
       begin
@@ -13,11 +13,16 @@ module Git
         ObjectId.valid!(target, @object_format)
         original = merge_read_metadata?(admin, "CRYSTAL_MERGE_ORIG") || raise Error.new("Git merge original state missing")
         lines = original.lines.map(&.strip)
-        raise Error.new("Git merge original state invalid") unless lines.size == 2 &&
-                                                                   lines[0].starts_with?("refs/heads/") &&
-                                                                   RefName.valid?(lines[0])
+        raise Error.new("Git merge original state invalid") unless lines.size == 2
+        branch = if lines[0] == "-"
+                   nil
+                 else
+                   raise Error.new("Git merge original state invalid") unless lines[0].starts_with?("refs/heads/") &&
+                                                                              RefName.valid?(lines[0])
+                   lines[0]
+                 end
         ObjectId.valid!(lines[1], @object_format)
-        {lines[0], lines[1], target}
+        {branch, lines[1], target}
       ensure
         admin.close
       end

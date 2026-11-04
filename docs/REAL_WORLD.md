@@ -168,15 +168,14 @@ from 22x to under 3x, merge-base from 12x to about 2x and clone from 8x to 4x.
 
 ## Remaining differences
 
-- Hunk headers use Git's default function-name rule; `.gitattributes` language
-  drivers (`*.c diff=cpp`) are not applied. git/git shows this in a few patches
-  when its attributes are used.
-- IDs in `index` lines are abbreviated to at least 7 digits; Git lengthens its
-  default with the object count. The harness passes `--abbrev=12` to both.
+- `.gitattributes` built-in `xfuncname` drivers (`*.[ch] diff=cpp`, `diff=python`,
+  `diff=rust`, etc.) and `-diff`/`binary` rules are now applied, and default
+  `index` line abbreviations scale with the packed object count.
 - Renames are exact only; the harness asks Git for `-M100%`.
-- Git's wildmatch compares bytes, so `?` and `[...]` never match a multibyte
-  character; the library matches characters.
-- Indexes the library writes carry no stat data, so the first status after a
-  native clone or checkout hashes every file.
+- `Git::Ignore` now compares raw bytes for `?` and `[...]` as Git's `wildmatch`
+  does, and loads `core.excludesFile` when configured.
+- Indexes written by `clone`, `stage` and `stage_file` now record `Index::Stat`
+  and preserve non-racy stat entries, and `staged_changes` uses the index's
+  `TREE` cache-tree extension to skip unchanged subtrees.
 - Reading every object is still several times slower than Git's C with
   memory-mapped packs.

@@ -99,7 +99,7 @@ module Git
           changed_paths << path
         end
         guard.call
-        update_ref(state.branch, to_oid, expected_oid: from_oid, log: log,
+        update_head_or_branch(state.branch, to_oid, expected_oid: from_oid, log: log,
           max_object_bytes: max_object_bytes, check: guard)
         ref_published = true
         if planned = image

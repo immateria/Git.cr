@@ -50,13 +50,16 @@ module Git
                    check : Proc(Nil)? = nil) : String
       require_worktree!
       PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH)
-      mode, bytes = if File.symlink?(File.join(@root, path))
+      full = File.join(@root, path)
+      mode, bytes = if File.symlink?(full)
                       {"120000", Checkout.symlink_target(@root, path, max_bytes)}
                     else
                       @worktree.stage_content(path, max_bytes) { check.try &.call }
                     end
-      stage_blob(path, bytes, mode: mode, max_blob_bytes: max_bytes.to_i64,
-        max_index_bytes: max_index_bytes, check: check)
+      oid = write_blob(bytes, max_bytes: max_bytes.to_i64, check: check)
+      stat = Index.stat_for(full, mode)
+      @index.stage_entry(path, mode, oid, stat: stat, max_bytes: max_index_bytes, check: check)
+      oid
     end
 
     # Stages worktree changes in one index write, like git add -A (or -u
@@ -93,7 +96,7 @@ module Git
       index.each { |entry| (by_path[entry.path] ||= [] of Index::Entry) << entry }
       gitlinks = index.select { |entry| entry.mode == "160000" }.map(&.path)
       unless whole
-        ignore = Ignore.new(@root, @common, {max_bytes, @max_scan_bytes}.min)
+        ignore = Ignore.new(@root, @common, {max_bytes, @max_scan_bytes}.min, config: config)
         ignored = [] of String
         specs.each do |spec|
           check.try &.call
@@ -139,7 +142,7 @@ module Git
           oid = write_blob(bytes, max_bytes: max_bytes.to_i64, check: check)
           unchanged = existing && existing.size == 1 && existing[0].stage == 0 &&
                       existing[0].mode == mode && existing[0].oid == oid
-          edits[path] = Index::Put.new(path, mode, oid) unless unchanged
+          edits[path] = Index::Put.new(path, mode, oid, Index.stat_for(full, mode)) unless unchanged
         end
       end
       return [] of String if edits.empty?

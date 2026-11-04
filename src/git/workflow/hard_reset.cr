@@ -1,10 +1,10 @@
 module Git
   class Repository
-    # Explicit hard reset of a symbolic branch in a regular-only worktree.
-    # This overwrites dirty tracked bytes and discards staged changes. It
-    # refuses untracked target collisions, D/F transitions, symlinks,
-    # gitlinks, sparse paths and a linked-worktree configuration. Changes
-    # to worktree, ref and index are NOT an atomic Git transaction.
+    # Explicit hard reset of a symbolic branch or detached HEAD in a
+    # regular-only worktree. This overwrites dirty tracked bytes and discards
+    # staged changes. It refuses untracked target collisions, D/F transitions,
+    # symlinks, gitlinks, sparse paths and a linked-worktree configuration.
+    # Changes to worktree, ref and index are NOT an atomic Git transaction.
     protected def reset_head_hard(source : String = "HEAD", *,
                                   log : References::LogEntry? = nil,
                                   max_object_bytes : Int32 = 8_388_608,
@@ -24,8 +24,9 @@ module Git
       raise Error.new("Git hard reset unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                  (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
       reference, previous = head_ref_and_oid
-      raise Error.new("Git hard reset requires a symbolic branch HEAD") unless reference &&
-                                                                               reference.starts_with?("refs/heads/") && previous
+      unless previous && (reference.nil? || reference.starts_with?("refs/heads/"))
+        raise Error.new("Git hard reset requires an existing branch or detached HEAD")
+      end
       target = History.resolve_commit(self, source, max_object_bytes, check)
       old_tree = read_commit(previous, max_bytes: max_object_bytes, check: check).tree
       target_tree = read_commit(target, max_bytes: max_object_bytes, check: check).tree
@@ -141,7 +142,7 @@ module Git
         guard.call
         write_orig_head(previous)
         if target != previous
-          update_ref(reference, target, expected_oid: previous, log: log,
+          update_head_or_branch(reference, target, expected_oid: previous, log: log,
             max_object_bytes: max_object_bytes, check: guard)
           ref_published = true
         elsif entry = log

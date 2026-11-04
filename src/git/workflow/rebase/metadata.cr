@@ -11,7 +11,7 @@ module Git
         created = true
         child = parent.open_directory("rebase-merge")
         files = {
-          "head-name"       => "#{state.branch}\n",
+          "head-name"       => "#{state.branch || "detached HEAD"}\n",
           "orig-head"       => "#{state.original_head}\n",
           "upstream"        => "#{state.upstream}\n",
           "onto"            => "#{state.onto}\n",

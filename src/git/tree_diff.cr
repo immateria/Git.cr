@@ -175,18 +175,21 @@ module Git
     # tree for a root commit (the diff of `git show --format=
     # --first-parent`). Options as for #diff.
     def commit_patch(revision : String = "HEAD", *, context : Int32 = 3, renames : Bool = true,
-                     paths : Array(String) = [] of String, abbrev : Int32 = 7,
-                     indent_heuristic : Bool = true, max_bytes : Int32 = 8_388_608,
+                     paths : Array(String) = [] of String, abbrev : Int32? = nil,
+                     indent_heuristic : Bool = true, attributes : Bool = true,
+                     config : Config? = nil, max_bytes : Int32 = 8_388_608,
                      max_changes : Int32 = 1_000_000, max_lines : Int32 = 1_000_000,
                      check : Proc(Nil)? = nil) : Patch
+      effective_abbrev = abbrev || default_abbrev
       oid = Revision.peel(self, rev_parse(revision), "commit")
       parent = History::RevisionWalker.new(self, check: check).commit_node(oid).parents.first?
       old_tree = parent.try { |commit| Revision.peel(self, commit, "tree") }
       new_tree = Revision.peel(self, oid, "tree")
       changes = TreeDiff.compare(self, old_tree, new_tree, renames: renames, paths: paths,
         max_object_bytes: max_bytes, max_changes: max_changes, check: check)
-      Patch.build(self, changes, {} of String => String, context: context, abbrev: abbrev,
-        indent_heuristic: indent_heuristic, max_bytes: max_bytes, max_lines: max_lines, check: check)
+      Patch.build(self, changes, {} of String => String, context: context, abbrev: effective_abbrev,
+        indent_heuristic: indent_heuristic, attributes: attributes, config: config,
+        max_bytes: max_bytes, max_lines: max_lines, check: check)
     end
   end
 end

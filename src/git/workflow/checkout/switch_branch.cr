@@ -1,31 +1,34 @@
 module Git
   class Repository
-    # `git switch <branch>`: check out a local branch. With create (`-c`)
-    # target names a new branch started at from (default HEAD); with detach
-    # (`--detach`) target is any commit and HEAD is left detached there.
-    # Otherwise a missing branch that exactly one remote has is created from
-    # that remote-tracking branch, as Git guesses (guess: false turns this
-    # off). A created branch gets an upstream as Branches#create gives one
-    # unless track is false. With actor, HEAD's reflog gets Git's
-    # "checkout: moving from <old> to <target>" and a created branch's
-    # reflog "branch: Created from <start>".
+    # `git switch <branch>`: check out a local branch (or `"-"` for the
+    # previously checked-out branch/commit). With create (`-c`) target names
+    # a new branch started at from (default HEAD); with force_create (`-C`) an
+    # existing branch is reset to from; with detach (`--detach`) target is any
+    # commit and HEAD is left detached there. Otherwise a missing branch that
+    # exactly one remote has is created from that remote-tracking branch, as
+    # Git guesses (guess: false turns this off). A created or force-created
+    # branch gets an upstream as Branches#create gives one unless track is
+    # false. With actor, HEAD's reflog gets Git's
+    # "checkout: moving from <old> to <target>" and a created/reset branch's
+    # reflog "branch: Created from <start>" or "branch: Reset to <start>".
     #
     # The repository must be clean and ordinary: regular files, staged state
     # equal to HEAD, unchanged tracked files. File/directory transitions are
     # planned explicitly and refuse untracked content before publication.
     # Worktree, index, a created branch and HEAD are published in that
     # order, not atomically.
-    def switch(target : String, *, create : Bool = false, from : String? = nil,
-               detach : Bool = false, guess : Bool = true, track : Bool = true,
-               actor : Signature? = nil,
+    def switch(target : String, *, create : Bool = false, force_create : Bool = false,
+               from : String? = nil, detach : Bool = false, guess : Bool = true,
+               track : Bool = true, actor : Signature? = nil,
                max_blob_bytes : Int32 = 8_388_608,
                max_index_bytes : Int32 = 8_388_608,
                max_total_bytes : Int64 = 67_108_864,
                max_files : Int32 = 10_000,
                check : Proc(Nil)? = nil) : Checkout::Result
       require_worktree!
-      raise ArgumentError.new("Git switch cannot both create and detach") if create && detach
-      raise ArgumentError.new("Git switch from: needs create") if from && !create
+      creating = create || force_create
+      raise ArgumentError.new("Git switch cannot both create and detach") if creating && detach
+      raise ArgumentError.new("Git switch from: needs create") if from && !creating
       raise Error.new("Git checkout refuses in-progress merge") if merge_state?
       raise Error.new("Git checkout refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git checkout refuses in-progress rebase") if rebase_state?
@@ -34,11 +37,20 @@ module Git
       check!
       raise Error.new("Git checkout unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
+      if target == "-" && !creating
+        prior = Revision::Parser.new(self, max_blob_bytes).prior_checkout(1)
+        if !detach && prior.bytesize == @object_format.hexsize && prior.each_char.all?(&.hex?) &&
+           resolve_ref?("refs/heads/#{prior}").nil?
+          detach = true
+        end
+        target = prior
+      end
       original_ref, original_oid = head_ref_and_oid
-      # What HEAD will name (nil when detached), a branch to create there
-      # and the start point it is created from.
+      # What HEAD will name (nil when detached), a branch to create/reset there,
+      # its expected old OID and the start point it is created/reset from.
       head_ref = nil.as(String?)
       new_branch = nil.as(String?)
+      expected_branch_oid = nil.as(String?)
       start = "HEAD"
       upstream = nil.as({String, String}?)
       if detach
@@ -47,10 +59,11 @@ module Git
         branch_ref = new_branch_ref(target)
         head_ref = branch_ref
         existing = resolve_ref?(branch_ref)
-        if create
-          raise Error.new("Git branch #{target} already exists") if existing
+        if creating
+          raise Error.new("Git branch #{target} already exists") if existing && !force_create
           start = from || "HEAD"
           new_branch = branch_ref
+          expected_branch_oid = existing
         elsif existing.nil?
           start = (guess ? guess_remote_branch(target) : nil) || raise Error.new("Git checkout branch missing")
           new_branch = branch_ref
@@ -72,7 +85,7 @@ module Git
       end
       target_unchanged = -> do
         if branch = new_branch
-          resolve_ref?(branch).nil?
+          resolve_ref?(branch) == expected_branch_oid
         elsif reference = head_ref
           resolve_ref?(reference) == target_oid
         else
@@ -182,8 +195,17 @@ module Git
         end
         if branch = new_branch
           publication_started = true
-          branch_log = actor.try { |who| References::LogEntry.new(who, "branch: Created from #{start}") }
-          update_ref(branch, target_oid, expected_oid: nil, log: branch_log, max_object_bytes: max_blob_bytes)
+          branch_log = actor.try do |who|
+            action = expected_branch_oid ? "Reset to" : "Created from"
+            References::LogEntry.new(who, "branch: #{action} #{start}")
+          end
+          if expected_branch_oid && target_oid == expected_branch_oid
+            if entry = branch_log
+              References::Transaction.append_log(@common, branch, entry.encode(expected_branch_oid, target_oid))
+            end
+          else
+            update_ref(branch, target_oid, expected_oid: expected_branch_oid, log: branch_log, max_object_bytes: max_blob_bytes)
+          end
           upstream.try { |remote_name, merge_ref| set_branch_upstream(target, remote_name, merge_ref) }
         end
         head_lock.not_nil!.write((head_ref ? "ref: #{head_ref}\n" : "#{target_oid}\n").to_slice)
@@ -195,11 +217,18 @@ module Git
         ensure
           readback.close
         end
-        raise Error.new("Git checkout HEAD changed") unless head_current == head_original
+        raise Error.new("Git checkout HEAD changed") unless head_current == head_original || (original_ref == head_ref && head_ref != nil)
         raise Error.new("Git checkout admin directory replaced") unless admin.attached_at?(@git_dir)
         admin.rename("HEAD.lock", "HEAD")
         admin.sync
-        checkout_log.try { |entry| append_head_log(original_oid, target_oid, entry) }
+        # When resetting an existing branch that wasn't currently checked out,
+        # update_ref only appended to the branch log; append the checkout line
+        # to HEAD's log unless update_ref already appended the Reset line to HEAD.
+        if !(new_branch && original_ref == new_branch && target_oid != expected_branch_oid)
+          checkout_log.try { |entry| append_head_log(original_oid, target_oid, entry) }
+        elsif entry = checkout_log
+          append_head_log(target_oid, target_oid, entry)
+        end
         Checkout::Result.new(head_ref, target_oid, changed_paths)
       rescue ex
         if publication_started || index_published

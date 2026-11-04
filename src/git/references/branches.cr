@@ -33,9 +33,14 @@ module Git
     end
 
     # Local branches sorted by name. With tracking, upstreams are read and
-    # ahead/behind counted against their tracking refs.
-    def list(*, tracking : Bool = true, check : Proc(Nil)? = nil) : Array(Branch)
-      @repository.list_branches(tracking: tracking, check: check)
+    # ahead/behind counted against their tracking refs. merged, no_merged and
+    # contains filter branches by commit ancestry (`--merged`, `--no-merged`,
+    # `--contains`).
+    def list(*, tracking : Bool = true, merged : String? = nil,
+             no_merged : String? = nil, contains : String? = nil,
+             check : Proc(Nil)? = nil) : Array(Branch)
+      @repository.list_branches(tracking: tracking, merged: merged,
+        no_merged: no_merged, contains: contains, check: check)
     end
 
     # `git branch <name> [<from>]`: create a branch at a commit without
@@ -63,6 +68,14 @@ module Git
     def rename(old_name : String, new_name : String, *, force : Bool = false,
                check : Proc(Nil)? = nil) : Nil
       @repository.rename_branch(old_name, new_name, force: force, check: check)
+    end
+
+    # `git branch -c` (`-C` with force): copy the branch's ref, its reflog
+    # and its configuration to a new branch name. With actor, the new reflog
+    # gets Git's "Branch: copied refs/heads/<old> to refs/heads/<new>".
+    def copy(old_name : String, new_name : String, *, force : Bool = false,
+             actor : Signature? = nil, check : Proc(Nil)? = nil) : Nil
+      @repository.copy_branch(old_name, new_name, force: force, actor: actor, check: check)
     end
 
     # The branch's configured upstream, or nil.
@@ -139,11 +152,27 @@ module Git
       upstream
     end
 
-    # Local branches, with upstream tracking counts (`git branch -vv`).
-    protected def list_branches(*, tracking : Bool = true, check : Proc(Nil)? = nil) : Array(Branch)
+    # Local branches, with upstream tracking counts (`git branch -vv`) and
+    # optional `--merged`, `--no-merged` and `--contains` filters.
+    protected def list_branches(*, tracking : Bool = true, merged : String? = nil,
+                                no_merged : String? = nil, contains : String? = nil,
+                                check : Proc(Nil)? = nil) : Array(Branch)
       current = head_ref_and_oid[0]
+      walker = History::RevisionWalker.new(self, check: check)
+      merged_oid = merged.try { |rev| History.resolve_commit(self, rev, 8_388_608, check) }
+      no_merged_oid = no_merged.try { |rev| History.resolve_commit(self, rev, 8_388_608, check) }
+      contains_oid = contains.try { |rev| History.resolve_commit(self, rev, 8_388_608, check) }
       references("refs/heads/").compact_map do |ref|
         oid = ref.oid || next
+        if target = merged_oid
+          next unless oid == target || walker.ancestor?(oid, target)
+        end
+        if target = no_merged_oid
+          next if oid == target || walker.ancestor?(oid, target)
+        end
+        if target = contains_oid
+          next unless oid == target || walker.ancestor?(target, oid)
+        end
         name = ref.name.byte_slice(11)
         next Branch.new(name, oid, ref.name == current) unless tracking
         configured = branch_upstream(name)
@@ -152,8 +181,8 @@ module Git
         ahead = nil.as(Int32?)
         behind = nil.as(Int32?)
         if tracking_ref && (other = resolve_ref?(tracking_ref))
-          ahead = History::RevisionWalker.new(self, check: check).commits([oid], [other]).size
-          behind = History::RevisionWalker.new(self, check: check).commits([other], [oid]).size
+          ahead = walker.commits([oid], [other]).size
+          behind = walker.commits([other], [oid]).size
         end
         Branch.new(name, oid, ref.name == current, upstream, tracking_ref, ahead, behind)
       end
@@ -168,8 +197,11 @@ module Git
       oid = resolve_ref?(ref) || raise Error.new("Git branch #{name} not found")
       raise Error.new("Git cannot delete the checked-out branch #{name}") if head_ref_and_oid[0] == ref && !bare?
       unless force
-        base = branch_upstream(name).try { |remote_name, merge| upstream_tracking_ref(remote_name, merge).try { |tracking| resolve_ref?(tracking) } } || head_ref_and_oid[1]
-        merged = base && (base == oid || History::RevisionWalker.new(self, check: check).ancestor?(oid, base))
+        upstream_oid = branch_upstream(name).try { |remote_name, merge| upstream_tracking_ref(remote_name, merge).try { |tracking| resolve_ref?(tracking) } }
+        walker = History::RevisionWalker.new(self, check: check)
+        merged = [upstream_oid, head_ref_and_oid[1]].compact.any? do |base|
+          base == oid || walker.ancestor?(oid, base)
+        end
         raise Error.new("Git branch #{name} is not fully merged") unless merged
       end
       delete_ref(ref, expected_oid: oid, check: check)
@@ -203,6 +235,35 @@ module Git
       set_symbolic_ref("HEAD", new_ref) if head_ref_and_oid[0] == old_ref
       Config::FileEditor.remove_section(local_config_path, "branch.#{new_name}") if force
       Config::FileEditor.rename_section(local_config_path, "branch.#{old_name}", "branch.#{new_name}")
+    end
+
+    # `git branch -c` (`-C` with force): copy a branch's ref, its reflog and
+    # its branch.<name>.* configuration to a new branch name.
+    protected def copy_branch(old_name : String, new_name : String, *, force : Bool = false,
+                              actor : Signature? = nil, check : Proc(Nil)? = nil) : Nil
+      check!
+      old_ref = new_branch_ref(old_name)
+      new_ref = new_branch_ref(new_name)
+      oid = resolve_ref?(old_ref) || raise Error.new("Git branch #{old_name} not found")
+      existing = resolve_ref?(new_ref)
+      raise Error.new("Git branch #{new_name} already exists") if (existing || old_ref == new_ref) && !force
+      return if old_ref == new_ref
+      old_log = File.join(@common, "logs", old_ref)
+      saved_log = File.exists?(old_log) ? File.read(old_log) : nil
+      update_ref(new_ref, oid, expected_oid: existing, check: check)
+      destination = File.join(@common, "logs", new_ref)
+      if log_bytes = saved_log
+        Dir.mkdir_p(File.dirname(destination))
+        File.write(destination, log_bytes)
+      elsif force
+        File.delete?(destination)
+      end
+      if who = actor
+        entry = References::LogEntry.new(who, "Branch: copied #{old_ref} to #{new_ref}")
+        References::Transaction.append_log(@common, new_ref, entry.encode(oid, oid))
+      end
+      Config::FileEditor.remove_section(local_config_path, "branch.#{new_name}") if force
+      Config::FileEditor.copy_section(local_config_path, "branch.#{old_name}", "branch.#{new_name}")
     end
 
     private def new_branch_ref(name : String) : String

@@ -48,12 +48,13 @@ describe "Git porcelain" do
       expressions = ["HEAD", "@", "main", "main~2", "HEAD~1^2", "HEAD~1^2~1", "HEAD^^", "v1", "v1^{}", "v1^{commit}",
                      "v1^{tree}", "light", "HEAD:src/main.cr", "HEAD:src", "HEAD:", "main~1:topic.txt", ":README.md",
                      short, "#{short}~1", "main@{u}", "@{upstream}", "main@{0}", "main@{2}", "HEAD@{1}",
+                     "@{-1}", "@{-2}", ":/merge topic", ":/README.md: readme",
                      "refs/heads/topic", "heads/topic", "topic~1", "v1^{tag}", "HEAD^0"]
       expressions.each do |expression|
         expected = GitOracle.run(root, "rev-parse", "--verify", "-q", expression).stdout.strip
         {expression, repo.rev_parse(expression)}.should eq({expression, expected})
       end
-      ["nothing", "HEAD~20", "HEAD^3", "HEAD:missing", "v1^{blob}", "main@{99}", "topic@{u}", "deadbeef"].each do |bad|
+      ["nothing", "HEAD~20", "HEAD^3", "HEAD:missing", "v1^{blob}", "main@{99}", "@{-99}", ":/no-such-commit", "topic@{u}", "deadbeef"].each do |bad|
         GitOracle.run(root, "rev-parse", "--verify", "-q", bad, check: false).success?.should be_false
         expect_raises(Git::Error) { repo.rev_parse(bad) }
       end
@@ -74,7 +75,7 @@ describe "Git porcelain" do
     end
   end
 
-  it "PORCELAIN-O03 lists, deletes and renames branches and tags like git branch and git tag" do
+  it "PORCELAIN-O03 lists, filters, copies, deletes and renames branches and tags like git branch and git tag" do
     GitOracle.with_repo do |root|
       porcelain_history(root)
       repo = Git::Repository.new(root)
@@ -91,6 +92,16 @@ describe "Git porcelain" do
       info["main"].upstream.should eq(Git::Branch::Upstream.new("origin", "refs/heads/main"))
       counts = GitOracle.run(root, "rev-list", "--left-right", "--count", "main...origin/main").stdout.split.map(&.to_i)
       {info["main"].ahead, info["main"].behind}.should eq({counts[0], counts[1]})
+
+      repo.branches.list(merged: "main").map(&.name).should eq(["main", "merged", "topic"])
+      repo.branches.list(no_merged: "main").map(&.name).should eq(["unmerged"])
+      repo.branches.list(contains: "v1").map(&.name).should eq(["main", "unmerged"])
+
+      repo.branches.copy("unmerged", "copied")
+      GitOracle.run(root, "config", "branch.copied.description").stdout.strip.should eq("work in progress")
+      expect_raises(Git::Error, /already exists/) { repo.branches.copy("main", "copied") }
+      repo.branches.copy("main", "copied", force: true)
+      repo.branches.delete("copied")
 
       repo.branches.delete("merged")
       GitOracle.run(root, "rev-parse", "--verify", "-q", "refs/heads/merged", check: false).success?.should be_false

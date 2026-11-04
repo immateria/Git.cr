@@ -64,6 +64,58 @@ module Git
       write_git_dir_ref("HEAD", oid)
     end
 
+    # Update a checked-out branch ref, or detached HEAD when reference is nil,
+    # with compare-and-swap against expected_oid and an optional reflog entry.
+    protected def update_head_or_branch(reference : String?, new_oid : String, *,
+                                        expected_oid : String?, log : References::LogEntry? = nil,
+                                        max_object_bytes : Int32 = 8_388_608,
+                                        check : Proc(Nil)? = nil) : Nil
+      if branch = reference
+        update_ref(branch, new_oid, expected_oid: expected_oid, log: log,
+          max_object_bytes: max_object_bytes, check: check)
+        return
+      end
+      expected = expected_oid || raise Error.new("detached Git HEAD requires an existing commit")
+      ObjectId.valid!(new_oid, @object_format)
+      ObjectId.valid!(expected, @object_format)
+      @object_database.object(new_oid, max_object_bytes) { check.try &.call }
+      log.try(&.encode(expected, new_oid))
+      check!
+      dir = DescriptorPath::Directory.open(@git_dir)
+      begin
+        io = dir.open_file("HEAD.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
+        owned = true
+        begin
+          check!
+          check.try &.call
+          raise Error.new("Git HEAD compare-and-swap mismatch") unless head_ref_and_oid == {nil, expected}
+          io.write("#{new_oid}\n".to_slice)
+          io.flush
+          io.fsync
+          check!
+          check.try &.call
+          raise Error.new("Git HEAD compare-and-swap mismatch") unless head_ref_and_oid == {nil, expected}
+          if entry = log
+            append_head_log(expected, new_oid, entry)
+          end
+          raise Error.new("Git admin directory replaced during HEAD publication") unless dir.attached_at?(@git_dir)
+          dir.rename("HEAD.lock", "HEAD")
+          owned = false
+          dir.sync
+        ensure
+          if owned && dir.same_inode?("HEAD.lock", io)
+            dir.unlink("HEAD.lock")
+            dir.sync
+          end
+          io.close unless io.closed?
+        end
+      ensure
+        dir.close
+      end
+    rescue ex : File::Error | IO::Error
+      raise Error.new("Git HEAD write failed: #{ex.class}")
+    end
+
     # Record where HEAD was before a command moved it (reset, merge, pull,
     # rebase), as Git does for `ORIG_HEAD`.
     protected def write_orig_head(oid : String) : Nil

@@ -34,7 +34,7 @@ module Git
                                           state : Sequencer::State) : Nil
       head_name = Sequencer.head_name(state.kind)
       contents = {
-        "CRYSTAL_SEQUENCER_ORIG"        => "#{state.branch}\n#{state.original_head}\n",
+        "CRYSTAL_SEQUENCER_ORIG"        => "#{state.branch || "-"}\n#{state.original_head}\n",
         "CRYSTAL_SEQUENCER_PARENT"      => "#{state.parent || "-"}\n",
         "CRYSTAL_SEQUENCER_AUTHOR"      => "#{state.author.to_git_header}\n",
         "CRYSTAL_SEQUENCER_ALLOW_EMPTY" => state.allow_empty ? "1\n" : "0\n",

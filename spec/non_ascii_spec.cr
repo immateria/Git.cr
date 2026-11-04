@@ -77,22 +77,22 @@ describe "non-ASCII text in real repositories" do
     end
   end
 
-  # Git's wildmatch compares bytes, so a class or ? never matches a whole
-  # multibyte character; literal text and * do, which is what this covers.
-  it "NA-05 matches non-ASCII ignore patterns" do
+  it "NA-05 matches non-ASCII ignore patterns and byte-level ? / [...] wildmatch like Git" do
     GitOracle.with_repo do |root|
-      File.write(File.join(root, ".gitignore"), "ü*.txt\nä?.md\nnaïve/\n")
-      ["ünter.txt", "über.txt", "äx.md", "ax.md", "keep.txt", "naïve/inside"].each do |name|
+      File.write(File.join(root, ".gitignore"), "ü*.txt\nä?.md\ncaf?.log\ncaf??.tmp\ncaf[!a-z].dat\nnaïve/\n")
+      ["ünter.txt", "über.txt", "äx.md", "ax.md", "cafe.log", "café.log", "cafe.tmp", "café.tmp",
+       "caf1.dat", "café.dat", "keep.txt", "naïve/inside"].each do |name|
         path = File.join(root, name)
         Dir.mkdir_p(File.dirname(path))
         File.write(path, "x\n")
       end
       repo = Git::Repository.new(root)
       native = repo.working_changes.map(&.path).sort
-      expected = GitOracle.run(root, "status", "--porcelain=v1", "-uall").stdout.lines.map { |line| line.byte_slice(3) }.sort
+      expected = GitOracle.run(root, "-c", "core.quotePath=false", "status", "--porcelain=v1", "-uall").stdout.lines.map { |line| line.byte_slice(3) }.sort
       native.should eq(expected)
-      native.should eq([".gitignore", "ax.md", "keep.txt"])
-      expected.should eq([".gitignore", "ax.md", "keep.txt"])
+      # Single `?` and `[!a-z]` match 1 byte, so 2-byte `é` is not matched by `caf?.log` or `caf[!a-z].dat`,
+      # whereas `caf??.tmp` matches 2-byte `é` in `café.tmp`.
+      native.should eq([".gitignore", "ax.md", "cafe.tmp", "café.dat", "café.log", "keep.txt"])
     end
   end
 
@@ -149,6 +149,19 @@ describe "non-ASCII text in real repositories" do
       copied = GitOracle.run(root, "cat-file", "commit", "HEAD").stdout
       copied.split("\n\n", 2)[1].to_slice.should eq(original.split("\n\n", 2)[1].to_slice)
       copied.lines.find!(&.starts_with?("author ")).to_slice.should eq(original.lines.find!(&.starts_with?("author ")).to_slice)
+    end
+  end
+
+  it "NA-09 honours core.excludesFile before info/exclude and .gitignore" do
+    GitOracle.with_repo do |root|
+      global_excludes = File.join(File.dirname(root), "global.ignore")
+      File.write(global_excludes, "*.global\n!keep.global\n")
+      GitOracle.run(root, "config", "core.excludesFile", global_excludes)
+      File.write(File.join(root, "drop.global"), "x\n")
+      File.write(File.join(root, "keep.global"), "y\n")
+      repo = Git::Repository.new(root)
+      changes = repo.working_changes(config: repo.config)
+      changes.map(&.path).should eq(["keep.global"])
     end
   end
 end

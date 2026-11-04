@@ -59,9 +59,9 @@ module Git
     end
 
     # Native first-parent commit of the current staged index, with an
-    # expected-old-oid branch CAS. This is NOT a multi-file atomic transaction:
-    # object writes can survive a CAS conflict; independent index changes
-    # between snapshot and ref update remain outside this first slice.
+    # expected-old-oid branch or detached-HEAD CAS. This is NOT a multi-file
+    # atomic transaction: object writes can survive a CAS conflict; independent
+    # index changes between snapshot and ref update remain outside this slice.
     def commit(*, author : Signature, committer : Signature,
                message : String, allow_empty : Bool = false,
                max_index_bytes : Int32 = 8_388_608,
@@ -72,7 +72,9 @@ module Git
       raise Error.new("Git first-parent commit refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git first-parent commit refuses in-progress rebase") if rebase_state?
       branch, previous = head_ref_and_oid
-      raise Error.new("native commit requires a symbolic branch HEAD") unless branch && branch.starts_with?("refs/heads/")
+      unless (branch && branch.starts_with?("refs/heads/")) || (branch.nil? && previous)
+        raise Error.new("native commit requires a symbolic branch or detached HEAD")
+      end
       index_snapshot = @index.snapshot_checksum(max_index_bytes)
       if previous.nil? && !allow_empty && @index.entries(max_index_bytes) { check.try &.call }.empty?
         raise Error.new("nothing staged to commit")
@@ -95,18 +97,17 @@ module Git
         raise Error.new("Git index changed during commit") unless @index.snapshot_checksum(max_index_bytes) == index_snapshot
       end
       checked.call
-      update_ref(branch, oid, expected_oid: previous, log: log,
+      update_head_or_branch(branch, oid, expected_oid: previous, log: log,
         check: checked)
       oid
     end
 
-    # `git commit --amend`: replace the current branch's commit with one of
-    # the staged index, keeping its parents. The author and message are the
-    # original commit's unless given. Like Git, an amend that leaves no
-    # changes against the first parent (or an empty root) is refused unless
-    # allow_empty; merge commits are exempt. The branch and HEAD reflogs get
-    # "commit (amend): <subject>". Returns the new commit's ID. Extra
-    # headers of the original (signatures, encoding) are not carried over.
+    # `git commit --amend`: replace the current branch's or detached HEAD's
+    # commit with one of the staged index, keeping its parents. The author and
+    # message are the original commit's unless given. Like Git, an amend that
+    # leaves no changes against the first parent (or an empty root) is refused
+    # unless allow_empty; merge commits are exempt. The branch (if any) and
+    # HEAD reflogs get "commit (amend): <subject>". Returns the new commit's ID.
     def amend(*, committer : Signature, author : Signature? = nil,
               message : String? = nil, allow_empty : Bool = false,
               max_index_bytes : Int32 = 8_388_608,
@@ -117,8 +118,9 @@ module Git
       raise Error.new("Git amend refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git amend refuses in-progress rebase") if rebase_state?
       branch, previous = head_ref_and_oid
-      raise Error.new("Git amend requires a symbolic branch HEAD with a commit") unless branch &&
-                                                                                        branch.starts_with?("refs/heads/") && previous
+      unless previous && (branch.nil? || branch.starts_with?("refs/heads/"))
+        raise Error.new("Git amend requires a commit at HEAD")
+      end
       index_snapshot = @index.snapshot_checksum(max_index_bytes)
       commit_bytes = Math.min(max_object_bytes, 67_108_864_i64).to_i32
       original = Sequencer.read_source(self, previous, commit_bytes, check)
@@ -147,7 +149,7 @@ module Git
         raise Error.new("Git index changed during amend") unless @index.snapshot_checksum(max_index_bytes) == index_snapshot
       end
       checked.call
-      update_ref(branch, oid, expected_oid: previous, log: log, check: checked)
+      update_head_or_branch(branch, oid, expected_oid: previous, log: log, check: checked)
       oid
     end
   end

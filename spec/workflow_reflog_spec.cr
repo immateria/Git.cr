@@ -295,4 +295,59 @@ describe "Git reflogs and ORIG_HEAD for workflow commands" do
       repo.refs.resolve?("HEAD").should eq(GitOracle.run(git_root, "rev-parse", "HEAD").stdout.strip)
     end
   end
+
+  it "RL-14 detached-HEAD commit, amend, reset, fast-forward and merge match Git" do
+    twins do |git_root, native_root|
+      git(git_root, "switch", "-q", "--detach", "HEAD")
+      File.write(File.join(git_root, "d.txt"), "detached\n")
+      git(git_root, "add", "d.txt")
+      git(git_root, "commit", "-qm", "detached commit")
+      File.write(File.join(git_root, "d.txt"), "detached amended\n")
+      git(git_root, "add", "d.txt")
+      git(git_root, "commit", "-q", "--amend", "-m", "detached amended")
+      git(git_root, "reset", "-q", "--hard", "main")
+      git(git_root, "merge", "-q", "--ff-only", "topic")
+      git(git_root, "reset", "-q", "--hard", "main")
+      File.write(File.join(git_root, "c.txt"), "main\n")
+      git(git_root, "add", "c.txt")
+      git(git_root, "commit", "-qm", "diverged")
+      git(git_root, "merge", "-q", "--no-edit", "topic")
+
+      repo = Git::Repository.new(native_root)
+      repo.switch("HEAD", detach: true, actor: ACTOR)
+      File.write(File.join(native_root, "d.txt"), "detached\n")
+      repo.stage_file("d.txt")
+      repo.commit(author: ACTOR, committer: ACTOR, message: "detached commit\n")
+      File.write(File.join(native_root, "d.txt"), "detached amended\n")
+      repo.stage_file("d.txt")
+      repo.amend(committer: ACTOR, message: "detached amended\n")
+      repo.reset("main", mode: Git::Reset::Mode::Hard, actor: ACTOR).reference.should be_nil
+      repo.fast_forward("topic", actor: ACTOR)
+      repo.reset("main", mode: Git::Reset::Mode::Hard, actor: ACTOR)
+      File.write(File.join(native_root, "c.txt"), "main\n")
+      repo.stage_file("c.txt")
+      repo.commit(author: ACTOR, committer: ACTOR, message: "diverged\n")
+      repo.merge("topic", author: ACTOR, committer: ACTOR, message: "Merge branch 'topic' into HEAD\n")
+      expect_same(git_root, native_root, "HEAD", "refs/heads/main")
+    end
+  end
+
+  it "RL-15 switch -C, switch - and branch -c log and copy config like Git" do
+    twins do |git_root, native_root|
+      [git_root, native_root].each do |root|
+        GitOracle.run(root, "config", "branch.main.description", "main branch")
+      end
+      git(git_root, "branch", "-c", "main", "copied")
+      git(git_root, "switch", "-q", "topic")
+      git(git_root, "switch", "-q", "-")
+      git(git_root, "switch", "-q", "-C", "copied", "topic")
+
+      repo = Git::Repository.new(native_root)
+      repo.branches.copy("main", "copied", actor: ACTOR)
+      repo.switch("topic", actor: ACTOR)
+      repo.switch("-", actor: ACTOR).reference.should eq("refs/heads/main")
+      repo.switch("copied", force_create: true, from: "topic", actor: ACTOR)
+      expect_same(git_root, native_root, "HEAD", "refs/heads/copied")
+    end
+  end
 end
