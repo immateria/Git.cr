@@ -103,7 +103,32 @@ library's time over Git's.
 
 ### git/git
 
-Running; the table follows.
+| Check | Result | Items | Native | Git | Ratio | Detail |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| object headers | pass | 423148 | 4.53s | 1.03s | 4.4x | 423148 objects (warm cache; see below) |
+| object contents | pass | 423148 | 98.84s | 50.36s | 2.0x | 423148 objects, 7986 MiB (warm cache) |
+| rev-list HEAD | pass | 82676 | 1.78s | 1.32s | 1.3x | 82676 commits |
+| log (default) | pass | 82676 | 3.79s | 1.35s | 2.8x | 82676 commits |
+| log --date-order | pass | 82676 | 3.57s | 0.96s | 3.7x | 82676 commits |
+| log --topo-order | pass | 82676 | 3.63s | 0.93s | 3.9x | 82676 commits |
+| rev-parse | pass | 2302 | 1.27s | 15.69s | 0.1x | 2302 expressions |
+| merge-base | pass | 30 | 28.44s | 13.56s | 2.1x | 30 pairs |
+| diff-tree | pass | 59 | 0.13s | 0.43s | 0.3x | 59 commits |
+| patches no attributes | pass | 60 | 0.27s | 0.63s | 0.4x | 60 commits, 10300 patch lines |
+| patches with .gitattributes | differs | 60 | 0.34s | 0.59s | 0.6x | 4/60 differ only in hunk-header function names: git/git sets `*.c diff=cpp`, whose driver is not implemented |
+| clean status | pass | 4863 | 0.37s | 0.02s | 23.3x | worktree and index clean |
+| dirty status | pass | 34 | 0.07s | 0.02s | 4.0x | 34 entries |
+| worktree diff | pass | 4428 | 0.04s | 0.02s | 2.1x | 4428 lines |
+| stage | pass | 4860 | 0.1s | 0.03s | 3.7x | 4860 index entries, diff --cached equal |
+| clone (local) | pass | 411345 | 109.14s | 28.32s | 3.9x | 411345 objects; refs, index, status and fsck --strict agree |
+| index-pack | pass | 423121 | 28.69s | 18.1s | 1.6x | 423121 objects; .idx and .rev byte-identical |
+| fsck | pass | 423148 | 178.82s | 49.66s | 3.6x | 423148 objects, 27 unreachable |
+
+The object rows come from a second run with the pack in the page cache; in
+the first, after a container restart, Git's header pass read the 330 MB pack
+from disk. Clean status includes `staged_changes`, which walks the whole HEAD
+tree where Git uses the index's cache-tree extension; the worktree half alone
+is the dirty-status row.
 
 ## What it found
 
