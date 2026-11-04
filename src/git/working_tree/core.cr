@@ -116,7 +116,7 @@ module Git
             next if allowed_path && !allowed_path.call(relative)
             full = File.join(@root, relative)
             is_dir = !File.symlink?(full) && Dir.exists?(full)
-            if ignore.ignored?(relative, is_dir)
+            if ignore.ignored?(relative, is_dir, parents_checked: true)
               ignored_count += 1
               next
             end

@@ -248,7 +248,9 @@ module Git
       # Whether ancestor is reachable from descendant (or equal to it).
       # Git's paint_down_to_common: paint from both commits, newest first,
       # until only commits common to both remain queued. Flags are re-queued
-      # when they change, so clock skew cannot cause a wrong answer.
+      # when they change, so clock skew cannot cause a wrong answer. Paint
+      # only grows, so the queue is checked for that every 32 steps: the
+      # few extra steps can only confirm reachability, never invent it.
       def ancestor?(ancestor : String, descendant : String, *, max_nodes : Int32 = 1_000_000) : Bool
         return true if ancestor == descendant
         left = 1_u8
@@ -258,7 +260,9 @@ module Git
         queue = DateQueue.new
         queue.push(ancestor, commit_node(ancestor).time)
         queue.push(descendant, commit_node(descendant).time)
-        while queue.any? { |oid| (paint[oid] & stale) == 0 }
+        steps = 0
+        until queue.empty? || (steps % 32 == 0 && queue.all? { |oid| (paint[oid] & stale) != 0 })
+          steps += 1
           @check.try &.call
           oid = queue.pop
           flags = paint[oid]
@@ -293,7 +297,9 @@ module Git
         queue.push(one, commit_node(one).time)
         queue.push(two, commit_node(two).time)
         results = [] of String
-        while queue.any? { |oid| (paint[oid] & stale) == 0 }
+        steps = 0
+        until queue.empty? || (steps % 32 == 0 && queue.all? { |oid| (paint[oid] & stale) != 0 })
+          steps += 1
           @check.try &.call
           oid = queue.pop
           flags = paint[oid] & (left | right | stale)
@@ -441,6 +447,10 @@ module Git
 
       def empty? : Bool
         @heap.empty?
+      end
+
+      def size : Int32
+        @heap.size
       end
 
       def max_time : Int64
