@@ -23,9 +23,17 @@ module Git
       end
     end
 
-    # The object ID a reference (or HEAD) resolves to, following symbolic
-    # refs, or nil when it does not exist or is unborn.
+    # The object ID a full reference name, HEAD or another pseudo-ref
+    # (ORIG_HEAD, MERGE_HEAD, FETCH_HEAD's first line, ...) resolves to,
+    # following symbolic refs, or nil when it does not exist or is unborn.
     def resolve?(name : String) : String?
+      return @repository.head_ref_and_oid[1] if name == "HEAD"
+      if PSEUDO_REFS.includes?(name)
+        path = File.join(@repository.git_dir, name)
+        return nil unless File.file?(path)
+        line = File.open(path) { |io| io.gets(4_096) } || return nil
+        return ObjectId.valid!(line.split(/\s/, 2).first, @repository.object_format)
+      end
       @repository.resolve_ref?(name)
     end
 

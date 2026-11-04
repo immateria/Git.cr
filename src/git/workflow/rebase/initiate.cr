@@ -27,8 +27,8 @@ module Git
       branch, original_head = head_ref_and_oid
       raise Error.new("Git rebase requires an existing symbolic branch") unless branch &&
                                                                                 branch.starts_with?("refs/heads/") && original_head
-      upstream_oid = History.resolve_commit(self, upstream, max_object_bytes, check, max_hops: max_graph_nodes)
-      onto_oid = History.resolve_commit(self, onto || upstream, max_object_bytes, check, max_hops: max_graph_nodes)
+      upstream_oid = History.resolve_commit(self, upstream, max_object_bytes, check)
+      onto_oid = History.resolve_commit(self, onto || upstream, max_object_bytes, check)
       base, todo = rebase_plan(original_head, upstream_oid,
         max_commits: max_commits, max_graph_nodes: max_graph_nodes,
         max_object_bytes: max_object_bytes, check: check)
@@ -46,6 +46,7 @@ module Git
       state = Rebase::State.new(branch, original_head, upstream_oid, onto_oid,
         todo, 0, onto_oid, keep_empty)
       rebase_write_initial_state!(state)
+      write_orig_head(original_head)
       if original_head != onto_oid
         begin
           rebase_move_branch!(state, original_head, onto_oid,

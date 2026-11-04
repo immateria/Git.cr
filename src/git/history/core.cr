@@ -24,28 +24,11 @@ module Git
 
     # :nodoc:
     def self.resolve_commit(repository : Repository, source : String,
-                            max_bytes : Int32, check : Proc(Nil)?,
-                            max_hops : Int32 = 4_096) : String
+                            max_bytes : Int32, check : Proc(Nil)?) : String
       raise Error.new("Git revision selector rejected") if source.empty? || source.bytesize > 4_096
-      if source.index(/[~^]/)
-        return Revision.resolve_commit(repository, source, max_bytes, check, max_hops: max_hops)
-      end
-      oid = if source == "HEAD"
-              repository.head_ref_and_oid[1]
-            elsif source.starts_with?("refs/")
-              repository.resolve_ref?(source)
-            elsif source.bytesize == repository.object_format.hexsize
-              ObjectId.valid!(source, repository.object_format)
-            elsif RefName.valid?("refs/heads/#{source}")
-              # Git's short-name precedence includes tags before branches.
-              # This is a deliberately narrow branch/tag DWIM form, not the
-              # full extended rev-parse or upstream tracking grammar.
-              repository.resolve_ref?("refs/tags/#{source}") ||
-                repository.resolve_ref?("refs/heads/#{source}")
-            else
-              raise Error.new("unsupported Git revision selector")
-            end
-      raise Error.new("Git revision could not be resolved") unless oid
+      # Git's full revision grammar (remote-tracking and pseudo-refs,
+      # abbreviated IDs, @{u}, ~N, ^N, ...), peeled to a commit below.
+      oid = repository.rev_parse(source, max_object_bytes: max_bytes)
       seen = Set(String).new
       expected_kind = nil.as(String?)
       16.times do

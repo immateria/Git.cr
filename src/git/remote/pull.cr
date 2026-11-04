@@ -46,19 +46,21 @@ module Git
         populate_worktree(target, max_files: max_entries, check: check)
         return Pull::Result.new(fetched, nil, target, Pull::Action::Initial)
       end
-      return Pull::Result.new(fetched, previous, previous, Pull::Action::UpToDate) if previous == target
       walker = History::RevisionWalker.new(self, check: check)
-      return Pull::Result.new(fetched, previous, previous, Pull::Action::UpToDate) if walker.ancestor?(target, previous)
-      log = actor.try { |who| References::LogEntry.new(who, "pull: Fast-forward") }
+      if previous == target || walker.ancestor?(target, previous)
+        write_orig_head(previous)
+        return Pull::Result.new(fetched, previous, previous, Pull::Action::UpToDate)
+      end
       if walker.ancestor?(previous, target)
-        fast_forward(target, log: log, max_object_bytes: 268_435_456, max_index_bytes: Int32::MAX // 2,
-          max_total_bytes: max_total_bytes, max_entries: Math.min(max_entries, @max_search_entries), check: check)
+        fast_forward_as("pull", target, max_object_bytes: 268_435_456, max_index_bytes: Int32::MAX // 2,
+          max_total_bytes: max_total_bytes, max_entries: Math.min(max_entries, @max_search_entries),
+          actor: actor, check: check)
         return Pull::Result.new(fetched, previous, target, Pull::Action::FastForward)
       end
       raise Error.new("Git pull cannot fast-forward #{branch}: histories diverged") if mode.fast_forward_only?
       who = author || raise Error.new("Git pull merge needs an author")
       message = "Merge branch '#{merge_ref.sub(/\Arefs\/heads\//, "")}' of #{remote(remote_name).url}\n"
-      result = merge(target, author: who, committer: committer || who, message: message,
+      result = merge_as("pull", target, author: who, committer: committer || who, message: message,
         max_object_bytes: 268_435_456, max_index_bytes: Int32::MAX // 2, max_total_bytes: max_total_bytes,
         max_entries: Math.min(max_entries, @max_search_entries), check: check)
       Pull::Result.new(fetched, previous, head_ref_and_oid[1], Pull::Action::Merge, result)

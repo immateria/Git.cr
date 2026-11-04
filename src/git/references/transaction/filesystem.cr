@@ -9,7 +9,7 @@ module Git
         bytes.to_s
       end
 
-      private def self.append_log(base : String, relative : String, line : String) : Nil
+      protected def self.append_log(base : String, relative : String, line : String) : Nil
         directory = base
         (["logs"] + relative.split('/')[0...-1]).each do |part|
           directory = File.join(directory, part)

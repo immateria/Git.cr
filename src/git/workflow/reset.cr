@@ -27,19 +27,20 @@ module Git
   end
 
   class Repository
-    # Move the current symbolic branch to a commit and optionally reset the
-    # entire index to the target tree. Soft preserves index/worktree; Mixed
-    # resets index but preserves worktree; Hard changes all three, explicitly
-    # discarding tracked worktree changes. Detached HEAD, ORIG_HEAD/ref-log
-    # automation and merge-in-progress state are not yet supported. No
-    # subprocess, filter, hook, or implicit policy grant.
+    # `git reset [--soft | --mixed | --hard] <source>`: move the current
+    # branch to a commit and optionally reset the index (Mixed) or the index
+    # and worktree (Hard, which discards tracked worktree changes) to its
+    # tree. ORIG_HEAD records the previous commit. With actor, the branch and
+    # HEAD reflogs get Git's "reset: moving to <source>". Detached HEAD and
+    # merge-in-progress state are not supported.
     def reset(source : String = "HEAD", *, mode : Reset::Mode = Reset::Mode::Mixed,
-              log : References::LogEntry? = nil,
+              actor : Signature? = nil,
               max_object_bytes : Int32 = 8_388_608,
               max_index_bytes : Int32 = 8_388_608,
               max_total_bytes : Int64 = 67_108_864,
               max_entries : Int32 = 10_000,
               check : Proc(Nil)? = nil) : Reset::Result
+      log = actor.try { |who| References::LogEntry.new(who, "reset: moving to #{source}") }
       if mode.hard?
         return reset_head_hard(source, log: log, max_object_bytes: max_object_bytes,
           max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
@@ -59,6 +60,7 @@ module Git
       previous = original_oid
       target = History.resolve_commit(self, source, max_object_bytes, check)
       if mode.soft?
+        write_orig_head(previous)
         if target != previous
           guard = -> do
             check.try &.call
@@ -66,6 +68,8 @@ module Git
           end
           update_ref(reference, target, expected_oid: previous, log: log,
             max_object_bytes: max_object_bytes, check: guard)
+        elsif entry = log
+          append_head_log(previous, previous, entry)
         end
         return Reset::Result.new(reference, previous, target, mode, [] of String)
       end
@@ -80,6 +84,8 @@ module Git
         max_bytes: max_index_bytes, max_entries: max_entries, check: check)
       checksum = @index.snapshot_checksum(max_index_bytes)
       if target == previous && image.nil?
+        write_orig_head(previous)
+        log.try { |entry| append_head_log(previous, previous, entry) }
         return Reset::Result.new(reference, previous, target, mode, [] of String)
       end
 
@@ -102,10 +108,13 @@ module Git
           locked.fsync
         end
         guard.call
+        write_orig_head(previous)
         if target != previous
           update_ref(reference, target, expected_oid: previous, log: log,
             max_object_bytes: max_object_bytes, check: guard)
           ref_published = true
+        elsif entry = log
+          append_head_log(previous, previous, entry)
         end
         if planned = image
           check.try &.call

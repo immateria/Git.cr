@@ -1,16 +1,31 @@
 module Git
   class Repository
-    # Checkout a named local branch in a clean, ordinary working repository.
-    # All files must be regular, staged state must equal HEAD and tracked
-    # worktree files must be unchanged. Clean file/directory transitions are
+    # `git switch <branch>`: check out a local branch. With create (`-c`)
+    # target names a new branch started at from (default HEAD); with detach
+    # (`--detach`) target is any commit and HEAD is left detached there.
+    # Otherwise a missing branch that exactly one remote has is created from
+    # that remote-tracking branch, as Git guesses (guess: false turns this
+    # off). A created branch gets an upstream as Branches#create gives one
+    # unless track is false. With actor, HEAD's reflog gets Git's
+    # "checkout: moving from <old> to <target>" and a created branch's
+    # reflog "branch: Created from <start>".
+    #
+    # The repository must be clean and ordinary: regular files, staged state
+    # equal to HEAD, unchanged tracked files. File/directory transitions are
     # planned explicitly and refuse untracked content before publication.
-    # Worktree, index and HEAD are published in that order, not atomically.
-    def switch(name : String, *, max_blob_bytes : Int32 = 8_388_608,
+    # Worktree, index, a created branch and HEAD are published in that
+    # order, not atomically.
+    def switch(target : String, *, create : Bool = false, from : String? = nil,
+               detach : Bool = false, guess : Bool = true, track : Bool = true,
+               actor : Signature? = nil,
+               max_blob_bytes : Int32 = 8_388_608,
                max_index_bytes : Int32 = 8_388_608,
                max_total_bytes : Int64 = 67_108_864,
                max_files : Int32 = 10_000,
                check : Proc(Nil)? = nil) : Checkout::Result
       require_worktree!
+      raise ArgumentError.new("Git switch cannot both create and detach") if create && detach
+      raise ArgumentError.new("Git switch from: needs create") if from && !create
       raise Error.new("Git checkout refuses in-progress merge") if merge_state?
       raise Error.new("Git checkout refuses in-progress sequencer operation") if sequencer_state?
       raise Error.new("Git checkout refuses in-progress rebase") if rebase_state?
@@ -19,14 +34,53 @@ module Git
       check!
       raise Error.new("Git checkout unsupported with linked worktrees") unless @git_dir == @common &&
                                                                                (!Dir.exists?(File.join(@common, "worktrees")) || Dir.empty?(File.join(@common, "worktrees")))
-      target_ref = new_branch_ref(name)
-      oid = resolve_ref?(target_ref) || raise Error.new("Git checkout branch missing")
-      target = History.resolve_commit(self, target_ref, max_blob_bytes, check)
-      raise Error.new("Git checkout branch does not resolve to a direct commit") unless target == oid
       original_ref, original_oid = head_ref_and_oid
-      return Checkout::Result.new(target_ref, target, [] of String) if original_ref == target_ref
+      # What HEAD will name (nil when detached), a branch to create there
+      # and the start point it is created from.
+      head_ref = nil.as(String?)
+      new_branch = nil.as(String?)
+      start = "HEAD"
+      upstream = nil.as({String, String}?)
+      if detach
+        target_oid = History.resolve_commit(self, target, max_blob_bytes, check)
+      else
+        branch_ref = new_branch_ref(target)
+        head_ref = branch_ref
+        existing = resolve_ref?(branch_ref)
+        if create
+          raise Error.new("Git branch #{target} already exists") if existing
+          start = from || "HEAD"
+          new_branch = branch_ref
+        elsif existing.nil?
+          start = (guess ? guess_remote_branch(target) : nil) || raise Error.new("Git checkout branch missing")
+          new_branch = branch_ref
+        end
+        target_oid = History.resolve_commit(self, new_branch ? start : branch_ref, max_blob_bytes, check)
+        if new_branch
+          upstream = start_point_upstream(target, start) if track
+        elsif target_oid != existing
+          raise Error.new("Git checkout branch does not resolve to a direct commit")
+        end
+      end
+      checkout_log = actor.try do |who|
+        old_name = original_ref.try { |ref| ref.starts_with?("refs/heads/") ? ref.byte_slice(11) : ref } || original_oid
+        References::LogEntry.new(who, "checkout: moving from #{old_name} to #{target}")
+      end
+      if new_branch.nil? && head_ref && original_ref == head_ref
+        checkout_log.try { |entry| append_head_log(original_oid, target_oid, entry) }
+        return Checkout::Result.new(head_ref, target_oid, [] of String)
+      end
+      target_unchanged = -> do
+        if branch = new_branch
+          resolve_ref?(branch).nil?
+        elsif reference = head_ref
+          resolve_ref?(reference) == target_oid
+        else
+          true
+        end
+      end
       old_tree = original_oid ? read_commit(original_oid, max_bytes: max_blob_bytes, check: check).tree : nil
-      next_tree = read_commit(target, max_bytes: max_blob_bytes, check: check).tree
+      next_tree = read_commit(target_oid, max_bytes: max_blob_bytes, check: check).tree
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git checkout index entry budget exceeded") if current.size > max_files
       original = old_tree ? Checkout.tree_files(self, old_tree, max_object_bytes: max_blob_bytes, max_files: max_files, check: check) : {} of String => Checkout::FileState
@@ -88,7 +142,7 @@ module Git
         end
         raise Error.new("Git checkout HEAD changed before publication") unless head_ref_and_oid == {original_ref, original_oid}
         raise Error.new("Git checkout index changed before publication") unless @index.snapshot_checksum(max_index_bytes) == original_checksum
-        raise Error.new("Git checkout target branch changed") unless resolve_ref?(target_ref) == oid
+        raise Error.new("Git checkout target branch changed") unless target_unchanged.call
         Checkout.require_clean!(self, current, max_blob_bytes: max_blob_bytes,
           max_total_bytes: max_total_bytes, check: check)
         Checkout.require_transition_destinations!(@root, original.keys, desired.keys,
@@ -114,7 +168,7 @@ module Git
           changed_paths << path
         end
         check.try &.call
-        raise Error.new("Git checkout HEAD or branch changed") unless head_ref_and_oid == {original_ref, original_oid} && resolve_ref?(target_ref) == oid
+        raise Error.new("Git checkout HEAD or branch changed") unless head_ref_and_oid == {original_ref, original_oid} && target_unchanged.call
         raise Error.new("Git checkout index changed") unless @index.snapshot_checksum(max_index_bytes) == original_checksum
         if selected = image
           raise Error.new("Git checkout index image diverged") unless @index.image_state(selected, max_bytes: max_index_bytes) == :before
@@ -126,7 +180,13 @@ module Git
           index_published = true
           admin.sync
         end
-        head_lock.not_nil!.write("ref: #{target_ref}\n".to_slice)
+        if branch = new_branch
+          publication_started = true
+          branch_log = actor.try { |who| References::LogEntry.new(who, "branch: Created from #{start}") }
+          update_ref(branch, target_oid, expected_oid: nil, log: branch_log, max_object_bytes: max_blob_bytes)
+          upstream.try { |remote_name, merge_ref| set_branch_upstream(target, remote_name, merge_ref) }
+        end
+        head_lock.not_nil!.write((head_ref ? "ref: #{head_ref}\n" : "#{target_oid}\n").to_slice)
         head_lock.not_nil!.flush
         head_lock.not_nil!.fsync
         readback = admin.open_file("HEAD", LibC::O_RDONLY)
@@ -139,7 +199,8 @@ module Git
         raise Error.new("Git checkout admin directory replaced") unless admin.attached_at?(@git_dir)
         admin.rename("HEAD.lock", "HEAD")
         admin.sync
-        Checkout::Result.new(target_ref, target, changed_paths)
+        checkout_log.try { |entry| append_head_log(original_oid, target_oid, entry) }
+        Checkout::Result.new(head_ref, target_oid, changed_paths)
       rescue ex
         if publication_started || index_published
           raise Checkout::PartialPublication.new(changed_paths.dup, index_published, ex)
@@ -162,6 +223,21 @@ module Git
         end
         admin.close
       end
+    end
+
+    # Git's checkout guess: the remote-tracking branch for name when exactly
+    # one remote has it, or checkout.defaultRemote's when several do.
+    private def guess_remote_branch(name : String) : String?
+      found = [] of {String, String}
+      remote_names.each do |remote_name|
+        tracking = remote?(remote_name).try(&.tracking_ref("refs/heads/#{name}"))
+        found << {remote_name, tracking} if tracking && resolve_ref?(tracking)
+      end
+      return found.first[1] if found.size == 1
+      return nil if found.empty?
+      preferred = local_config.value?("checkout.defaultRemote")
+      found.each { |remote_name, tracking| return tracking if remote_name == preferred }
+      raise Error.new("Git branch #{name} matches more than one remote-tracking branch")
     end
   end
 end

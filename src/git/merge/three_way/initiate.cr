@@ -14,6 +14,21 @@ module Git
               max_total_bytes : Int64 = 67_108_864,
               max_entries : Int32 = 10_000,
               check : Proc(Nil)? = nil) : Merge::Result
+      merge_as("merge #{source}", source, author: author, committer: committer,
+        message: message, max_history_nodes: max_history_nodes,
+        max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
+        max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
+    end
+
+    # merge, logging as Git's reflog action (`merge <source>`, `pull`).
+    protected def merge_as(action : String, source : String, *, author : Signature,
+                           committer : Signature, message : String,
+                           max_history_nodes : Int32 = 16_384,
+                           max_object_bytes : Int32 = 8_388_608,
+                           max_index_bytes : Int32 = 8_388_608,
+                           max_total_bytes : Int64 = 67_108_864,
+                           max_entries : Int32 = 10_000,
+                           check : Proc(Nil)? = nil) : Merge::Result
       require_worktree!
       raise ArgumentError.new("invalid Git three-way merge budgets") if max_history_nodes < 1 || max_object_bytes < 128 ||
                                                                         max_index_bytes < 128 || max_total_bytes < max_object_bytes ||
@@ -33,11 +48,14 @@ module Git
       bases = merge_bases(old_oid, target, max_nodes: max_history_nodes,
         max_commit_bytes: max_object_bytes, check: check)
       raise Error.new("Git three-way merge requires exactly one common ancestor") unless bases.size == 1
-      return Merge::Result.new(old_oid, target, bases[0], [] of String, [] of String, nil) if target == old_oid || bases == [target]
+      if target == old_oid || bases == [target]
+        write_orig_head(old_oid)
+        return Merge::Result.new(old_oid, target, bases[0], [] of String, [] of String, nil)
+      end
       if bases == [old_oid]
-        fast = fast_forward(source, max_history_nodes: max_history_nodes,
+        fast = fast_forward_as(action, source, max_history_nodes: max_history_nodes,
           max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
-          max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
+          max_total_bytes: max_total_bytes, max_entries: max_entries, actor: committer, check: check)
         return Merge::Result.new(old_oid, target, old_oid, fast.changed_paths, [] of String, target)
       end
       base_oid = bases[0]
@@ -93,6 +111,7 @@ module Git
         Checkout.require_transition_destinations!(@root, ours.keys, final_paths,
           max_entries: max_entries)
         started = true
+        write_orig_head(old_oid)
         merge_write_metadata!(admin, branch, old_oid, target, message)
         if planned = image
           raise Error.new("Git merge index image diverged") unless @index.image_state(planned, max_bytes: max_index_bytes) == :before
@@ -140,6 +159,7 @@ module Git
       if conflicts.empty?
         begin
           committed = merge_continue(author: author, committer: committer,
+            reflog_message: "#{action}: Merge made by the 'ort' strategy.",
             max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
         rescue ex : Merge::PartialCommit
           raise ex
