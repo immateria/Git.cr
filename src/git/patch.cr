@@ -237,9 +237,11 @@ module Git
     private def worktree_snapshot(paths : Array(String), mode_sensitive : Bool, max_bytes : Int32,
                                   overrides : Hash(String, String), check : Proc(Nil)?) : Hash(String, {String, String})
       snapshot = {} of String => {String, String}
+      index_time = @index.modified_at
+      verified = Set(String).new
       staged_entries(paths, check).each do |entry|
         check.try &.call
-        if entry.skip_worktree
+        if entry.skip_worktree || @worktree.stat_unchanged?(entry, mode_sensitive, index_time, verified) { check.try &.call }
           snapshot[entry.path] = {entry.mode, entry.oid}
           next
         end

@@ -34,7 +34,9 @@ module Git
       # The caller supplies an explicitly resolved Git config. Do not load
       # ambient/home configuration or follow arbitrary external paths here.
       mode_sensitive = config.try(&.boolean?("core.filemode")) != false
+      index_time = @index.modified_at
       index = @index.entries(max_bytes) { check.call }
+      verified = Set(String).new
       tracked = Set(String).new
       changes = [] of Change
       bytes_scanned = 0_i64
@@ -47,7 +49,8 @@ module Git
           next
         end
         next if entry.skip_worktree
-        verify_working_parents!(entry.path) { check.call }
+        next if stat_unchanged?(entry, mode_sensitive, index_time, verified) { check.call }
+        verify_working_parents!(entry.path, verified) { check.call }
         absolute = File.join(@root, entry.path)
         if File.symlink?(absolute)
           # The object may be a symlink, but the caller must decide whether

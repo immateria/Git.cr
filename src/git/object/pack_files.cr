@@ -21,8 +21,10 @@ module Git
 
       # A pack index whose layout, checksum and pack pairing were verified
       # when it was loaded. Pack and index files are immutable once Git
-      # publishes them (their names are content checksums); a changed file
-      # identity forces a reload and full revalidation.
+      # publishes them (their names are content checksums): a loaded index
+      # is used from memory until the pack directory changes, and the pack
+      # is read through one handle checked against the identity recorded
+      # here. Objects read from it are CRC- and hash-verified.
       private class IndexFile
         getter path : String
         getter pack_path : String
@@ -110,14 +112,22 @@ module Git
 
         @rows_by_offset : Hash(Int64, Int64)? = nil
 
+        # Object types of entries whose delta chains were already walked.
+        getter types = {} of Int64 => String
+
         # The object ID stored at an entry offset.
         def oid_at_offset(offset : Int64) : String?
+          row_at_offset(offset).try { |row| oid_at(row).hexstring }
+        end
+
+        # The index row of the entry at offset.
+        def row_at_offset(offset : Int64) : Int64?
           rows = @rows_by_offset ||= begin
             map = Hash(Int64, Int64).new(initial_capacity: @count.to_i)
             @count.times { |row| map[offset_at(row)] = row }
             map
           end
-          rows[offset]?.try { |row| oid_at(row).hexstring }
+          rows[offset]?
         end
 
         # The first byte after the entry at offset: the next entry's start or
@@ -133,7 +143,15 @@ module Git
         end
       end
 
+      # Open packs are read with pread, so one handle serves every reader.
+      MAX_OPEN_PACKS = 256
+
       @indexes = {} of String => IndexFile
+      # Indexes by pack path, and those already checked against the
+      # current directory listing (packs are immutable once published).
+      @by_pack = {} of String => IndexFile
+      @trusted = Set(String).new
+      @handles = {} of String => File
       @listing : Array(String)? = nil
       @listing_info : File::Info? = nil
       @base_cache = {} of {String, Int64} => {String, String}
@@ -152,18 +170,8 @@ module Git
         File.join(@common, "objects", "pack")
       end
 
-      def find_packed(oid : String) : {String, Int64}?
-        wanted = oid.hexbytes
-        index_paths.each do |idx_path|
-          index = load_index(idx_path) || next
-          if row = index.lookup(wanted)
-            return {index.pack_path, verified_offset(index, row)}
-          end
-        end
-        nil
-      end
-
-      # The pack and offset of an object without verifying its entry CRC.
+      # The pack and offset of an object without verifying its entry CRC:
+      # every object read from a pack is hash-verified by ObjectDatabase.
       def locate(oid : String) : {String, Int64}?
         wanted = oid.hexbytes
         index_paths.each do |idx_path|
@@ -179,54 +187,85 @@ module Git
       # and delta headers only. base_type names REF_DELTA bases in other
       # packs. The result is not verified against the object ID.
       def entry_info(file : String, offset : Int64, base_type : Proc(String, String)) : {String, Int64}
-        index = @mutex.synchronize { @indexes.values.find { |candidate| candidate.pack_path == file } }
-        File.open(file) do |io|
-          size = nil.as(Int64?)
-          current = offset
-          hops = 0
-          loop do
-            raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < io.size - @object_format.bytesize
-            io.seek(current)
-            header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
-            return {header.type.object_type.to_s, size || header.size} unless header.type.delta?
-            if size.nil?
-              io.seek(header.data_offset)
-              prefix = Compress::Zlib::Reader.open(io) do |zlib|
-                buffer = IO::Memory.new
-                IO.copy(zlib, buffer, 20)
-                buffer.to_slice
-              end
-              position = 0
-              2.times do |field|
-                value = 0_i64
-                shift = 0
-                loop do
-                  raise Git::Error.new("truncated Git delta header") if position >= prefix.size || shift > 56
-                  byte = prefix[position]
-                  position += 1
-                  value |= (byte & 0x7f).to_i64 << shift
-                  shift += 7
-                  break if (byte & 0x80) == 0
-                end
-                size = value if field == 1
-              end
-            end
-            hops += 1
-            raise Git::Error.new("Git delta chain too deep") if hops >= @max_delta_depth
-            if base_offset = header.base_offset
-              current = base_offset
+        index = loaded_pack(file)
+        size = nil.as(Int64?)
+        current = offset
+        walked = [] of Int64
+        type = nil.as(String?)
+        loop do
+          raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < index.pack_end
+          if size && (known = @mutex.synchronize { index.types[current]? })
+            type = known
+            break
+          end
+          length = index.entry_end(current) - current
+          head = read_pack(index, current, {length, 320_i64}.min)
+          io = IO::Memory.new(head, writeable: false)
+          header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
+          unless header.type.delta?
+            size ||= header.size
+            type = header.type.object_type.to_s
+            break
+          end
+          size ||= delta_result_size(index, current, head, io)
+          walked << current
+          raise Git::Error.new("Git delta chain too deep") if walked.size >= @max_delta_depth
+          if base_offset = header.base_offset
+            current = base_offset
+          else
+            base_oid = header.base_oid.not_nil!
+            if row = index.lookup(base_oid.hexbytes)
+              current = index.offset_at(row)
             else
-              base_oid = header.base_oid.not_nil!
-              if index && (row = index.lookup(base_oid.hexbytes))
-                current = index.offset_at(row)
-              else
-                return {base_type.call(base_oid), size.not_nil!}
-              end
+              type = base_type.call(base_oid)
+              break
             end
           end
         end
+        resolved = type.not_nil!
+        @mutex.synchronize { walked.each { |position| index.types[position] = resolved } }
+        {resolved, size.not_nil!}
       rescue ex : IO::Error | Compress::Zlib::Error
         raise Git::Error.new("Git packed object header invalid: #{ex.class}")
+      end
+
+      # The result size from a delta's own header: its second varint, in
+      # the first inflated bytes. head holds the start of the entry and io
+      # is positioned at its compressed data.
+      private def delta_result_size(index : IndexFile, offset : Int64, head : Bytes, io : IO) : Int64
+        prefix = begin
+          Compress::Zlib::Reader.open(io) do |zlib|
+            buffer = IO::Memory.new
+            IO.copy(zlib, buffer, 20)
+            buffer.to_slice
+          end
+        rescue Compress::Zlib::Error
+          # The prefix read was too short to inflate 20 bytes: use it all.
+          whole = read_pack(index, offset, index.entry_end(offset) - offset)
+          rest = IO::Memory.new(whole, writeable: false)
+          rest.pos = io.pos
+          Compress::Zlib::Reader.open(rest) do |zlib|
+            buffer = IO::Memory.new
+            IO.copy(zlib, buffer, 20)
+            buffer.to_slice
+          end
+        end
+        position = 0
+        size = 0_i64
+        2.times do |field|
+          value = 0_i64
+          shift = 0
+          loop do
+            raise Git::Error.new("truncated Git delta header") if position >= prefix.size || shift > 56
+            byte = prefix[position]
+            position += 1
+            value |= (byte & 0x7f).to_i64 << shift
+            shift += 7
+            break if (byte & 0x80) == 0
+          end
+          size = value if field == 1
+        end
+        size
       end
 
       # :nodoc:
@@ -243,10 +282,7 @@ module Git
           row = index.lookup(wanted) || next
           offset = verified_offset(index, row)
           finish = index.entry_end(offset)
-          header = File.open(index.pack_path) do |io|
-            io.seek(offset)
-            Pack::EntryHeader.read(io, offset, @object_format.bytesize)
-          end
+          header = entry_header(index, offset)
           base = header.base_oid
           if base_offset = header.base_offset
             base = index.oid_at_offset(base_offset) || return nil
@@ -260,12 +296,7 @@ module Git
 
       # The compressed bytes of a raw entry (after its header).
       def raw_data(entry : RawEntry) : Bytes
-        File.open(entry.pack_path) do |io|
-          io.seek(entry.header.data_offset)
-          bytes = Bytes.new((entry.finish - entry.header.data_offset).to_i)
-          io.read_fully(bytes)
-          bytes
-        end
+        read_pack(loaded_pack(entry.pack_path), entry.header.data_offset, entry.finish - entry.header.data_offset)
       end
 
       # Packed object IDs that start with a lowercase hex prefix.
@@ -331,12 +362,25 @@ module Git
           paths = names.sort!.map { |name| File.join(directory, name) }
           @listing = paths
           @listing_info = info
+          @trusted.clear
           @indexes.select! { |path, _| paths.includes?(path) }
+          kept = @indexes.values.map(&.pack_path).to_set
+          @by_pack.select! { |pack, _| kept.includes?(pack) }
+          @handles.reject! do |pack, handle|
+            next false if kept.includes?(pack)
+            handle.close
+            true
+          end
           paths
         end
       end
 
       private def load_index(idx_path : String) : IndexFile?
+        @mutex.synchronize do
+          if @trusted.includes?(idx_path) && (cached = @indexes[idx_path]?)
+            return cached
+          end
+        end
         pack_path = idx_path.sub(/\.idx\z/, ".pack")
         idx_info = File.info?(idx_path, follow_symlinks: false)
         pack_info = File.info?(pack_path, follow_symlinks: false)
@@ -344,11 +388,21 @@ module Git
         raise Git::Error.new("Git pack index redirected") unless idx_info && idx_info.file?
         @mutex.synchronize do
           if cached = @indexes[idx_path]?
-            return cached if same_identity?(cached.idx_info, idx_info) && same_identity?(cached.pack_info, pack_info)
+            if same_identity?(cached.idx_info, idx_info) && same_identity?(cached.pack_info, pack_info)
+              @trusted.add(idx_path)
+              return cached
+            end
           end
         end
         loaded = read_index(idx_path, pack_path)
-        @mutex.synchronize { @indexes[idx_path] = loaded }
+        @mutex.synchronize do
+          if stale = @handles.delete(pack_path)
+            stale.close
+          end
+          @indexes[idx_path] = loaded
+          @by_pack[pack_path] = loaded
+          @trusted.add(idx_path)
+        end
         loaded
       end
 
@@ -445,36 +499,88 @@ module Git
         raise Git::Error.new("Git pack index I/O invalid: #{ex.class}")
       end
 
-      # Revalidate the files that hold a hit before using the cached offset,
-      # then check the entry's CRC32 against the index.
+      # The entry's offset after checking its CRC32 against the index, for
+      # callers that copy compressed data without hashing the object.
       private def verified_offset(index : IndexFile, row : Int64) : Int64
-        idx_info = File.info?(index.path, follow_symlinks: false)
-        pack_info = File.info?(index.pack_path, follow_symlinks: false)
-        unless idx_info && pack_info && same_identity?(index.idx_info, idx_info) && same_identity?(index.pack_info, pack_info)
-          raise Git::Error.new("Git pack changed during lookup")
-        end
         offset = index.offset_at(row)
-        verify_packed_crc!(index.pack_path, offset, index.entry_end(offset), index.crc_at(row))
+        verify_packed_crc!(index, offset, index.entry_end(offset), index.crc_at(row))
         offset
+      end
+
+      # The verified index of a pack this reader located an object in.
+      private def loaded_pack(file : String) : IndexFile
+        @mutex.synchronize { @by_pack[file]? } || raise Git::Error.new("Git pack not loaded")
+      end
+
+      # Yield an open handle on the pack an index describes, checked to be
+      # the file whose identity was recorded when the index was verified.
+      private def with_pack(index : IndexFile, & : File -> T) : T forall T
+        handle = @mutex.synchronize { @handles[index.pack_path]? }
+        transient = false
+        unless handle
+          opened = File.new(index.pack_path)
+          unless same_identity?(index.pack_info, opened.info)
+            opened.close
+            raise Git::Error.new("Git pack changed during lookup")
+          end
+          handle = @mutex.synchronize do
+            if existing = @handles[index.pack_path]?
+              opened.close
+              existing
+            else
+              if @handles.size < MAX_OPEN_PACKS
+                @handles[index.pack_path] = opened
+              else
+                transient = true
+              end
+              opened
+            end
+          end
+        end
+        begin
+          yield handle
+        ensure
+          handle.close if transient
+        end
+      end
+
+      # The header of the entry at offset.
+      private def entry_header(index : IndexFile, offset : Int64) : Pack::EntryHeader
+        length = index.entry_end(offset) - offset
+        head = read_pack(index, offset, {length, 64_i64}.min)
+        Pack::EntryHeader.read(IO::Memory.new(head, writeable: false), offset, @object_format.bytesize)
+      end
+
+      # length bytes of the pack at offset, by pread on its shared handle.
+      private def read_pack(index : IndexFile, offset : Int64, length : Int64) : Bytes
+        raise Git::Error.new("Git pack read out of bounds") unless offset >= 0 && length >= 0 && offset + length <= index.pack_end + @object_format.bytesize
+        bytes = Bytes.new(length)
+        with_pack(index) do |handle|
+          done = 0_i64
+          while done < length
+            count = LibC.pread(handle.fd, (bytes + done).to_unsafe, (length - done).to_u64, offset + done)
+            if count < 0
+              next if Errno.value == Errno::EINTR
+              raise IO::Error.from_errno("Git pack read")
+            end
+            raise IO::EOFError.new("Git pack truncated") if count == 0
+            done += count
+          end
+        end
+        bytes
       end
 
       # Git index CRC32 covers the full packed entry, from its type/size
       # header through its compressed bytes (not the expanded object).
-      private def verify_packed_crc!(pack : String, start : Int64, finish : Int64, expected : UInt32) : Nil
+      private def verify_packed_crc!(index : IndexFile, start : Int64, finish : Int64, expected : UInt32) : Nil
         length = finish - start
         raise Git::Error.new("Git packed entry byte budget exceeded") if length <= 0 || length > MAX_PACKED_ENTRY_BYTES
         crc = Digest::CRC32.initial
-        File.open(pack) do |io|
-          io.seek(start)
-          buffer = Bytes.new(length < 65_536 ? length.to_i : 65_536)
-          remaining = length
-          while remaining > 0
-            part = remaining < buffer.size ? remaining.to_i : buffer.size
-            chunk = buffer[0, part]
-            io.read_fully(chunk)
-            crc = Digest::CRC32.update(chunk, crc)
-            remaining -= part
-          end
+        position = start
+        while position < finish
+          part = {finish - position, 1_048_576_i64}.min
+          crc = Digest::CRC32.update(read_pack(index, position, part), crc)
+          position += part
         end
         raise Git::Error.new("Git packed object CRC mismatch") unless crc == expected
       rescue ex : IO::Error
@@ -511,66 +617,108 @@ module Git
       # REF_DELTA bases are delegated to resolve_oid.
       def decode_pack(file : String, offset : Int64, max : Int32, depth : Int32, seen : Set(String), resolve_oid : Proc(String, Int32, Set(String), {String, String}), &check : -> Nil) : {String, String}
         raise Git::Error.new("Git delta chain too deep") if depth >= @max_delta_depth
-        index = @mutex.synchronize { @indexes.values.find { |candidate| candidate.pack_path == file } }
-        # A pack reached through a verified index had its path checked when
-        # the index was loaded and its identity on this lookup.
-        unless index
-          raise Git::Error.new("Git pack redirected") if File.symlink?(file) || File.realpath(file) != file
-        end
-        File.open(file) do |io|
-          raise Git::Error.new("unsupported Git pack") unless read_bytes_exact(io, 4).hexstring == "5041434b"
-          ver = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-          raise Git::Error.new("unsupported Git pack version") unless {2_u32, 3_u32}.includes?(ver)
-          count = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
-          raise Git::Error.new("Git pack has no objects") if count == 0
-          limit = io.size - @object_format.bytesize
-          chain = [] of {Int64, String}
-          current = offset
-          base = nil.as({String, String}?)
-          visited = Set(Int64).new
-          loop do
-            check.call
-            raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < limit
-            raise Git::Error.new("Git delta chain cycle") unless visited.add?(current)
-            if cached = cached_base(file, current)
-              base = cached
-              break
-            end
-            raise Git::Error.new("Git delta chain too deep") if depth + chain.size >= @max_delta_depth
-            io.seek(current)
-            header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
-            raise Git::Error.new("Git object exceeds byte budget") if header.size > max
-            inflated = Compress::Zlib::Reader.open(io) { |z| bounded_decompress(z, max + 128) }
-            if header.type.delta?
-              raise Git::Error.new("Git packed delta instruction size mismatch") unless inflated.bytesize == header.size
-              chain << {current, inflated}
-              if base_offset = header.base_offset
-                current = base_offset
-                next
-              end
-              base_oid = header.base_oid.not_nil!
-              if index && (row = index.lookup(base_oid.hexbytes))
-                current = verified_offset(index, row)
-                next
-              end
-              base = resolve_oid.call(base_oid, depth + chain.size, seen)
-              break
-            end
-            raise Git::Error.new("Git packed entry size mismatch") unless inflated.bytesize == header.size
-            base = {header.type.object_type.to_s, inflated}
-            store_base(file, current, base) unless chain.empty?
+        index = @mutex.synchronize { @by_pack[file]? }
+        # A pack reached through its index had its magic, version, count and
+        # trailer checked when the index was loaded; any other is checked
+        # here, read directly, and has no entry CRCs to compare.
+        pack_end = index ? index.pack_end : unindexed_pack_end(file)
+        chain = [] of {Int64, String}
+        current = offset
+        base = nil.as({String, String}?)
+        visited = Set(Int64).new
+        loop do
+          check.call
+          raise Git::Error.new("Git pack offset out of bounds") unless current >= 12 && current < pack_end
+          raise Git::Error.new("Git delta chain cycle") unless visited.add?(current)
+          if cached = cached_base(file, current)
+            base = cached
             break
           end
-          result = base.not_nil!
-          chain.reverse_each.with_index do |(entry_offset, delta), position|
-            check.call
-            result = {result[0], Pack::Delta.apply(result[1], delta, max.to_i64)}
-            store_base(file, entry_offset, result) if position < chain.size - 1
+          raise Git::Error.new("Git delta chain too deep") if depth + chain.size >= @max_delta_depth
+          header, inflated = if index
+                               entry_header, data = read_entry(index, current, max)
+                               {entry_header, inflate(IO::Memory.new(data), max)}
+                             else
+                               File.open(file) do |io|
+                                 io.seek(current)
+                                 entry_header = Pack::EntryHeader.read(io, current, @object_format.bytesize)
+                                 raise Git::Error.new("Git object exceeds byte budget") if entry_header.size > max
+                                 {entry_header, inflate(io, max)}
+                               end
+                             end
+          if header.type.delta?
+            raise Git::Error.new("Git packed delta instruction size mismatch") unless inflated.bytesize == header.size
+            chain << {current, inflated}
+            if base_offset = header.base_offset
+              current = base_offset
+              next
+            end
+            base_oid = header.base_oid.not_nil!
+            if index && (row = index.lookup(base_oid.hexbytes))
+              current = index.offset_at(row)
+              next
+            end
+            base = resolve_oid.call(base_oid, depth + chain.size, seen)
+            break
           end
-          result
+          raise Git::Error.new("Git packed entry size mismatch") unless inflated.bytesize == header.size
+          base = {header.type.object_type.to_s, inflated}
+          store_base(file, current, base) unless chain.empty?
+          break
         end
+        result = base.not_nil!
+        chain.reverse_each.with_index do |(entry_offset, delta), position|
+          check.call
+          result = {result[0], Pack::Delta.apply(result[1], delta, max.to_i64)}
+          store_base(file, entry_offset, result) if position < chain.size - 1
+        end
+        result
       rescue ex : IO::Error | Compress::Zlib::Error
         raise Git::Error.new("Git packed object invalid: #{ex.class}")
+      end
+
+      # The header and compressed bytes of the entry at offset, read once
+      # and CRC-checked against the index before anything is inflated. The
+      # compressed size is bounded by what zlib can emit for the object's
+      # declared size, so a hostile entry cannot force a large read.
+      private def read_entry(index : IndexFile, offset : Int64, max : Int32) : {Pack::EntryHeader, Bytes}
+        finish = index.entry_end(offset)
+        length = finish - offset
+        raise Git::Error.new("Git packed entry byte budget exceeded") if length <= 0 || length > MAX_PACKED_ENTRY_BYTES
+        # Small entries (most of them) take one read; larger ones are
+        # bounded by their header before the rest is read.
+        bytes = read_pack(index, offset, {length, 65_536_i64}.min)
+        header = Pack::EntryHeader.read(IO::Memory.new(bytes, writeable: false), offset, @object_format.bytesize)
+        raise Git::Error.new("Git object exceeds byte budget") if header.size > max
+        data_length = finish - header.data_offset
+        raise Git::Error.new("Git packed entry larger than its object") if data_length > deflate_bound(header.size)
+        bytes = read_pack(index, offset, length) if bytes.size < length
+        row = index.row_at_offset(offset) || raise Git::Error.new("Git pack offset not indexed")
+        crc = Digest::CRC32.update(bytes, Digest::CRC32.initial)
+        raise Git::Error.new("Git packed object CRC mismatch") unless crc == index.crc_at(row)
+        {header, bytes[(header.data_offset - offset).to_i, data_length.to_i]}
+      end
+
+      # zlib's compressBound, with room for other deflate writers.
+      private def deflate_bound(size : Int64) : Int64
+        size + (size >> 12) + (size >> 14) + (size >> 25) + size // 1000 + 1024
+      end
+
+      private def inflate(io : IO, max : Int32) : String
+        Compress::Zlib::Reader.open(io) { |z| bounded_decompress(z, max + 128) }
+      end
+
+      # Where entries end in a pack read without its index, after checking
+      # its header and that its path is not redirected.
+      private def unindexed_pack_end(file : String) : Int64
+        raise Git::Error.new("Git pack redirected") if File.symlink?(file) || File.realpath(file) != file
+        File.open(file) do |io|
+          raise Git::Error.new("unsupported Git pack") unless read_bytes_exact(io, 4).hexstring == "5041434b"
+          version = io.read_bytes(UInt32, IO::ByteFormat::BigEndian)
+          raise Git::Error.new("unsupported Git pack version") unless {2_u32, 3_u32}.includes?(version)
+          raise Git::Error.new("Git pack has no objects") if io.read_bytes(UInt32, IO::ByteFormat::BigEndian) == 0
+          io.size - @object_format.bytesize
+        end
       end
 
       private def cached_base(file : String, offset : Int64) : {String, String}?

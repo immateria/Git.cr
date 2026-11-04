@@ -190,7 +190,9 @@ describe "SHA-256 Git interoperability negatives and index variants" do
         tampered = index_contents.dup
         tampered[tampered.size - 1] ^= 1
         File.write(idx, tampered)
-        expect_raises(Git::Error, /checksum/) { store.read_object(oid, max_bytes: 4096) }
+        # A loaded index is used from memory; a new reader sees the change.
+        store.read_object(oid, max_bytes: 4096).data.should eq("packed sha256\n")
+        expect_raises(Git::Error, /checksum/) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
       ensure
         File.write(idx, index_contents)
       end
@@ -199,7 +201,7 @@ describe "SHA-256 Git interoperability negatives and index variants" do
         tampered = pack_contents.dup
         tampered[tampered.size - 1] ^= 1
         File.write(pack, tampered)
-        expect_raises(Git::Error, /checksum differs/) { store.read_object(oid, max_bytes: 4096) }
+        expect_raises(Git::Error, /checksum differs/) { Git::Repository.new(root).read_object(oid, max_bytes: 4096) }
       ensure
         File.write(pack, pack_contents)
       end
