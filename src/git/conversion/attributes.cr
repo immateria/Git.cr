@@ -24,16 +24,18 @@ module Git
     @global : Array(Rule)
     @info : Array(Rule)
 
-    # A non-nil blob map is the complete selected attribute source; nil
-    # entries are deletions. It never falls back to working/index attrs.
+    # A blob map is authoritative for all present keys, including nil
+    # deletions. Opt-in fallback reads working attrs only for absent keys.
     def initialize(@repository : Repository, *, config : Config? = nil,
                    @attribute_tree : String? = nil,
                    @attribute_blobs : Hash(String, String?)? = nil,
+                   @worktree_fallback : Bool = false,
                    @max_bytes : Int32 = 8_388_608,
                    @max_index_bytes : Int32 = 8_388_608, @check : Proc(Nil)? = nil)
       raise ArgumentError.new("invalid Git attribute byte budget") if @max_bytes < 1
       raise ArgumentError.new("invalid Git attribute index byte budget") if @max_index_bytes < 128
       raise ArgumentError.new("conflicting Git attribute sources") if @attribute_tree && @attribute_blobs
+      raise ArgumentError.new("Git attribute worktree fallback requires a blob map") if @worktree_fallback && !@attribute_blobs
       @macros["binary"] = [Token.new("diff", Value.new(Kind::Unset)),
                            Token.new("merge", Value.new(Kind::Unset)),
                            Token.new("text", Value.new(Kind::Unset))]
@@ -98,8 +100,11 @@ module Git
       @rules[directory] ||= begin
         relative = directory.empty? ? ".gitattributes" : "#{directory}/.gitattributes"
         data = if blobs = @attribute_blobs
-                 oid = blobs[relative]?
-                 oid ? blob(oid) : nil
+                 if blobs.has_key?(relative)
+                   blobs[relative]?.try { |oid| blob(oid) }
+                 elsif @worktree_fallback
+                   @repository.work_tree.try { |root| read_file(::File.join(root, relative)) }
+                 end
                elsif tree = @attribute_tree
                  tree_attribute(tree, relative)
                else
