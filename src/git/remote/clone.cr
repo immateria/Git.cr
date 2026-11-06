@@ -13,6 +13,7 @@ module Git
                    depth : Int32? = nil, remote_name : String = "origin",
                    checkout : Bool = true, tags : Remote::TagMode = Remote::TagMode::Auto,
                    actor : Signature? = nil, progress : Proc(String, Nil)? = nil,
+                   config : Config? = nil,
                    max_files : Int32 = 1_000_000,
                    max_search_entries : Int32 = 1_000_000,
                    check : Proc(Nil)? = nil) : Repository
@@ -33,7 +34,7 @@ module Git
       begin
         clone_into(transport, target, stored_url, bare: bare, branch: branch, depth: depth,
           remote_name: remote_name, checkout: checkout, tags: tags, actor: actor,
-          progress: progress, max_files: max_files, max_search_entries: max_search_entries,
+          progress: progress, config: config, max_files: max_files, max_search_entries: max_search_entries,
           check: check)
       rescue ex
         # As Git does, remove what the failed clone wrote: the directory it
@@ -50,7 +51,7 @@ module Git
     private def self.clone_into(transport : Transport, target : String, stored_url : String, *,
                                 bare : Bool, branch : String?, depth : Int32?, remote_name : String,
                                 checkout : Bool, tags : Remote::TagMode, actor : Signature?,
-                                progress : Proc(String, Nil)?, max_files : Int32,
+                                progress : Proc(String, Nil)?, config : Config?, max_files : Int32,
                                 max_search_entries : Int32, check : Proc(Nil)?) : Repository
       # Learn the object format and the remote HEAD before creating anything.
       connection = transport.connect(Transport::Service::UploadPack)
@@ -115,7 +116,7 @@ module Git
         repository.detach_head(commit)
       end
       if checkout && !bare && (commit = repository.head_ref_and_oid[1])
-        repository.populate_worktree(commit, max_files: max_files, check: check)
+        repository.populate_worktree(commit, config: config, max_files: max_files, check: check)
       end
       repository
     end

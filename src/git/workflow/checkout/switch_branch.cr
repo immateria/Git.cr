@@ -19,7 +19,7 @@ module Git
     # order, not atomically.
     def switch(target : String, *, create : Bool = false, force_create : Bool = false,
                from : String? = nil, detach : Bool = false, guess : Bool = true,
-               track : Bool = true, actor : Signature? = nil,
+               track : Bool = true, actor : Signature? = nil, config : Config? = nil,
                max_blob_bytes : Int32 = 8_388_608,
                max_index_bytes : Int32 = 8_388_608,
                max_total_bytes : Int64 = 67_108_864,
@@ -104,8 +104,12 @@ module Git
                                                                           end
       Checkout.require_tree_paths!(original.keys, "Git checkout predecessor")
       Checkout.require_tree_paths!(desired.keys, "Git checkout destination")
-      Checkout.require_clean!(self, current, max_blob_bytes: max_blob_bytes,
-        max_total_bytes: max_total_bytes, check: check)
+      conversion = Conversion.new(self, config: config, max_bytes: max_blob_bytes,
+        max_index_bytes: max_index_bytes, check: check)
+      target_conversion = Conversion.new(self, config: config, attribute_tree: next_tree,
+        max_bytes: max_blob_bytes, max_index_bytes: max_index_bytes, check: check)
+      observed = Checkout.require_clean!(self, current, max_blob_bytes: max_blob_bytes,
+        max_total_bytes: max_total_bytes, check: check, conversion: conversion)
       Checkout.require_transition_destinations!(@root, original.keys, desired.keys,
         max_entries: max_files)
       changed = (original.keys + desired.keys).uniq.sort.select { |path| original[path]? != desired[path]? }
@@ -119,9 +123,10 @@ module Git
         if next_entry = desired[path]?
           kind, raw = @object_database.object(next_entry.oid, max_blob_bytes) { check.try &.call }
           raise Error.new("Git checkout entry is not a blob") unless kind == "blob"
-          transferred += raw.bytesize
+          data = target_conversion.checkout(path, raw)
+          transferred += data.bytesize
           raise Error.new("Git checkout total byte budget exceeded") if transferred > max_total_bytes
-          writes << Checkout::Write.new(path, next_entry.mode, next_entry.oid, raw)
+          writes << Checkout::Write.new(path, next_entry.mode, next_entry.oid, data)
           edits << Index::Put.new(path, next_entry.mode, next_entry.oid)
         else
           removes << path
@@ -157,12 +162,12 @@ module Git
         raise Error.new("Git checkout index changed before publication") unless @index.snapshot_checksum(max_index_bytes) == original_checksum
         raise Error.new("Git checkout target branch changed") unless target_unchanged.call
         Checkout.require_clean!(self, current, max_blob_bytes: max_blob_bytes,
-          max_total_bytes: max_total_bytes, check: check)
+          max_total_bytes: max_total_bytes, check: check, conversion: conversion)
         Checkout.require_transition_destinations!(@root, original.keys, desired.keys,
           max_entries: max_files)
         blocking_removes.each do |path|
           publication_started = true
-          Checkout.remove(@root, path, original[path], format: @object_format, check: check)
+          Checkout.remove(@root, path, observed[path], format: @object_format, check: check)
           changed_paths << path
         end
         transition_dirs.each do |directory|
@@ -171,13 +176,13 @@ module Git
         end
         writes.each_with_index do |write, sequence|
           publication_started = true
-          Checkout.write(@root, write, sequence, expected_old: original[write.path]?,
+          Checkout.write(@root, write, sequence, expected_old: observed[write.path]?,
             format: @object_format, check: check)
           changed_paths << write.path
         end
         trailing_removes.each do |path|
           publication_started = true
-          Checkout.remove(@root, path, original[path], format: @object_format, check: check)
+          Checkout.remove(@root, path, observed[path], format: @object_format, check: check)
           changed_paths << path
         end
         check.try &.call

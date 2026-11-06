@@ -6,7 +6,10 @@ module Git
     # represents a missing base/ours/theirs side by omitting that stage,
     # never by inventing a zero OID. This is index state, not a resolution.
     record PutStages, path : String, stages : Array(Entry)
-    alias Edit = Put | Remove | PutStages
+    # Forget a worktree cache record without changing indexed content,
+    # stages or flags. A later status must verify the file's actual bytes.
+    record InvalidateStat, path : String
+    alias Edit = Put | Remove | PutStages | InvalidateStat
 
     # :nodoc:
     # Complete, checksummed image, bound to the SHA-256 digest of the exact
@@ -114,6 +117,12 @@ module Git
           by_path[path] = staged
         when Remove
           raise Error.new("Git index path not staged") unless existed
+        when InvalidateStat
+          raise Error.new("Git index path not staged") unless existed
+          by_path[path] = existed.map do |entry|
+            Entry.new(entry.path, entry.mode, entry.oid, entry.stage, entry.intent,
+              entry.skip_worktree, entry.assume_unchanged, nil)
+          end
         end
       end
       output = by_path.values.flatten

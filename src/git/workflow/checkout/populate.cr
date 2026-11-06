@@ -7,7 +7,8 @@ module Git
     # files, symbolic links (created last, so no file is written through
     # one) and empty directories for submodules, then a matching index.
     # Existing files are never replaced.
-    protected def populate_worktree(commit_oid : String, *, max_files : Int32 = 1_000_000,
+    protected def populate_worktree(commit_oid : String, *, config : Config? = nil,
+                                    max_files : Int32 = 1_000_000,
                                     max_object_bytes : Int32 = 268_435_456,
                                     check : Proc(Nil)? = nil) : Int32
       require_worktree!
@@ -35,6 +36,8 @@ module Git
         end
       end
       entries.sort_by! { |entry| entry[0] }
+      conversion = Conversion.new(self, config: config, attribute_tree: tree,
+        max_bytes: max_object_bytes, check: check)
       created = Set(String).new
       links = [] of {String, String}
       edits = [] of Index::Edit
@@ -46,6 +49,7 @@ module Git
         when "100644", "100755", "100664"
           kind, data = object(oid, max_object_bytes) { check.try &.call }
           raise Error.new("Git checkout entry #{path} is not a blob") unless kind == "blob"
+          data = conversion.checkout(path, data)
           fd = LibC.open(destination, LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL | LibC::O_CLOEXEC | LibC::O_NOFOLLOW,
             mode == "100755" ? 0o777 : 0o666)
           raise Error.new("Git checkout cannot create #{path}") if fd < 0
