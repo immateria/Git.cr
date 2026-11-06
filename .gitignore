@@ -1,0 +1,9 @@
+/.shards/
+/lib/
+/bin/
+/.crystal/
+__pycache__/
+*.pyc
+*.dwarf
+shard.override.yml
+shard.lock
