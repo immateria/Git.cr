@@ -10,9 +10,10 @@ module Git
     # worktree while preserving bounded non-overlapping unstaged edits. paths
     # selects exact repository-relative file paths without Git pathspec/glob
     # expansion; the stash object still retains Git's full saved-index parent.
-    # The caller supplies identity/time explicitly; no ambient Git config,
-    # environment or clock is consulted.
+    # The caller supplies identity/time explicitly. Conversion uses the supplied
+    # config or repository-local config; environment and clock are not read.
     protected def stash_push(*, actor : Signature, message : String? = nil,
+                             config : Config? = nil, warning : Proc(String, Nil)? = nil,
                              include_untracked : Bool = false,
                              include_ignored : Bool = false,
                              keep_index : Bool = false,
@@ -25,6 +26,7 @@ module Git
                              max_log_bytes : Int32 = 8_388_608,
                              check : Proc(Nil)? = nil) : Stash::Entry?
       require_worktree!
+      config ||= self.config
       raise ArgumentError.new("invalid Git stash budgets") if max_object_bytes < 128 || max_index_bytes < 128 ||
                                                               max_total_bytes < max_object_bytes || max_entries < 1 ||
                                                               max_entries > @max_search_entries || max_log_bytes < 128
@@ -58,6 +60,8 @@ module Git
       head_files = Checkout.tree_files(self, head_commit.tree,
         max_object_bytes: max_object_bytes, max_files: max_entries,
         check: check, allow_symlinks: true)
+      # Bind planning to the original index before callbacks can stage content.
+      checksum = @index.snapshot_checksum(max_index_bytes)
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git stash index entry budget exceeded") if current.size > max_entries
       current.each do |entry|
@@ -69,9 +73,16 @@ module Git
       index_tree = write_index_tree(max_index_bytes: max_index_bytes,
         max_tree_bytes: max_object_bytes, check: check)
       index_files = {} of String => Checkout::FileState
+      capture_index_oids = {} of String => String
       current.each do |entry|
         index_files[entry.path] = Checkout::FileState.new(entry.mode, entry.oid)
+        capture_index_oids[entry.path] = entry.oid
       end
+
+      # Collect warnings without running arbitrary user code until every saved
+      # canonical value and its exact raw predecessor have been observed.
+      conversion = Conversion.new(self, config: config, max_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, check: check)
 
       # Git partial stash stores a complete index-shaped worktree tree and
       # overlays only the selected paths with their actual worktree state.
@@ -79,6 +90,7 @@ module Git
       # in the stash object even though cleanup is limited to selected paths.
       worktree_files = selected_paths ? index_files.dup : ({} of String => Checkout::FileState)
       observed = {} of String => Checkout::FileState
+      canonical_observed = {} of String => Checkout::FileState
       index_paths = current.map(&.path).to_set
       transferred = 0_i64
       current.each do |entry|
@@ -89,9 +101,15 @@ module Git
           state, raw = leaf
           transferred += raw.bytesize
           raise Error.new("Git stash total byte budget exceeded") if transferred > max_total_bytes
-          written = write_blob(raw, max_bytes: max_object_bytes.to_i64, check: check)
-          raise Error.new("Git stash worktree blob identity changed") unless written == state.oid
-          worktree_files[entry.path] = state
+          canonical = state.mode == "120000" ? raw : conversion.clean(entry.path, raw, index_oid: entry.oid)
+          oid = ObjectId.digest("blob", canonical, @object_format)
+          if state.mode != "120000" && oid != entry.oid
+            conversion.clean(entry.path, raw, index_oid: entry.oid, safe: true)
+          end
+          written = write_blob(canonical, max_bytes: max_object_bytes.to_i64, check: check)
+          raise Error.new("Git stash worktree blob identity changed") unless written == oid
+          worktree_files[entry.path] = Checkout::FileState.new(state.mode, oid)
+          canonical_observed[entry.path] = worktree_files[entry.path]
           observed[entry.path] = state
         elsif selected_paths
           worktree_files.delete(entry.path)
@@ -103,14 +121,14 @@ module Git
       if capture_untracked
         untracked_files, untracked_bytes = stash_untracked_files(index_paths,
           selected_paths: selected_paths,
-          include_ignored: include_ignored,
+          include_ignored: include_ignored, conversion: conversion, observed: observed,
           max_object_bytes: max_object_bytes,
           max_total_bytes: max_total_bytes - transferred,
           max_entries: max_entries,
           check: check)
         transferred += untracked_bytes
         untracked_files.each do |path, state|
-          observed[path] = state
+          canonical_observed[path] = state
           # A staged deletion makes a formerly tracked HEAD path untracked.
           # Git's -u stash records that leaf in both the worktree snapshot and
           # the third-parent untracked snapshot, so applying it later may
@@ -121,8 +139,9 @@ module Git
 
       # A path removed from the index is untracked from Git's point of view.
       # If it still occupies a HEAD path and was not captured by -u, preserve
-      # safety by accepting it only when it is byte-for-byte the original HEAD
-      # value. Git itself may overwrite a modified such path during cleanup;
+      # safety by accepting it only when its canonical content matches HEAD.
+      # Exact raw observations still authorize any cleanup overwrite. Git itself
+      # may overwrite a modified such path during cleanup;
       # this native lane intentionally refuses that data-loss case unless the
       # bytes are durably represented in the third-parent snapshot.
       head_files.each do |path, expected|
@@ -135,8 +154,12 @@ module Git
         actual, raw = leaf
         transferred += raw.bytesize
         raise Error.new("Git stash total byte budget exceeded") if transferred > max_total_bytes
-        raise Error.new("Git stash refuses modified worktree content excluded by staged deletion") unless actual == expected
+        canonical = actual.mode == "120000" ? raw : conversion.clean(path, raw, index_oid: expected.oid)
+        canonical_state = Checkout::FileState.new(actual.mode, ObjectId.digest("blob", canonical, @object_format))
+        raise Error.new("Git stash refuses modified worktree content excluded by staged deletion") unless canonical_state == expected
         observed[path] = actual
+        canonical_observed[path] = expected
+        capture_index_oids[path] = expected.oid
       end
 
       if selected_paths
@@ -173,9 +196,8 @@ module Git
                 edits.empty? ? nil : @index.prepare_changes(edits,
                   max_bytes: max_index_bytes, max_entries: max_entries, check: check)
               end
-      checksum = @index.snapshot_checksum(max_index_bytes)
       cleanup_files = if staged_only
-                        staged_cleanup, merged_bytes = stash_staged_cleanup_files(head_files, index_files, observed,
+                        staged_cleanup, merged_bytes = stash_staged_cleanup_files(head_files, index_files, worktree_files,
                           max_object_bytes: max_object_bytes,
                           max_total_bytes: max_total_bytes - transferred,
                           check: check)
@@ -200,6 +222,26 @@ module Git
       Checkout.require_tree_paths!(cleanup_files.keys, "Git stash cleanup destination")
       Checkout.require_transition_destinations!(@root, observed.keys, cleanup_files.keys,
         max_entries: max_entries)
+      # Cleanup keeps canonical goals separate from the raw identities which
+      # authorize overwrites. Attribute timing follows the chosen stash form.
+      cleanup_conversion = if staged_only || (selected_paths && !keep_index)
+                             conversion
+                           elsif selected = selected_paths
+                             blobs = {} of String => String?
+                             selected.each do |path|
+                               next unless File.basename(path) == ".gitattributes"
+                               state = index_files[path]?
+                               blobs[path] = state && {"100644", "100755"}.includes?(state.mode) ? state.oid : nil
+                             end
+                             Conversion.new(self, config: config, attribute_blobs: blobs,
+                               worktree_fallback: true, worktree_index_fallback: true,
+                               max_bytes: max_object_bytes,
+                               max_index_bytes: max_index_bytes, check: check)
+                           else
+                             Conversion.new(self, config: config,
+                               attribute_tree: keep_index ? index_tree : head_commit.tree,
+                               max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+                           end
       changed = (observed.keys + cleanup_files.keys).uniq.sort.select { |path| observed[path]? != cleanup_files[path]? }
       raise Error.new("Git stash cleanup entry budget exceeded") if changed.size > max_entries
       writes = [] of Checkout::Write
@@ -209,18 +251,26 @@ module Git
         if goal = cleanup_files[path]?
           kind, raw = object(goal.oid, max_object_bytes) { check.try &.call }
           raise Error.new("Git stash cleanup target is not a blob") unless kind == "blob"
-          transferred += raw.bytesize
-          raise Error.new("Git stash total byte budget exceeded") if transferred > max_total_bytes
           writes << Checkout::Write.new(path, goal.mode, goal.oid, raw)
         elsif observed.has_key?(path)
           removals << path
         end
+      end
+      writes = cleanup_conversion.materialize(writes,
+        max_total_bytes: max_total_bytes - transferred, operation: "Git stash cleanup")
+      writes.reject! do |write|
+        raw = Checkout::FileState.new(write.mode, ObjectId.digest("blob", write.data, @object_format))
+        observed[write.path]? == raw
       end
       write_paths = writes.map(&.path)
       blocking_removals, trailing_removals = removals.partition do |path|
         write_paths.any? { |written| Checkout.transition_blocker?(path, written) }
       end
       transition_dirs = Checkout.transition_directories(observed.keys, cleanup_files.keys)
+
+      if callback = warning
+        conversion.warnings.each { |message| callback.call(message) }
+      end
 
       # Validate the existing stack before appending another Git-compatible
       # reflog entry. Malformed or mismatched external state is never extended.
@@ -266,8 +316,15 @@ module Git
         # into a saved-but-not-cleaned partial operation.
         index_lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard.call
-        stash_verify_worktree_snapshot!(current, worktree_files, observed,
-          selected_paths: selected_paths,
+        # Re-resolve conversion sources after warning callbacks, including
+        # attributes outside selected/captured paths, using the secure reader.
+        verification_conversion = if warning && !conversion.warnings.empty?
+                                    Conversion.new(self, config: config, max_bytes: max_object_bytes,
+                                      max_index_bytes: max_index_bytes, check: check)
+                                  end
+        stash_verify_worktree_snapshot!(current, observed,
+          canonical: canonical_observed, index_oids: capture_index_oids,
+          conversion: verification_conversion, selected_paths: selected_paths,
           max_object_bytes: max_object_bytes, check: check)
         Checkout.require_transition_destinations!(@root, observed.keys, cleanup_files.keys,
           max_entries: max_entries)

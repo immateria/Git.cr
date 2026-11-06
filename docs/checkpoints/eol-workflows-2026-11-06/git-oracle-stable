@@ -1,0 +1,21 @@
+#!/bin/sh
+# Test-only execution policy: keep fixture commands from spawning orphaned
+# background maintenance in this container. Config introspection stays exact.
+command_name=
+skip_value=
+for argument do
+  if [ "$skip_value" = yes ]; then
+    skip_value=
+    continue
+  fi
+  case "$argument" in
+    -c|-C|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)
+      skip_value=yes ;;
+    -*) ;;
+    *) command_name=$argument; break ;;
+  esac
+done
+case "$command_name" in
+  config|'') exec /workspace/toolchains/git-2.47.3/bin/git "$@" ;;
+  *) exec /workspace/toolchains/git-2.47.3/bin/git -c maintenance.auto=false -c gc.auto=0 -c pack.threads=1 "$@" ;;
+esac

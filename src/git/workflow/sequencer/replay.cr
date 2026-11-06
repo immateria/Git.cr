@@ -5,8 +5,10 @@ module Git
                                 mainline : Int32?, allow_empty : Bool,
                                 max_object_bytes : Int32, max_index_bytes : Int32,
                                 max_total_bytes : Int64, max_entries : Int32,
-                                check : Proc(Nil)?, commit_result : Bool = true) : Sequencer::Result
+                                check : Proc(Nil)?, commit_result : Bool = true, config : Config? = nil,
+                                prepare_worktree : Proc(Array(Index::Entry), Merge::FilePlan, Int64)? = nil) : Sequencer::Result
       require_worktree!
+      config ||= self.config
       raise ArgumentError.new("invalid Git sequencer budgets") if max_object_bytes < 128 || max_index_bytes < 128 ||
                                                                   max_total_bytes < max_object_bytes || max_entries < 1 ||
                                                                   max_entries > @max_search_entries
@@ -54,10 +56,13 @@ module Git
       rename_plan = Merge.rename_plan(self, base, ours, theirs,
         max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes, check: check,
         their_label: incoming_label)
+      snapshot = @index.snapshot_checksum(max_index_bytes)
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git sequencer requires index equal to HEAD") unless Merge.index_matches_head?(current, ours)
-      Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
-        max_total_bytes: max_total_bytes, check: check, allow_symlinks: true)
+      conversion = Conversion.new(self, config: config, max_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, check: check)
+      observations = Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
+        max_total_bytes: max_total_bytes, check: check, allow_symlinks: true, conversion: conversion)
       marker_label = kind.revert? ? "parent of #{source_expression}" : source_expression
       plan = Merge.plan_files(self, names, base, ours, theirs, rename_plan,
         marker_label: marker_label, operation: "Git sequencer",
@@ -65,7 +70,12 @@ module Git
       plan = Merge.relocate_directories(self, plan, current, ours, theirs,
         their_label: incoming_label, max_object_bytes: max_object_bytes,
         max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
-      edits, writes, conflicts = {plan.edits, plan.writes, plan.conflicts}
+      remaining = prepare_worktree.try(&.call(current, plan)) || max_total_bytes
+      raise Error.new("Git sequencer prepared byte budget invalid") unless 0 <= remaining <= max_total_bytes
+      output = Conversion.for_index(self, current, edits: plan.edits, writes: plan.writes,
+        config: config, max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+      edits, conflicts = {plan.edits, plan.conflicts}
+      writes = output.materialize(plan.writes, max_total_bytes: remaining, operation: "Git sequencer")
       final_paths = plan.final_paths(current)
       raise Error.new("Git sequencer divergent file/directory conflict unsupported") if Checkout.path_collision(final_paths)
       Checkout.require_transition_destinations!(@root, ours.keys, final_paths,
@@ -79,7 +89,6 @@ module Git
         @object_format, max_index_bytes, max_entries)
       state = Sequencer::State.new(kind, branch, old_oid, target, parent,
         operation_author, text, allow_empty)
-      snapshot = @index.snapshot_checksum(max_index_bytes)
       admin = DescriptorPath::Directory.open(@git_dir)
       lock = nil.as(IO::FileDescriptor?)
       started = false
@@ -98,7 +107,7 @@ module Git
         end
         guard.call
         Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
-          max_total_bytes: max_total_bytes, check: check, allow_symlinks: true)
+          max_total_bytes: max_total_bytes, check: check, allow_symlinks: true, conversion: conversion)
         Checkout.require_transition_destinations!(@root, ours.keys, final_paths,
           max_entries: max_entries)
         started = true
@@ -111,19 +120,19 @@ module Git
           lock.fsync
         end
         blocking_removals.each do |path, previous|
-          Checkout.remove(@root, path, previous, format: @object_format, check: guard)
+          Checkout.remove(@root, path, observations[path], format: @object_format, check: guard)
           changed_paths << path
         end
         transition_dirs.each do |directory|
           Checkout.remove_empty_directory(@root, directory, check: guard)
         end
         writes.each_with_index do |write, sequence|
-          Checkout.write(@root, write, sequence, expected_old: ours[write.path]?,
+          Checkout.write(@root, write, sequence, expected_old: observations[write.path]?,
             format: @object_format, check: guard)
           changed_paths << write.path
         end
         trailing_removals.each do |path, previous|
-          Checkout.remove(@root, path, previous, format: @object_format, check: guard)
+          Checkout.remove(@root, path, observations[path], format: @object_format, check: guard)
           changed_paths << path
         end
         if image
