@@ -272,13 +272,16 @@ describe "native merge conversion guards and forwarding" do
       theirs = EolMergeFixture.commit(repository, base_files.merge({"file.txt" => "a\n" * 180}), [base])
       EolMergeFixture.install(repository, ours, theirs)
       before = File.read(File.join(root, ".git", "index"))
+      orig_head_path = File.join(root, ".git", "ORIG_HEAD")
+      orig_head = File.exists?(orig_head_path) ? File.read(orig_head_path) : nil
       expect_raises(Git::Error, /budget/) { EolMergeFixture.merge(repository, max_object_bytes: 384) }
       repository.head.oid.should eq(ours)
       File.read(File.join(root, "file.txt")).should eq("base\r\n")
       File.read(File.join(root, ".git", "index")).should eq(before)
-      ["MERGE_HEAD", "MERGE_MSG", "CRYSTAL_MERGE_PATHS", "index.lock", "ORIG_HEAD"].each do |name|
+      ["MERGE_HEAD", "MERGE_MSG", "CRYSTAL_MERGE_ORIG", "CRYSTAL_MERGE_PATHS", "index.lock"].each do |name|
         File.exists?(File.join(root, ".git", name)).should be_false
       end
+      (File.exists?(orig_head_path) ? File.read(orig_head_path) : nil).should eq(orig_head)
     end
   end
 
@@ -351,7 +354,8 @@ describe "native merge conversion preservation" do
         File.read(File.join(root, "file.txt")).should eq("theirs\r\n")
         File.read(File.join(root, "raw.bin")).should eq(payload)
         File.readlink(File.join(root, "link")).should eq("after\n")
-        repository.read_head_file("raw.bin").should eq(payload)
+        entry = repository.index_entries.find { |candidate| candidate.path == "raw.bin" }.not_nil!
+        repository.read_object(entry.oid).should eq(Git::RawObject.new(Git::ObjectType::Blob, payload))
         GitOracle.run(root, "show", "HEAD:link").stdout.should eq("after\n")
         repository.working_changes.should be_empty
       end
@@ -378,6 +382,80 @@ describe "native merge conversion preservation" do
         repository.read_head_file("file.txt").should eq("second\n")
         repository.working_changes(config: config).should be_empty
       end
+    end
+  end
+end
+
+describe "native merge conversion recovery boundaries" do
+  ["sha1", "sha256"].each do |format|
+    it "materializes original #{format} CRLF bytes even when abort sees the canonical original blob" do
+      GitOracle.with_repo(format: format) do |root|
+        repository, ours, _ = EolMergeFixture.divergent(root, conflict: true)
+        EolMergeFixture.merge(repository)
+        File.write(File.join(root, "file.txt"), "OURS\n")
+        repository.merge.abort
+        File.read(File.join(root, "file.txt")).should eq("OURS\r\n")
+        repository.head.oid.should eq(ours)
+        repository.working_changes.should be_empty
+      end
+    end
+
+    it "refuses genuinely dirty #{format} CRLF content before starting a merge" do
+      GitOracle.with_repo(format: format) do |root|
+        repository, ours, _ = EolMergeFixture.divergent(root)
+        before = File.read(File.join(root, ".git", "index"))
+        File.write(File.join(root, "file.txt"), "dirty\r\n")
+        expect_raises(Git::Error, /dirty tracked files/) { EolMergeFixture.merge(repository) }
+        repository.head.oid.should eq(ours)
+        File.read(File.join(root, ".git", "index")).should eq(before)
+        File.read(File.join(root, "file.txt")).should eq("dirty\r\n")
+        repository.merge.in_progress?.should be_false
+      end
+    end
+  end
+
+  it "forwards explicit config through an initial pull checkout" do
+    GitOracle.with_repo do |root|
+      repository = Git::Repository.new(root)
+      tip = EolMergeFixture.commit(repository, {"file.txt" => "first\n"})
+      repository.refs.update("refs/heads/main", tip, expected_oid: nil)
+      destination = File.join(File.dirname(root), "initial-pull")
+      Dir.mkdir(destination)
+      pulled = Git::Repository.init(destination)
+      pulled.remotes.add("origin", root)
+      pulled.branches.set_upstream("main", Git::Branch::Upstream.new("origin", "refs/heads/main"))
+      config = pulled.config(command_values: [{"core.autocrlf", "true"}] of {String, String?})
+      pulled.pull(config: config).action.should eq(Git::Pull::Action::Initial)
+      File.read(File.join(destination, "file.txt")).should eq("first\r\n")
+      pulled.read_head_file("file.txt").should eq("first\n")
+      pulled.working_changes(config: config).should be_empty
+    end
+  end
+
+  it "retains a racing EOL-only replacement on the fast-forward publication path" do
+    GitOracle.with_repo do |root|
+      repository = Git::Repository.new(root)
+      original = {"file.txt" => "first\n", ".gitattributes" => EolMergeFixture::CRLF}
+      first = EolMergeFixture.commit(repository, original)
+      tip = EolMergeFixture.commit(repository, original.merge({"file.txt" => "second\n"}), [first])
+      EolMergeFixture.install(repository, first, tip)
+      before = File.read(File.join(root, ".git", "index"))
+      altered = false
+      check = -> do
+        if !altered && File.exists?(File.join(root, ".git", "index.lock"))
+          File.write(File.join(root, "file.txt"), "first\n")
+          altered = true
+        end
+        nil
+      end
+      error = expect_raises(Git::Reset::PartialPublication) { repository.fast_forward("topic", check: check) }
+      altered.should be_true
+      error.changed_worktree_paths.should be_empty
+      error.index_published.should be_false
+      error.reference_published.should be_false
+      repository.head.oid.should eq(first)
+      File.read(File.join(root, ".git", "index")).should eq(before)
+      File.read(File.join(root, "file.txt")).should eq("first\n")
     end
   end
 end
