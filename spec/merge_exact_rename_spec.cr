@@ -58,7 +58,7 @@ describe "P30 exact-identity Git rename during three-way merge" do
       end
     end
 
-    it "P30-R03 refuses #{format} conflicting exact rename destinations before metadata publication" do
+    it "P30-R03 records #{format} conflicting exact rename destinations" do
       GitOracle.with_repo(format: format) do |root|
         File.write(File.join(root, "old"), "base\n")
         GitOracle.run(root, "add", ".")
@@ -69,14 +69,20 @@ describe "P30 exact-identity Git rename during three-way merge" do
         GitOracle.run(root, "checkout", "-q", "main")
         GitOracle.run(root, "mv", "old", "local")
         GitOracle.run(root, "commit", "-qm", "local")
+        GitOracle.run(root, "merge", "--no-commit", "--no-ff", "topic", check: false).exit_code.should eq(1)
+        expected_index = GitOracle.run(root, "ls-files", "-s").stdout
+        expected_status = GitOracle.run(root, "status", "--porcelain").stdout
+        GitOracle.run(root, "merge", "--abort")
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        expect_raises(Git::Error, /rename\/rename/) do
-          repo.merge("topic", author: sig, committer: sig, message: "merge")
-        end
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
+        result.conflicts.should eq(["local", "old", "remote"])
+        GitOracle.run(root, "ls-files", "-s").stdout.should eq(expected_index)
+        GitOracle.run(root, "status", "--porcelain").stdout.should eq(expected_status)
         File.read(File.join(root, "local")).should eq("base\n")
-        File.exists?(File.join(root, "remote")).should be_false
-        File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false
+        File.read(File.join(root, "remote")).should eq("base\n")
+        repo.merge.abort
+        GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
     end
   end

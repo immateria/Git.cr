@@ -13,7 +13,9 @@ module Git
         ObjectId.valid!(target, @object_format)
         original = merge_read_metadata?(admin, "CRYSTAL_MERGE_ORIG") || raise Error.new("Git merge original state missing")
         lines = original.lines.map(&.strip)
-        raise Error.new("Git merge original state invalid") unless lines.size == 2
+        versioned = lines.size == 3 && lines[2] == Merge::Recovery::STATE_VERSION
+        raise Error.new("Git merge original state invalid") unless lines.size == 2 || versioned
+        Merge::Recovery.require_versioned!(admin, "CRYSTAL_MERGE_PATHS") if versioned
         branch = if lines[0] == "-"
                    nil
                  else

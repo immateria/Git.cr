@@ -100,3 +100,64 @@ installation; the native code never starts them itself.
 | PORCELAIN-O05 | `porcelain_spec.cr` | `log` in each `History::Order` equals `rev-list`, `--date-order` and `--topo-order`, including a merge whose first parent is newer and clock skew |
 | NA-01..NA-08 | `non_ascii_spec.cr` | Non-ASCII identities, messages, branch names, ignore patterns and ref names, and commits that are not UTF-8 (declared and undeclared encodings), read and copied as Git does |
 | WS-01..WS-05 | `worktree_stat_spec.cr` | Status trusts index stat data like Git (racily clean files, restored mtimes, mode changes) and reports submodules and nested repositories as `git status` does |
+
+## Extended shared merge engine
+
+- `merge_directory_conflict_spec.cr`: both D/F orientations in merge, cherry-pick
+  and rebase; sibling-path ordering, tracked relocation suffixes, untracked
+  destination refusal, unrelated staged-path protection, abort and continuation.
+- `merge_bases_spec.cr`: two- and three-base criss-cross histories, byte-exact
+  stage-one virtual text-conflict blobs, timestamp ties, history budgets and cancellation.
+- `merge_similarity_spec.cr`: independent edits across a moved file in merge,
+  cherry-pick, rebase and revert; candidate-byte/comparison bounds and cancellation.
+- `merge_rename_pairing_spec.cr`: common and divergent destinations, rename/add,
+  binary signatures, divergent binary content preservation, symlink targets,
+  below-threshold files and ambiguous-source pairing.
+- `merge_virtual_conflict_spec.cr`: recursive rename/delete and divergent rename
+  ancestors, empty-blob binary add/add ancestors, and text without a final newline.
+- Relocation regressions also cover retaining merged index-stage content and
+  reserving tracked destination names even when they are scheduled for deletion.
+
+The repository fixtures run under both SHA-1 and SHA-256. Pure detector work-limit
+checks use SHA-1. These establish the named bounded profiles, not full ort parity.
+
+## Merge quality and interrupted publication
+
+- `merge_collision_quality_spec.cr` compares both source contributions in
+  rename/rename 2-to-1 collisions, including edited moves and reversed sides.
+- `merge_virtual_quality_spec.cr` checks virtual ancestor mode/OID coupling,
+  symlink additions/type changes, regular binary replacements, empty-side
+  additions and identical content with different modes.
+- `merge_marker_context_spec.cr` isolates divergent rename marker width and
+  branch/path labels at outer and recursive depth using a single text line.
+- `merge_partial_recovery_spec.cr` injects failures before index publication,
+  reopens each operation, and checks abort/abort-retry for merge, cherry-pick,
+  revert and rebase. It covers empty structural directories, unrelated arrivals,
+  changed unindexed outputs, symlinks and legacy path-only metadata.
+- `merge_recovery_metadata_spec.cr` checks receipt changes before publication,
+  identity and structural validation, raw path bytes, index-budget-sized receipts
+  above 64 KiB, and nonregular metadata refusal.
+
+The quality pass also ran a deterministic 100-case rename-operation sweep and
+780 virtual-ancestor combinations against Git 2.47.3; those exploratory runners
+are workspace evidence, while the reduced regressions above are permanent specs.
+
+## Nested rename/add collisions
+
+`merge_nested_collision_spec.cr` compares intermediate index blobs and final
+worktree bytes with Git 2.47.3 under SHA-1 and SHA-256. Both rename orientations
+run through merge, cherry-pick, revert and rebase, with abort and continuation.
+Fixtures include overlapping text edits, binary conflicts, binary originals
+whose modified sides are text, and missing final newlines. Criss-cross fixtures
+check nested markers and binary ancestor selection in recursive bases. Budget,
+encoding and source-kind refusals must leave refs, index and operation metadata
+unchanged. This extends same-kind source collisions; different source kinds
+remain explicitly unsupported, as does full ort hunk/attribute policy.
+
+Destination-specific collision checks also cover different executable modes,
+identical intermediate/addition states, mode-only equality, and structural
+rename/delete collisions with equal destination content. Same state resolves
+cleanly only for content collisions; structural conflicts retain their stages
+without duplicate markers. Both inner and outer text marker budgets fail before
+mutable publication. Worktree executable status is compared as Git's canonical
+mode bit, independently of process umask and unrelated permission bits.

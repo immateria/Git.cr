@@ -6,9 +6,10 @@ module Git
     # untracked files. Publication rechecks with rmdir so a racing arrival is
     # preserved and reported as partial publication rather than deleted.
     protected def self.require_collapsible_directory!(root : String, prefix : String,
-                                                      tracked_paths : Array(String), max_entries : Int32) : Nil
+                                                      tracked_paths : Array(String), max_entries : Int32, *,
+                                                      known_directories : Set(String) = Set(String).new) : Nil
       expected_files = tracked_paths.to_set
-      expected_dirs = path_prefixes(tracked_paths)
+      expected_dirs = path_prefixes(tracked_paths) | known_directories
       raise Error.new("Git checkout transition path is not a tracked directory") unless expected_dirs.includes?(prefix)
       root_path = File.join(root, prefix)
       raise Error.new("Git checkout transition directory redirected") if File.symlink?(root_path) || !Dir.exists?(root_path)

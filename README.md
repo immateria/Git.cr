@@ -136,6 +136,14 @@ agent tools and controls every grant; see
   Git-compatible index stages and worktree leaves, and rebase keeps commits that
   were empty in their source history unless the caller says otherwise. Repeated-line
   alignment and Git's full `ort` conflict layout are intentionally bounded.
+  The shared merge engine detects edited regular-file renames at 50% span
+  similarity, combines independent edits at the destination, records divergent
+  rename destinations, and relocates file/directory conflicts. Merge recursively
+  combines multiple common ancestors, including bounded text-conflicted virtual
+  bases, without publishing temporary refs or indexes. Rename/add source
+  conflicts retain their intermediate blob as an index stage before the
+  destination collision: text markers nest, while binary selection follows
+  the ordinary or virtual merge context.
   Given an `actor:` (or, for `merge` and `pull`, the committer), `switch`,
   `reset`, `fast_forward`, `merge`, `pull` and `branches.create` write Git's
   reflog lines, and `reset`, `merge`, `fast_forward`, `pull` and `rebase`
@@ -186,6 +194,19 @@ agent tools and controls every grant; see
   unreachable objects), reporting `Repack::Result`, `Gc::Result` and
   `Fsck::Report`.
 
+Native merge and replay save a versioned worktree-output receipt before
+publication. Abort uses the observed filesystem shape, including writes made
+before the index was published, and recognizes an unindexed output only when
+its mode and blob hash match the receipt. Ambiguous or changed unindexed files
+are preserved and refused; indexed conflict resolutions remain explicitly
+restorable. Receipts are bounded by `max_index_bytes`, bind the operation's
+original/source commits, and are checked during publication and abort. New
+operation state requires the structured receipt, whose declared output count
+rejects truncation even at a record boundary. Missing, empty or tagless receipts
+cannot be mistaken for legacy metadata. Legacy two-line operation state with
+path-only receipts still supports indexed recovery but cannot authorize deletion
+of an unindexed file.
+
 Worktree, index and HEAD are published separately. `Checkout::PartialPublication`
 and related types report possibly incomplete results; they do not promise rollback.
 Pinned directory descriptors (`src/git/descriptor_path.cr`, with
@@ -214,7 +235,7 @@ results for three public repositories and what they found.
 - Not implemented: worktree and submodule lifecycle; hooks, filters and
   signing; credential helpers; protocol v0/v1 fetch (servers must speak
   protocol v2 for fetching, as Git servers have by default since 2.26),
-  partial clones, `rebase` pulls, similarity-based rename detection and copies,
+  partial clones, `rebase` pulls, similarity rename detection in diffs and copies,
   globs and pathspec magic; and full
   attribute and ignore parity (global excludes, case folding and the whole of
   Git's wildmatch: `Git::Ignore` matches `?` and `[...]` on single bytes as Git's `wildmatch` does and honours `core.excludesFile`). Reftable ref storage, split and sparse indexes, replace
@@ -224,7 +245,16 @@ results for three public repositories and what they found.
   record 32-bit stat data and preserve non-racy stat entries across updates;
   `staged_changes` uses valid `TREE` cache-tree extensions to skip unchanged
   subtrees.
-- Merges use a bounded text algorithm and handle UTF-8 text only. Diffs take
+- Merge rename matching caches line/64-byte span signatures, accepts 50% shared
+  bytes, and prefers exact matches before a deterministic bounded candidate
+  search. It permits at most 1,000,000 inexact comparisons and reads at most
+  `max_total_bytes` of distinct rename-candidate blobs per tree merge. Signature
+  scoring supports binary bytes; automatic content merging handles UTF-8 text
+  only. Copy/directory rename detection and full Git candidate/attribute policy
+  remain unsupported. Rename/add collisions with differing source file kinds,
+  and virtual-base file/directory conflicts, fail closed. Recursive base synthesis
+  has a depth limit of 64 and a fold-work limit of `max_history_nodes`; virtual
+  text conflicts retain the existing bounded marker behavior. Diffs take
   any bytes, honour `.gitattributes` `diff=<driver>`, `-diff` and `binary`
   rules (including Git's built-in `userdiff` `xfuncname` drivers such as
   `diff=cpp`, `diff=python` and `diff=rust`, plus `diff.<driver>.xfuncname`

@@ -3,7 +3,7 @@ module Git
     private def merge_metadata_exists? : Bool
       admin = DescriptorPath::Directory.open(@git_dir)
       begin
-        {"MERGE_HEAD", "MERGE_MSG", "CRYSTAL_MERGE_ORIG"}.any? { |name| !!admin.stat?(name) }
+        {"MERGE_HEAD", "MERGE_MSG", "CRYSTAL_MERGE_ORIG", "CRYSTAL_MERGE_PATHS"}.any? { |name| !!admin.stat?(name) }
       ensure
         admin.close
       end
@@ -26,11 +26,12 @@ module Git
 
     private def merge_write_metadata!(admin : DescriptorPath::Directory,
                                       branch : String?, ours : String, theirs : String,
-                                      message : String) : Nil
+                                      message : String, recovery_data : String = "") : Nil
       # Publish MERGE_HEAD last: its presence implies that original state
       # and the message already exist and are fsynced. Failure in either
       # earlier file creates no apparently valid in-progress merge.
-      contents = {"CRYSTAL_MERGE_ORIG" => "#{branch || "-"}\n#{ours}\n",
+      contents = {"CRYSTAL_MERGE_ORIG" => "#{branch || "-"}\n#{ours}\n#{Merge::Recovery::STATE_VERSION}\n",
+                  "CRYSTAL_MERGE_PATHS" => recovery_data,
                   "MERGE_MSG" => message, "MERGE_HEAD" => "#{theirs}\n"}
       contents.each do |name, value|
         io = admin.open_file(name, LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o600)
@@ -52,6 +53,10 @@ module Git
       {"MERGE_HEAD", "MERGE_MSG", "CRYSTAL_MERGE_ORIG"}.each do |name|
         raise Error.new("Git merge metadata missing during cleanup") unless admin.stat?(name)
         admin.unlink(name)
+        admin.sync
+      end
+      if admin.stat?("CRYSTAL_MERGE_PATHS")
+        admin.unlink("CRYSTAL_MERGE_PATHS")
         admin.sync
       end
     end

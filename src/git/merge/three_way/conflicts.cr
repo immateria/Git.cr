@@ -13,16 +13,20 @@ module Git
 
     protected def self.markers(repository : Repository, ours : Checkout::FileState?,
                                theirs : Checkout::FileState?, label : String,
-                               max_bytes : Int32, check : Proc(Nil)?) : String?
+                               max_bytes : Int32, check : Proc(Nil)?, *,
+                               ours_label : String = "HEAD", marker_size : Int32 = 7,
+                               allow_missing_newline : Bool = false) : String?
       return nil unless ours && theirs && ours.mode == theirs.mode
       return nil unless {"100644", "100755"}.includes?(ours.mode)
       left_kind, left = repository.object(ours.oid, max_bytes) { check.try &.call }
       right_kind, right = repository.object(theirs.oid, max_bytes) { check.try &.call }
       return nil unless left_kind == "blob" && right_kind == "blob" && left.valid_encoding? &&
-                        right.valid_encoding? && !left.includes?('\0') && !right.includes?('\0') &&
-                        left.ends_with?("\n") && right.ends_with?("\n")
-      return nil if left.bytesize.to_i64 + right.bytesize + label.bytesize + 64 > max_bytes
-      "<<<<<<< HEAD\n#{left}=======\n#{right}>>>>>>> #{label}\n"
+                        right.valid_encoding? && !left.includes?('\0') && !right.includes?('\0')
+      return nil unless allow_missing_newline || (left.ends_with?("\n") && right.ends_with?("\n"))
+      left += "\n" unless left.empty? || left.ends_with?("\n")
+      right += "\n" unless right.empty? || right.ends_with?("\n")
+      return nil if left.bytesize.to_i64 + right.bytesize + label.bytesize + ours_label.bytesize + marker_size.to_i64 * 3 + 16 > max_bytes
+      "#{"<" * marker_size} #{ours_label}\n#{left}#{"=" * marker_size}\n#{right}#{">" * marker_size} #{label}\n"
     end
   end
 end

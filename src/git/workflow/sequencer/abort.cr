@@ -25,46 +25,35 @@ module Git
                      else
                        {} of String => Checkout::FileState
                      end
-      allowed = (original.keys + source_files.keys + parent_files.keys).uniq
+      manifest_admin = DescriptorPath::Directory.open(@git_dir)
+      begin
+        relocation_data = Merge::Recovery.read(manifest_admin, "CRYSTAL_SEQUENCER_PATHS", max_index_bytes)
+      ensure
+        manifest_admin.close
+      end
+      receipt = Merge::Recovery.decode(relocation_data, state.original_head, state.source,
+        @object_format, max_index_bytes, max_entries)
+      allowed = (original.keys + source_files.keys + parent_files.keys + receipt.paths + receipt.outputs.keys).uniq
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git sequencer abort refuses unrelated staged paths") if current.any? { |entry| !allowed.includes?(entry.path) }
-      current_paths = current.map(&.path).uniq
-      raise Error.new("Git sequencer abort path budget exceeded") if (original.keys + current_paths).uniq.size > max_entries
       Checkout.require_tree_paths!(original.keys, "Git sequencer abort target")
-      Checkout.require_tree_paths!(current_paths, "Git sequencer abort current index")
-      Checkout.require_transition_destinations!(@root, current_paths, original.keys,
-        max_entries: max_entries)
+      view = Merge::Recovery.observe(self, current, original, receipt,
+        max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes,
+        max_entries: max_entries, check: check)
+      view.preflight!(@root, original.keys, max_entries)
       desired = IndexRestore.source_entries(self, original_tree,
         max_object_bytes: max_object_bytes, max_entries: max_entries, check: check)
       edits = IndexRestore.edits(current, desired, nil)
       image = edits.empty? ? nil : @index.prepare_changes(edits, max_bytes: max_index_bytes,
         max_entries: max_entries * 3, check: check)
       snapshot = @index.snapshot_checksum(max_index_bytes)
-      names = (original.keys + current_paths).uniq.sort
-      observations = {} of String => Checkout::FileState?
+      observations = view.observations
       writes = [] of Checkout::Write
       removals = [] of {String, Checkout::FileState}
-      total = 0_i64
-      current_prefixes = Checkout.path_prefixes(current_paths)
-      names.each do |path|
+      total = view.bytes
+      observations.keys.sort.each do |path|
         check.try &.call
-        absolute = File.join(@root, path)
-        observed = nil.as(Checkout::FileState?)
-        if current_prefixes.includes?(path) && Dir.exists?(absolute) && !File.symlink?(absolute)
-          # Structural directory in the current tracked view; descendant leaves
-          # are observed independently and removed before a target file write.
-        elsif File.exists?(absolute) || File.symlink?(absolute)
-          mode, raw = if File.symlink?(absolute)
-                        {"120000", Checkout.symlink_target(@root, path, max_object_bytes)}
-                      else
-                        raise Error.new("Git sequencer abort refuses nonregular leaf") unless File.file?(absolute)
-                        checkout_working_regular(path, max_object_bytes) { check.try &.call }
-                      end
-          total += raw.bytesize
-          raise Error.new("Git sequencer abort total byte budget exceeded") if total > max_total_bytes
-          observed = Checkout::FileState.new(mode, ObjectId.digest("blob", raw, @object_format))
-        end
-        observations[path] = observed
+        observed = observations[path]
         if goal = original[path]?
           next if goal == observed
           kind, raw = object(goal.oid, max_object_bytes) { check.try &.call }
@@ -80,7 +69,7 @@ module Git
       blocking_removals, trailing_removals = removals.partition do |path, _state|
         write_paths.any? { |written| Checkout.transition_blocker?(path, written) }
       end
-      transition_dirs = Checkout.transition_directories(current_paths, original.keys)
+      transition_dirs = view.transition_directories(original.keys)
       admin = DescriptorPath::Directory.open(@git_dir)
       lock = nil.as(IO::FileDescriptor?)
       started = false
@@ -91,13 +80,13 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
+          raise Error.new("Git sequencer abort recovery metadata changed") unless Merge::Recovery.read(admin, "CRYSTAL_SEQUENCER_PATHS", max_index_bytes) == relocation_data
           raise Error.new("Git sequencer abort state changed") unless head_ref_and_oid == {state.branch, state.original_head} &&
                                                                       sequencer_state? == state &&
                                                                       @index.snapshot_checksum(max_index_bytes) == snapshot
         end
         guard.call
-        Checkout.require_transition_destinations!(@root, current_paths, original.keys,
-          max_entries: max_entries)
+        view.preflight!(@root, original.keys, max_entries)
         if planned = image
           lock.write(planned.data.to_slice)
           lock.flush

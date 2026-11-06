@@ -11,7 +11,8 @@ module Git
       edits : Array(Index::Edit),
       writes : Array(Checkout::Write),
       removals : Array({String, Checkout::FileState}),
-      conflicts : Array(String) do
+      conflicts : Array(String),
+      relocations : Array(String) = [] of String do
       def final_paths(current : Array(Index::Entry)) : Set(String)
         result = current.map(&.path).to_set
         edits.each do |edit|
@@ -79,7 +80,8 @@ module Git
                                   theirs : Hash(String, Checkout::FileState),
                                   renames : RenamePlan, *, marker_label : String,
                                   operation : String, max_object_bytes : Int32,
-                                  max_total_bytes : Int64, check : Proc(Nil)?) : FilePlan
+                                  max_total_bytes : Int64, check : Proc(Nil)?,
+                                  marker_ours : String = "HEAD", marker_size : Int32 = 7) : FilePlan
       edits = [] of Index::Edit
       writes = [] of Checkout::Write
       removals = [] of {String, Checkout::FileState}
@@ -88,7 +90,8 @@ module Git
       names.each do |path|
         check.try &.call
         ancestor = base[path]?
-        local = ours[path]?
+        present = ours[path]?
+        local = present
         remote = theirs[path]?
         desired = if local == remote || remote == ancestor
                     local
@@ -100,7 +103,12 @@ module Git
         divergent = local != remote && local != ancestor && remote != ancestor
         if override = renames.conflicts[path]?
           ancestor, local, remote = {override.base, override.ours, override.theirs}
-          divergent = true
+          # Content collisions can become trivial after the source merge.
+          # A rename/delete collision still carries a structural conflict,
+          # even when both surviving destination stages have equal content.
+          divergent = !(local && local == remote && renames.markers.has_key?(path) &&
+                        !renames.structural_collisions.includes?(path))
+          desired = local unless divergent
         elsif renames.resolutions.has_key?(path)
           desired = renames.resolutions[path]
           divergent = false
@@ -113,19 +121,26 @@ module Git
           conflicts << path
           edits << conflict(path, ancestor, local, remote)
           # A marker is only a worktree aid: the index keeps real conflict stages.
-          if marker = markers(repository, local, remote, marker_label, max_object_bytes, check)
+          context = renames.markers[path]?
+          marker = if context
+                     collision_markers(repository, local, remote, context, max_object_bytes, check)
+                   else
+                     markers(repository, local, remote, marker_label, max_object_bytes, check,
+                       ours_label: marker_ours, marker_size: marker_size)
+                   end
+          if marker
             transferred += marker.bytesize
             raise Error.new("#{operation} total byte budget exceeded") if transferred > max_total_bytes
             writes << Checkout::Write.new(path, local.not_nil!.mode,
               ObjectId.digest("blob", marker, repository.object_format), marker)
-          elsif local.nil? && remote
-            object_kind, raw = repository.object(remote.oid, max_object_bytes) { check.try &.call }
+          elsif (retained = local || remote) && present != retained
+            object_kind, raw = repository.object(retained.oid, max_object_bytes) { check.try &.call }
             raise Error.new("#{operation} conflict target is not a blob") unless object_kind == "blob"
             transferred += raw.bytesize
             raise Error.new("#{operation} total byte budget exceeded") if transferred > max_total_bytes
-            writes << Checkout::Write.new(path, remote.mode, remote.oid, raw)
+            writes << Checkout::Write.new(path, retained.mode, retained.oid, raw)
           end
-        elsif local != desired
+        elsif present != desired
           if next_state = desired
             edits << Index::Put.new(path, next_state.mode, next_state.oid)
             object_kind, raw = repository.object(next_state.oid, max_object_bytes) { check.try &.call }
@@ -133,7 +148,7 @@ module Git
             transferred += raw.bytesize
             raise Error.new("#{operation} total byte budget exceeded") if transferred > max_total_bytes
             writes << Checkout::Write.new(path, next_state.mode, next_state.oid, raw)
-          elsif local_state = local
+          elsif local_state = present
             edits << Index::Remove.new(path)
             removals << {path, local_state}
           end

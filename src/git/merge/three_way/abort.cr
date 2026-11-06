@@ -16,44 +16,34 @@ module Git
       ours = Checkout.tree_files(self, ours_tree, max_object_bytes: max_object_bytes, max_files: max_entries, check: check, allow_symlinks: true)
       theirs = Checkout.tree_files(self, theirs_tree, max_object_bytes: max_object_bytes, max_files: max_entries, check: check, allow_symlinks: true)
       current = @index.entries(max_index_bytes) { check.try &.call }
-      # Never delete unrelated files staged by the caller while resolving a
-      # conflict. Such paths did not belong to this merge's source trees.
-      names = (ours.keys + theirs.keys).uniq.sort
-      raise Error.new("Git merge abort refuses unrelated staged paths") if current.any? { |entry| !names.includes?(entry.path) }
-      raise Error.new("Git merge abort path budget exceeded") if names.size > max_entries
-      Checkout.require_compatible_paths!(names, names)
-      desired = IndexRestore.source_entries(self, ours_tree, max_object_bytes: max_object_bytes,
+      manifest_admin = DescriptorPath::Directory.open(@git_dir)
+      begin
+        relocation_data = Merge::Recovery.read(manifest_admin, "CRYSTAL_MERGE_PATHS", max_index_bytes)
+      ensure
+        manifest_admin.close
+      end
+      receipt = Merge::Recovery.decode(relocation_data, ours_oid, theirs_oid,
+        @object_format, max_index_bytes, max_entries)
+      allowed = (ours.keys + theirs.keys + receipt.paths + receipt.outputs.keys).uniq
+      raise Error.new("Git merge abort refuses unrelated staged paths") if current.any? { |entry| !allowed.includes?(entry.path) }
+      Checkout.require_tree_paths!(ours.keys, "Git merge abort target")
+      view = Merge::Recovery.observe(self, current, ours, receipt,
+        max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
+      view.preflight!(@root, ours.keys, max_entries)
+      desired = IndexRestore.source_entries(self, ours_tree,
+        max_object_bytes: max_object_bytes, max_entries: max_entries, check: check)
       edits = IndexRestore.edits(current, desired, nil)
       image = edits.empty? ? nil : @index.prepare_changes(edits, max_bytes: max_index_bytes,
-        max_entries: max_entries, check: check)
+        max_entries: max_entries * 3, check: check)
       snapshot = @index.snapshot_checksum(max_index_bytes)
+      observations = view.observations
       writes = [] of Checkout::Write
-      observations = {} of String => Checkout::FileState?
       removals = [] of {String, Checkout::FileState}
-      total = 0_i64
-      names.each do |path|
+      total = view.bytes
+      observations.keys.sort.each do |path|
         check.try &.call
-        absolute = File.join(@root, path)
-        parent = @root
-        path.split('/')[0...-1].each do |part|
-          parent = File.join(parent, part)
-          raise Error.new("Git merge abort symlinked parent") if File.symlink?(parent)
-          raise Error.new("Git merge abort parent not directory") if File.exists?(parent) && !Dir.exists?(parent)
-        end
-        observed = nil.as(Checkout::FileState?)
-        if File.exists?(absolute) || File.symlink?(absolute)
-          mode, raw = if File.symlink?(absolute)
-                        {"120000", Checkout.symlink_target(@root, path, max_object_bytes)}
-                      else
-                        raise Error.new("Git merge abort refuses nonregular leaf") unless File.file?(absolute)
-                        checkout_working_regular(path, max_object_bytes) { check.try &.call }
-                      end
-          total += raw.bytesize
-          raise Error.new("Git merge abort total byte budget exceeded") if total > max_total_bytes
-          observed = Checkout::FileState.new(mode, ObjectId.digest("blob", raw, @object_format))
-        end
-        observations[path] = observed
+        observed = observations[path]
         if goal = ours[path]?
           next if goal == observed
           kind, raw = object(goal.oid, max_object_bytes) { check.try &.call }
@@ -61,10 +51,15 @@ module Git
           total += raw.bytesize
           raise Error.new("Git merge abort total byte budget exceeded") if total > max_total_bytes
           writes << Checkout::Write.new(path, goal.mode, goal.oid, raw)
-        elsif state = observed
-          removals << {path, state}
+        elsif observed_state = observed
+          removals << {path, observed_state}
         end
       end
+      write_paths = writes.map(&.path)
+      blocking_removals, trailing_removals = removals.partition do |path, _state|
+        write_paths.any? { |written| Checkout.transition_blocker?(path, written) }
+      end
+      transition_dirs = view.transition_directories(ours.keys)
       admin = DescriptorPath::Directory.open(@git_dir)
       lock = nil.as(IO::FileDescriptor?)
       started = false
@@ -75,15 +70,26 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
+          raise Error.new("Git merge abort recovery metadata changed") unless Merge::Recovery.read(admin, "CRYSTAL_MERGE_PATHS", max_index_bytes) == relocation_data
           raise Error.new("Git merge abort state changed") unless head_ref_and_oid == {branch, ours_oid} &&
                                                                   merge_state? == {branch, ours_oid, theirs_oid} &&
                                                                   @index.snapshot_checksum(max_index_bytes) == snapshot
         end
         guard.call
+        view.preflight!(@root, ours.keys, max_entries)
         if planned = image
           lock.write(planned.data.to_slice)
           lock.flush
           lock.fsync
+        end
+        blocking_removals.each do |path, previous|
+          started = true
+          Checkout.remove(@root, path, previous, format: @object_format, check: guard)
+          changed << path
+        end
+        transition_dirs.each do |directory|
+          started = true
+          Checkout.remove_empty_directory(@root, directory, check: guard)
         end
         writes.each_with_index do |write, sequence|
           started = true
@@ -91,7 +97,7 @@ module Git
             format: @object_format, check: guard)
           changed << write.path
         end
-        removals.each do |path, previous|
+        trailing_removals.each do |path, previous|
           started = true
           Checkout.remove(@root, path, previous, format: @object_format, check: guard)
           changed << path

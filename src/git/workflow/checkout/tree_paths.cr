@@ -31,9 +31,13 @@ module Git
     end
 
     protected def self.path_collision(paths : Enumerable(String)) : {String, String}?
-      sorted = paths.to_a.uniq.sort
-      sorted.each_cons(2) do |pair|
-        return {pair[0], pair[1]} if pair[1].starts_with?(pair[0] + "/")
+      leaves = paths.to_set
+      leaves.to_a.sort.each do |path|
+        parts = path.split('/')
+        (1...parts.size).each do |size|
+          prefix = parts.first(size).join('/')
+          return {prefix, path} if leaves.includes?(prefix)
+        end
       end
       nil
     end

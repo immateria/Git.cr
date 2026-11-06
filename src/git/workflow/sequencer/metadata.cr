@@ -9,7 +9,7 @@ module Git
       begin
         {"CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "MERGE_MSG", "CRYSTAL_SEQUENCER_ORIG",
          "CRYSTAL_SEQUENCER_PARENT", "CRYSTAL_SEQUENCER_AUTHOR",
-         "CRYSTAL_SEQUENCER_ALLOW_EMPTY"}.any? { |name| !!admin.stat?(name) }
+         "CRYSTAL_SEQUENCER_ALLOW_EMPTY", "CRYSTAL_SEQUENCER_PATHS"}.any? { |name| !!admin.stat?(name) }
       ensure
         admin.close
       end
@@ -31,13 +31,14 @@ module Git
     end
 
     private def sequencer_write_metadata!(admin : DescriptorPath::Directory,
-                                          state : Sequencer::State) : Nil
+                                          state : Sequencer::State, recovery_data : String = "") : Nil
       head_name = Sequencer.head_name(state.kind)
       contents = {
-        "CRYSTAL_SEQUENCER_ORIG"        => "#{state.branch || "-"}\n#{state.original_head}\n",
+        "CRYSTAL_SEQUENCER_ORIG"        => "#{state.branch || "-"}\n#{state.original_head}\n#{Merge::Recovery::STATE_VERSION}\n",
         "CRYSTAL_SEQUENCER_PARENT"      => "#{state.parent || "-"}\n",
         "CRYSTAL_SEQUENCER_AUTHOR"      => "#{state.author.to_git_header}\n",
         "CRYSTAL_SEQUENCER_ALLOW_EMPTY" => state.allow_empty ? "1\n" : "0\n",
+        "CRYSTAL_SEQUENCER_PATHS"       => recovery_data,
         "MERGE_MSG"                     => state.message,
         head_name                       => "#{state.source}\n",
       }
@@ -68,6 +69,10 @@ module Git
         else
           raise Error.new("unexpected Git sequencer head file") if admin.stat?(name)
         end
+      end
+      if admin.stat?("CRYSTAL_SEQUENCER_PATHS")
+        admin.unlink("CRYSTAL_SEQUENCER_PATHS")
+        admin.sync
       end
     end
   end

@@ -88,7 +88,7 @@ describe "P31 native Git file/directory transitions" do
       end
     end
 
-    it "P31-O04 keeps divergent #{format} file/directory conflicts fail-closed" do
+    it "P31-O04 relocates divergent #{format} file/directory conflicts and aborts" do
       GitOracle.with_repo(format: format) do |root|
         File.write(File.join(root, "node"), "base\n")
         GitOracle.run(root, "add", ".")
@@ -106,11 +106,20 @@ describe "P31 native Git file/directory transitions" do
 
         repo = Git::Repository.new(root)
         sig = Git::Signature.new("A", "a@example.test", 1234567890_i64, 0)
-        expect_raises(Git::Error, /file\/directory conflict unsupported/) do
-          repo.merge("topic", author: sig, committer: sig, message: "merge")
-        end
+        GitOracle.run(root, "merge", "--no-commit", "--no-ff", "topic", check: false).exit_code.should eq(1)
+        expected_index = GitOracle.run(root, "ls-files", "-s").stdout
+        expected_status = GitOracle.run(root, "status", "--porcelain").stdout
+        GitOracle.run(root, "merge", "--abort")
+        result = repo.merge("topic", author: sig, committer: sig, message: "merge")
+        result.conflicts.should eq(["node~HEAD"])
+        GitOracle.run(root, "ls-files", "-s").stdout.should eq(expected_index)
+        GitOracle.run(root, "status", "--porcelain").stdout.should eq(expected_status)
+        File.read(File.join(root, "node~HEAD")).should eq("ours changed\n")
+        File.read(File.join(root, "node/child")).should eq("child\n")
+        repo.merge.abort
         File.read(File.join(root, "node")).should eq("ours changed\n")
-        File.exists?(File.join(root, ".git", "MERGE_HEAD")).should be_false
+        File.exists?(File.join(root, "node~HEAD")).should be_false
+        GitOracle.run(root, "status", "--porcelain").stdout.should eq("")
       end
     end
   end

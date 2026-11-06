@@ -50,7 +50,10 @@ module Git
       Checkout.require_tree_paths!(ours.keys, "Git sequencer HEAD tree")
       Checkout.require_tree_paths!(theirs.keys, "Git sequencer incoming tree")
       Checkout.require_tree_paths!(base.keys, "Git sequencer base tree")
-      rename_plan = Merge.rename_plan(base, ours, theirs)
+      incoming_label = "#{kind.revert? ? "parent of " : ""}#{target[0, default_abbrev]} (#{source.message.lines.first? || ""})"
+      rename_plan = Merge.rename_plan(self, base, ours, theirs,
+        max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes, check: check,
+        their_label: incoming_label)
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git sequencer requires index equal to HEAD") unless Merge.index_matches_head?(current, ours)
       Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
@@ -59,6 +62,9 @@ module Git
       plan = Merge.plan_files(self, names, base, ours, theirs, rename_plan,
         marker_label: marker_label, operation: "Git sequencer",
         max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes, check: check)
+      plan = Merge.relocate_directories(self, plan, current, ours, theirs,
+        their_label: incoming_label, max_object_bytes: max_object_bytes,
+        max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
       edits, writes, conflicts = {plan.edits, plan.writes, plan.conflicts}
       final_paths = plan.final_paths(current)
       raise Error.new("Git sequencer divergent file/directory conflict unsupported") if Checkout.path_collision(final_paths)
@@ -69,6 +75,8 @@ module Git
       blocking_removals, trailing_removals = plan.partition_removals
       transition_dirs = Checkout.transition_directories(ours.keys, final_paths)
       plan.validate_symlinks!
+      recovery_data = Merge::Recovery.encode(plan.relocations, writes, old_oid, target,
+        @object_format, max_index_bytes, max_entries)
       state = Sequencer::State.new(kind, branch, old_oid, target, parent,
         operation_author, text, allow_empty)
       snapshot = @index.snapshot_checksum(max_index_bytes)
@@ -81,6 +89,9 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
+          if started && Merge::Recovery.read(admin, "CRYSTAL_SEQUENCER_PATHS", max_index_bytes) != recovery_data
+            raise Error.new("Git sequencer recovery metadata changed")
+          end
           raise Error.new("Git sequencer HEAD changed") unless head_ref_and_oid == {branch, old_oid}
           raise Error.new("Git sequencer index changed") unless @index.snapshot_checksum(max_index_bytes) == snapshot
           raise Error.new("Git sequencer state changed") if started && sequencer_state? != state
@@ -91,7 +102,7 @@ module Git
         Checkout.require_transition_destinations!(@root, ours.keys, final_paths,
           max_entries: max_entries)
         started = true
-        sequencer_write_metadata!(admin, state)
+        sequencer_write_metadata!(admin, state, recovery_data)
         guard.call
         if planned = image
           raise Error.new("Git sequencer index image diverged") unless @index.image_state(planned, max_bytes: max_index_bytes) == :before

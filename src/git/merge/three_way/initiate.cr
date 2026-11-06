@@ -1,12 +1,9 @@
 module Git
   class Repository
-    # Bounded three-way tree merge for ordinary regular files with exactly
-    # one merge base. Identical/one-sided changes are resolved; concurrent
-    # changes to the same path become Git's staged 1/2/3 conflicts. No rename
-    # detection or overlapping-line auto merge yet. Conflicts get basic text
-    # markers when safe, otherwise the ours blob stays in the worktree.
-    # A clean merge is committed with two parents. Unresolved merges keep
-    # MERGE_HEAD and must be completed or aborted explicitly.
+    # Bounded three-way tree merge with recursively combined common ancestors,
+    # exact and edited-file renames, and file/directory conflict relocation.
+    # A clean merge is committed with two parents. Conflicts retain real
+    # index stages and MERGE_HEAD for explicit continuation or abort.
     def merge(source : String, *, author : Signature, committer : Signature,
               message : String, max_history_nodes : Int32 = 16_384,
               max_object_bytes : Int32 = 8_388_608,
@@ -48,7 +45,7 @@ module Git
       target = History.resolve_commit(self, source, max_object_bytes, check)
       bases = merge_bases(old_oid, target, max_nodes: max_history_nodes,
         max_commit_bytes: max_object_bytes, check: check)
-      raise Error.new("Git three-way merge requires exactly one common ancestor") unless bases.size == 1
+      raise Error.new("Git three-way merge requires a common ancestor") if bases.empty?
       if target == old_oid || bases == [target]
         write_orig_head(old_oid)
         return Merge::Result.new(old_oid, target, bases[0], [] of String, [] of String, nil)
@@ -59,7 +56,12 @@ module Git
           max_total_bytes: max_total_bytes, max_entries: max_entries, actor: committer, check: check)
         return Merge::Result.new(old_oid, target, old_oid, fast.changed_paths, [] of String, target)
       end
-      base_oid = bases[0]
+      base_oid = if bases.size == 1
+                   bases[0]
+                 else
+                   Merge::Bases.new(self, max_history_nodes, max_object_bytes,
+                     max_total_bytes, max_entries, check).combine(old_oid, target)
+                 end
       orig_tree = read_commit(old_oid, max_bytes: max_object_bytes, check: check).tree
       theirs_tree = read_commit(target, max_bytes: max_object_bytes, check: check).tree
       base_tree = read_commit(base_oid, max_bytes: max_object_bytes, check: check).tree
@@ -71,7 +73,8 @@ module Git
       Checkout.require_tree_paths!(ours.keys, "Git ours tree")
       Checkout.require_tree_paths!(theirs.keys, "Git theirs tree")
       Checkout.require_tree_paths!(base.keys, "Git base tree")
-      rename_plan = Merge.rename_plan(base, ours, theirs)
+      rename_plan = Merge.rename_plan(self, base, ours, theirs,
+        max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes, check: check, their_label: source)
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git merge requires index equal to HEAD") unless Merge.index_matches_head?(current, ours)
       Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
@@ -79,6 +82,9 @@ module Git
       plan = Merge.plan_files(self, names, base, ours, theirs, rename_plan,
         marker_label: source, operation: "Git merge",
         max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes, check: check)
+      plan = Merge.relocate_directories(self, plan, current, ours, theirs,
+        their_label: source, max_object_bytes: max_object_bytes,
+        max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
       edits, writes, conflicts = {plan.edits, plan.writes, plan.conflicts}
       final_paths = plan.final_paths(current)
       if Checkout.path_collision(final_paths)
@@ -93,6 +99,8 @@ module Git
       # Verify that symlink targets are publishable before any MERGE_HEAD or
       # worktree mutation is attempted, rather than leaving a stranded merge.
       plan.validate_symlinks!
+      recovery_data = Merge::Recovery.encode(plan.relocations, writes, old_oid, target,
+        @object_format, max_index_bytes, max_entries)
       snapshot = @index.snapshot_checksum(max_index_bytes)
       admin = DescriptorPath::Directory.open(@git_dir)
       lock = nil.as(IO::FileDescriptor?)
@@ -103,6 +111,9 @@ module Git
         lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard = -> do
           check.try &.call
+          if started && Merge::Recovery.read(admin, "CRYSTAL_MERGE_PATHS", max_index_bytes) != recovery_data
+            raise Error.new("Git merge recovery metadata changed")
+          end
           raise Error.new("Git merge HEAD changed") unless head_ref_and_oid == {branch, old_oid}
           raise Error.new("Git merge index changed") unless @index.snapshot_checksum(max_index_bytes) == snapshot
         end
@@ -113,7 +124,7 @@ module Git
           max_entries: max_entries)
         started = true
         write_orig_head(old_oid)
-        merge_write_metadata!(admin, branch, old_oid, target, message)
+        merge_write_metadata!(admin, branch, old_oid, target, message, recovery_data)
         if planned = image
           raise Error.new("Git merge index image diverged") unless @index.image_state(planned, max_bytes: max_index_bytes) == :before
           lock.write(planned.data.to_slice)
