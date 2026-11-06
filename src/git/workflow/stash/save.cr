@@ -73,12 +73,16 @@ module Git
       index_tree = write_index_tree(max_index_bytes: max_index_bytes,
         max_tree_bytes: max_object_bytes, check: check)
       index_files = {} of String => Checkout::FileState
+      capture_index_oids = {} of String => String
       current.each do |entry|
         index_files[entry.path] = Checkout::FileState.new(entry.mode, entry.oid)
+        capture_index_oids[entry.path] = entry.oid
       end
 
+      # Collect warnings without running arbitrary user code until every saved
+      # canonical value and its exact raw predecessor have been observed.
       conversion = Conversion.new(self, config: config, max_bytes: max_object_bytes,
-        max_index_bytes: max_index_bytes, warning: warning, check: check)
+        max_index_bytes: max_index_bytes, check: check)
 
       # Git partial stash stores a complete index-shaped worktree tree and
       # overlays only the selected paths with their actual worktree state.
@@ -86,6 +90,7 @@ module Git
       # in the stash object even though cleanup is limited to selected paths.
       worktree_files = selected_paths ? index_files.dup : ({} of String => Checkout::FileState)
       observed = {} of String => Checkout::FileState
+      canonical_observed = {} of String => Checkout::FileState
       index_paths = current.map(&.path).to_set
       transferred = 0_i64
       current.each do |entry|
@@ -104,6 +109,7 @@ module Git
           written = write_blob(canonical, max_bytes: max_object_bytes.to_i64, check: check)
           raise Error.new("Git stash worktree blob identity changed") unless written == oid
           worktree_files[entry.path] = Checkout::FileState.new(state.mode, oid)
+          canonical_observed[entry.path] = worktree_files[entry.path]
           observed[entry.path] = state
         elsif selected_paths
           worktree_files.delete(entry.path)
@@ -122,6 +128,7 @@ module Git
           check: check)
         transferred += untracked_bytes
         untracked_files.each do |path, state|
+          canonical_observed[path] = state
           # A staged deletion makes a formerly tracked HEAD path untracked.
           # Git's -u stash records that leaf in both the worktree snapshot and
           # the third-parent untracked snapshot, so applying it later may
@@ -151,6 +158,8 @@ module Git
         canonical_state = Checkout::FileState.new(actual.mode, ObjectId.digest("blob", canonical, @object_format))
         raise Error.new("Git stash refuses modified worktree content excluded by staged deletion") unless canonical_state == expected
         observed[path] = actual
+        canonical_observed[path] = expected
+        capture_index_oids[path] = expected.oid
       end
 
       if selected_paths
@@ -259,6 +268,10 @@ module Git
       end
       transition_dirs = Checkout.transition_directories(observed.keys, cleanup_files.keys)
 
+      if callback = warning
+        conversion.warnings.each { |message| callback.call(message) }
+      end
+
       # Validate the existing stack before appending another Git-compatible
       # reflog entry. Malformed or mismatched external state is never extended.
       stash_log_records(max_log_bytes: max_log_bytes, max_entries: max_entries,
@@ -303,8 +316,15 @@ module Git
         # into a saved-but-not-cleaned partial operation.
         index_lock = admin.open_file("index.lock", LibC::O_WRONLY | LibC::O_CREAT | LibC::O_EXCL, 0o666)
         guard.call
+        # Re-resolve conversion sources after warning callbacks, including
+        # attributes outside selected/captured paths, using the secure reader.
+        verification_conversion = if warning && !conversion.warnings.empty?
+                                    Conversion.new(self, config: config, max_bytes: max_object_bytes,
+                                      max_index_bytes: max_index_bytes, check: check)
+                                  end
         stash_verify_worktree_snapshot!(current, observed,
-          selected_paths: selected_paths,
+          canonical: canonical_observed, index_oids: capture_index_oids,
+          conversion: verification_conversion, selected_paths: selected_paths,
           max_object_bytes: max_object_bytes, check: check)
         Checkout.require_transition_destinations!(@root, observed.keys, cleanup_files.keys,
           max_entries: max_entries)

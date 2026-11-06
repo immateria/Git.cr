@@ -221,22 +221,33 @@ module Git
 
     private def stash_verify_worktree_snapshot!(index : Array(Index::Entry),
                                                 observed : Hash(String, Checkout::FileState), *,
+                                                canonical : Hash(String, Checkout::FileState),
+                                                index_oids : Hash(String, String),
+                                                conversion : Conversion?,
                                                 selected_paths : Set(String)?,
                                                 max_object_bytes : Int32,
                                                 check : Proc(Nil)?) : Nil
       indexed = index.map(&.path).to_set
       index.each do |entry|
         next if selected_paths && !selected_paths.includes?(entry.path)
+        next if observed.has_key?(entry.path)
         leaf = stash_worktree_leaf?(entry.path, max_object_bytes,
           allow_directory_missing: false, check: check)
-        actual = leaf.try(&.[0])
-        raise Error.new("Git stash worktree changed during save") unless actual == observed[entry.path]?
+        raise Error.new("Git stash worktree changed during save") if leaf
       end
       observed.each do |path, expected_state|
-        next if indexed.includes?(path)
+        message = indexed.includes?(path) ? "Git stash worktree changed during save" : "Git stash excluded worktree path changed during save"
         leaf = stash_worktree_leaf?(path, max_object_bytes,
-          allow_directory_missing: false, check: check)
-        raise Error.new("Git stash excluded worktree path changed during save") unless leaf.try(&.[0]) == expected_state
+          allow_directory_missing: false, check: check) || raise Error.new(message)
+        state, raw = leaf
+        raise Error.new(message) unless state == expected_state
+        if conversion
+          cleaned = state.mode == "120000" ? raw : conversion.clean(path, raw, index_oid: index_oids[path]?)
+          actual = Checkout::FileState.new(state.mode, ObjectId.digest("blob", cleaned, @object_format))
+          unless actual == canonical[path]
+            raise Error.new("Git stash worktree attribute source changed during save")
+          end
+        end
       end
     end
 
