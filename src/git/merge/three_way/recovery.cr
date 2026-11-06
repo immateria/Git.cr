@@ -35,7 +35,10 @@ module Git
       def self.encode(paths : Array(String), writes : Array(Checkout::Write), ours : String, theirs : String,
                       format : ObjectId::Format, max_bytes : Int32, max_entries : Int32) : String
         fields = [ours, theirs, paths.size.to_s, writes.size.to_s] + paths
-        writes.each { |write| fields.concat([write.path, write.mode, write.oid]) }
+        writes.each do |write|
+          ObjectId.valid!(write.oid, format)
+          fields.concat([write.path, write.mode, ObjectId.digest("blob", write.data, format)])
+        end
         raw = MAGIC + fields.join('\0')
         decode(raw, ours, theirs, format, max_bytes, max_entries)
         raw
