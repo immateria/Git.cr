@@ -14,7 +14,7 @@ module Git
     # to the worktree only. Deliberately overwrites dirty tracked bytes at those
     # paths; never touches the index or HEAD and never creates an untracked
     # path. For staged restoration use the separate index API in a later slice.
-    def restore(paths : Array(String), *, source : String = "HEAD",
+    def restore(paths : Array(String), *, source : String = "HEAD", config : Config? = nil,
                 max_blob_bytes : Int32 = 8_388_608,
                 max_index_bytes : Int32 = 8_388_608,
                 max_total_bytes : Int64 = 67_108_864,
@@ -35,15 +35,33 @@ module Git
       selected = {} of String => Index::Entry
       entries.each { |entry| selected[entry.path] = entry if paths.includes?(entry.path) }
       raise Error.new("Git restore requires tracked paths") unless selected.size == paths.size
+      # A worktree-only restore uses the index's attribute files, overlaid by
+      # source attribute entries explicitly selected in this restore.
+      attribute_blobs = {} of String => String?
+      entries.each do |entry|
+        next unless File.basename(entry.path) == ".gitattributes" &&
+                    {"100644", "100755"}.includes?(entry.mode) && (entry.stage == 0 || entry.stage == 2)
+        attribute_blobs[entry.path] = entry.oid if entry.stage == 0 || !attribute_blobs.has_key?(entry.path)
+      end
+      paths.each do |path|
+        next unless File.basename(path) == ".gitattributes"
+        source_entry = desired[path]?
+        attribute_blobs[path] = source_entry && {"100644", "100755"}.includes?(source_entry.mode) ? source_entry.oid : nil
+      end
+      conversion = Conversion.new(self, config: config, attribute_blobs: attribute_blobs,
+        max_bytes: max_blob_bytes, max_index_bytes: max_index_bytes, check: check)
       writes = [] of Checkout::Write
       removes = [] of {String, Checkout::FileState}
       observed = {} of String => Checkout::FileState?
+      verified = Set(String).new
+      index_time = @index.modified_at
       total = 0_i64
       paths.each do |path|
         check.try &.call
         indexed = selected[path]
         raise Error.new("Git restore requires regular resolved index paths") unless indexed.stage == 0 &&
                                                                                     !indexed.intent && !indexed.skip_worktree && {"100644", "100755"}.includes?(indexed.mode)
+        stat_clean = @worktree.stat_unchanged?(indexed, true, index_time, verified) { check.try &.call }
         absolute = File.join(@root, path)
         parent = @root
         missing_parent = false
@@ -68,12 +86,15 @@ module Git
         end
         observed[path] = current
         if desired_entry = desired[path]?
-          next if desired_entry == current
+          next if stat_clean && desired_entry.mode == indexed.mode && desired_entry.oid == indexed.oid
           kind, bytes = @object_database.object(desired_entry.oid, max_blob_bytes) { check.try &.call }
           raise Error.new("Git restore target is not a blob") unless kind == "blob"
-          total += bytes.bytesize
+          data = conversion.checkout(path, bytes)
+          total += data.bytesize
           raise Error.new("Git restore byte budget exceeded") if total > max_total_bytes
-          writes << Checkout::Write.new(path, desired_entry.mode, desired_entry.oid, bytes)
+          output = Checkout::FileState.new(desired_entry.mode, ObjectId.digest("blob", data, @object_format))
+          next if output == current
+          writes << Checkout::Write.new(path, desired_entry.mode, desired_entry.oid, data)
         elsif old = current
           removes << {path, old}
         end

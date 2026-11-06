@@ -6,7 +6,7 @@ module Git
     # symlinks, gitlinks, sparse paths and a linked-worktree configuration.
     # Changes to worktree, ref and index are NOT an atomic Git transaction.
     protected def reset_head_hard(source : String = "HEAD", *,
-                                  log : References::LogEntry? = nil,
+                                  log : References::LogEntry? = nil, config : Config? = nil,
                                   max_object_bytes : Int32 = 8_388_608,
                                   max_index_bytes : Int32 = 8_388_608,
                                   max_total_bytes : Int64 = 67_108_864,
@@ -36,6 +36,10 @@ module Git
         max_files: max_entries, check: check)
       index = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git hard reset index entry budget exceeded") if index.size > max_entries
+      target_conversion = unless clean_only
+        Conversion.new(self, config: config, attribute_tree: target_tree,
+          max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+      end
       index.each do |entry|
         raise Error.new("Git hard reset requires an ordinary resolved index") unless entry.stage == 0 &&
                                                                                      !entry.intent && !entry.skip_worktree && !entry.assume_unchanged &&
@@ -48,14 +52,17 @@ module Git
         Checkout.require_clean!(self, index, max_blob_bytes: max_object_bytes,
           max_total_bytes: max_total_bytes, check: check)
       end
+      index_by_path = {} of String => Index::Entry
+      index.each { |entry| index_by_path[entry.path] = entry }
+      index_time = @index.modified_at
+      verified = Set(String).new
       tracked = (old.keys + index.map(&.path)).uniq
       Checkout.require_compatible_paths!(tracked, desired.keys)
       names = (tracked + desired.keys).uniq.sort
       raise Error.new("Git hard reset entry budget exceeded") if names.size > max_entries
       edits = IndexRestore.edits(index, IndexRestore.source_entries(self, target_tree,
         max_object_bytes: max_object_bytes, max_entries: max_entries, check: check), nil)
-      image = edits.empty? ? nil : @index.prepare_changes(edits,
-        max_bytes: max_index_bytes, max_entries: max_entries, check: check)
+      changed_index_paths = edits.map(&.path)
       checksum = @index.snapshot_checksum(max_index_bytes)
       observed = {} of String => Checkout::FileState?
       writes = [] of Checkout::Write
@@ -67,6 +74,8 @@ module Git
         # outside both HEAD and the index, including an ignored file.
         Checkout.require_free_destination!(@root, path) unless tracked.includes?(path)
         absolute = File.join(@root, path)
+        indexed = index_by_path[path]?
+        stat_clean = indexed ? @worktree.stat_unchanged?(indexed, true, index_time, verified) { check.try &.call } : false
         current = nil.as(Checkout::FileState?)
         if tracked.includes?(path)
           parent = @root
@@ -91,16 +100,28 @@ module Git
         end
         observed[path] = current
         if goal = desired[path]?
-          next if goal == current
+          next if stat_clean && indexed && goal.mode == indexed.mode && goal.oid == indexed.oid
+          next if clean_only && goal == current
           kind, bytes = object(goal.oid, max_object_bytes) { check.try &.call }
           raise Error.new("Git hard reset target not a blob") unless kind == "blob"
-          transferred += bytes.bytesize
+          data = target_conversion ? target_conversion.checkout(path, bytes) : bytes
+          transferred += data.bytesize
           raise Error.new("Git hard reset total byte budget exceeded") if transferred > max_total_bytes
-          writes << Checkout::Write.new(path, goal.mode, goal.oid, bytes)
+          output = Checkout::FileState.new(goal.mode, ObjectId.digest("blob", data, @object_format))
+          if !clean_only && indexed && (recorded = indexed.stat) && recorded.size != 0 &&
+             recorded.size != data.bytesize && !changed_index_paths.includes?(path)
+            # A reset can materialize different EOL bytes for the same blob.
+            # Do not retain the old size, or capture a newer unverified stat.
+            edits << Index::InvalidateStat.new(path)
+          end
+          next if output == current
+          writes << Checkout::Write.new(path, goal.mode, goal.oid, data)
         elsif actual = current
           removals << {path, actual}
         end
       end
+      image = edits.empty? ? nil : @index.prepare_changes(edits,
+        max_bytes: max_index_bytes, max_entries: max_entries, check: check)
       # The exclusive index lock serializes cooperative index changes until
       # the worktree, branch and prepared index image have been published.
       admin = DescriptorPath::Directory.open(@git_dir)
@@ -157,7 +178,7 @@ module Git
           admin.sync
         end
         Reset::Result.new(reference, previous, target, Reset::Mode::Hard,
-          edits.map(&.path), changed_paths)
+          changed_index_paths, changed_paths)
       rescue ex
         raise Reset::PartialPublication.new(ref_published, index_published, ex,
           changed_paths.dup) if worktree_started || ref_published || index_published

@@ -83,7 +83,9 @@ module Git
     # identity-checked worktree reader. Missing files and mode changes refuse.
     protected def self.require_clean!(repository : Repository, index : Array(Index::Entry), *,
                                       max_blob_bytes : Int32, max_total_bytes : Int64,
-                                      check : Proc(Nil)?, allow_symlinks : Bool = false) : Nil
+                                      check : Proc(Nil)?, allow_symlinks : Bool = false,
+                                      conversion : Conversion? = nil) : Hash(String, FileState)
+      observed = {} of String => FileState
       scanned = 0_i64
       index.each do |entry|
         check.try &.call
@@ -98,9 +100,17 @@ module Git
                     end
         scanned += raw.bytesize
         raise Error.new("Git checkout worktree scan budget exceeded") if scanned > max_total_bytes
-        oid = ObjectId.digest("blob", raw, repository.object_format)
+        raw_oid = ObjectId.digest("blob", raw, repository.object_format)
+        observed[entry.path] = FileState.new(mode, raw_oid)
+        canonical = if conversion && entry.mode != "120000"
+                      conversion.clean(entry.path, raw, index_oid: entry.oid)
+                    else
+                      raw
+                    end
+        oid = canonical == raw ? raw_oid : ObjectId.digest("blob", canonical, repository.object_format)
         raise Error.new("Git checkout refuses dirty tracked files") unless mode == entry.mode && oid == entry.oid
       end
+      observed
     end
   end
 end

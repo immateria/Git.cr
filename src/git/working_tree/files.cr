@@ -55,6 +55,7 @@ module Git
     # Symlinks are read as their target text. Without mode_sensitive the
     # index decides the executable bit of a regular file.
     protected def snapshot(entry : Index::Entry, max_bytes : Int32, mode_sensitive : Bool,
+                           *, conversion : Conversion? = nil,
                            &check : -> Nil) : {String, String, String}?
       verify_working_parents!(entry.path) { check.call }
       absolute = File.join(@root, entry.path)
@@ -64,6 +65,11 @@ module Git
         {"120000", ObjectId.digest("blob", target, @object_format), target}
       elsif File.file?(absolute)
         oid, mode, text = read_working_regular(entry.path, max_bytes) { check.call }
+        if conversion
+          indexed_oid = {"100644", "100755"}.includes?(entry.mode) ? entry.oid : nil
+          text = conversion.clean(entry.path, text, index_oid: indexed_oid)
+          oid = ObjectId.digest("blob", text, @object_format)
+        end
         mode = entry.mode if !mode_sensitive && (entry.mode == "100644" || entry.mode == "100755")
         {mode, oid, text}
       end

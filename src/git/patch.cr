@@ -84,140 +84,29 @@ module Git
       end
 
       record Setting, kind : DiffKind = DiffKind::Unspecified, driver : String? = nil
-      private record Rule, matcher : Ignore::Rule, tokens : Array(String)
 
-      @dir_cache = {} of String => Array(Rule)
-      @accumulated = {} of String => Array(Rule)
-      @info_rules : Array(Rule)
-      @macros = {"binary" => ["-diff", "-merge", "-text"]}
-
-      def initialize(@repository : Repository, @max_bytes : Int32)
-        if root = @repository.work_tree
-          # Load root .gitattributes first so any top-level [attr] macros are known.
-          @dir_cache[""] = load_file(::File.join(root, ".gitattributes"), "", allow_macros: true)
-        end
-        @info_rules = load_file(::File.join(@repository.git_dir, "info", "attributes"), "", allow_macros: true)
+      def initialize(repository : Repository, max_bytes : Int32, *,
+                     config : Config? = nil, check : Proc(Nil)? = nil)
+        @attributes = Git::Attributes.new(repository, config: config,
+          max_bytes: max_bytes, check: check)
       end
 
       def resolve(path : String) : Setting
-        slash = path.to_slice.rindex('/'.ord.to_u8)
-        dir = slash ? path.byte_slice(0, slash) : ""
-        name = slash ? path.byte_slice(slash + 1) : path
-        rules = rules_through(dir) + @info_rules
-        setting = Setting.new
-        rules.each do |rule|
-          tail = if rule.matcher.base.empty?
-                   path
-                 elsif path.starts_with?(rule.matcher.base + "/")
-                   path.byte_slice(rule.matcher.base.bytesize + 1)
-                 else
-                   next
-                 end
-          next unless rule.matcher.matches?(rule.matcher.basename_only ? name : tail)
-          rule.tokens.each do |token|
-            setting = apply_token(setting, token)
+        value = @attributes.resolve(path, "diff")
+        case value.kind
+        when Git::Attributes::Kind::Set
+          Setting.new(DiffKind::Text)
+        when Git::Attributes::Kind::Unset
+          Setting.new(DiffKind::Binary)
+        when Git::Attributes::Kind::String
+          case driver = value.text
+          when "true"  then Setting.new(DiffKind::Text)
+          when "false" then Setting.new(DiffKind::Binary)
+          when "", nil then Setting.new
+          else              Setting.new(DiffKind::Driver, driver)
           end
-        end
-        setting
-      end
-
-      private def apply_token(current : Setting, token : String) : Setting
-        if token == "-diff" || token == "diff=false"
-          Setting.new(DiffKind::Binary, nil)
-        elsif token == "diff" || token == "diff=true"
-          Setting.new(DiffKind::Text, nil)
-        elsif token == "!diff"
-          Setting.new(DiffKind::Unspecified, nil)
-        elsif token.starts_with?("diff=")
-          driver = token.byte_slice(5)
-          driver.empty? ? current : Setting.new(DiffKind::Driver, driver)
-        elsif expanded = @macros[token]?
-          expanded.reduce(current) { |acc, sub| apply_token(acc, sub) }
         else
-          current
-        end
-      end
-
-      private def rules_through(directory : String) : Array(Rule)
-        @accumulated[directory] ||= begin
-          if directory.empty?
-            rules_for("")
-          else
-            slash = directory.to_slice.rindex('/'.ord.to_u8)
-            rules_through(slash ? directory.byte_slice(0, slash) : "") + rules_for(directory)
-          end
-        end
-      end
-
-      private def rules_for(directory : String) : Array(Rule)
-        @dir_cache[directory] ||= begin
-          if root = @repository.work_tree
-            relative = directory.empty? ? ".gitattributes" : "#{directory}/.gitattributes"
-            load_file(::File.join(root, relative), directory, allow_macros: directory.empty?)
-          else
-            [] of Rule
-          end
-        end
-      end
-
-      private def load_file(full_path : String, base : String, *, allow_macros : Bool) : Array(Rule)
-        return [] of Rule unless ::File.exists?(full_path) && !::File.symlink?(full_path) && ::File.file?(full_path)
-        return [] of Rule if ::File.size(full_path) > @max_bytes
-        data = ::File.read(full_path)
-        return [] of Rule unless data.valid_encoding? && !data.includes?('\0')
-        rules = [] of Rule
-        data.each_line do |raw|
-          line = raw.chomp.strip
-          next if line.empty? || line.starts_with?('#')
-          pattern, rest = split_pattern(line)
-          next unless pattern && !rest.empty?
-          tokens = rest.split
-          if allow_macros && pattern.starts_with?("[attr]")
-            macro_name = pattern.byte_slice(6)
-            @macros[macro_name] = tokens unless macro_name.empty?
-            next
-          end
-          next if pattern.starts_with?('!') || pattern.ends_with?('/')
-          next if pattern.bytesize > 256
-          anchored = pattern.starts_with?('/')
-          pattern = pattern.byte_slice(1) if anchored
-          next if pattern.empty?
-          basename_only = !anchored && !pattern.includes?('/')
-          source, compiled_tokens = begin
-            Ignore.compile_pattern(pattern)
-          rescue Error
-            next
-          end
-          special = ->(text : String) { text.each_byte.any? { |byte| {'*'.ord, '?'.ord, '['.ord, '\\'.ord}.includes?(byte) } }
-          literal = special.call(pattern) ? nil : pattern
-          tail = pattern.byte_slice(1)
-          suffix = basename_only && pattern.starts_with?('*') && !tail.empty? && !special.call(tail) ? tail : nil
-          matcher = Ignore::Rule.new(Regex.new(source), false, false, basename_only, base, literal, suffix, compiled_tokens)
-          rules << Rule.new(matcher, tokens)
-        end
-        rules
-      end
-
-      private def split_pattern(line : String) : {String?, String}
-        if line.starts_with?('"')
-          out = IO::Memory.new
-          i = 1
-          while i < line.bytesize
-            ch = line.byte_at(i)
-            if ch == '"'.ord
-              return {out.to_s, line.byte_slice(i + 1).strip}
-            elsif ch == '\\'.ord && i + 1 < line.bytesize
-              i += 1
-              out.write_byte(line.byte_at(i))
-            else
-              out.write_byte(ch)
-            end
-            i += 1
-          end
-          {nil, ""}
-        else
-          parts = line.split(/\s+/, 2)
-          parts.size == 2 ? {parts[0], parts[1]} : {nil, ""}
+          Setting.new
         end
       end
     end
@@ -231,7 +120,7 @@ module Git
                      @config : Config?, @max_bytes : Int32, @max_lines : Int32,
                      @check : Proc(Nil)?)
         @abbreviations = {} of String => String
-        @attr_matcher = @attributes ? Attributes.new(@repository, @max_bytes) : nil
+        @attr_matcher = @attributes ? Attributes.new(@repository, @max_bytes, config: @config, check: @check) : nil
         @custom_drivers = {} of String => Array(TextDiff::FuncRule)?
       end
 
@@ -389,7 +278,8 @@ module Git
                   require_worktree!
                   base = old ? flatten_tree(diff_tree(old, max_bytes), paths, max_bytes, check) : index_snapshot(paths, check)
                   mode_sensitive = config.try(&.boolean?("core.filemode")) != false
-                  TreeDiff.compare_flat(base, worktree_snapshot(paths, mode_sensitive, max_bytes, overrides, check),
+                  conversion = Conversion.new(self, config: config, max_bytes: max_bytes, check: check)
+                  TreeDiff.compare_flat(base, worktree_snapshot(paths, mode_sensitive, max_bytes, overrides, check, conversion),
                     renames: renames, check: check)
                 end
       raise Error.new("Git diff change budget exceeded") if changes.size > max_changes
@@ -442,7 +332,8 @@ module Git
     end
 
     private def worktree_snapshot(paths : Array(String), mode_sensitive : Bool, max_bytes : Int32,
-                                  overrides : Hash(String, String), check : Proc(Nil)?) : Hash(String, {String, String})
+                                  overrides : Hash(String, String), check : Proc(Nil)?,
+                                  conversion : Conversion) : Hash(String, {String, String})
       snapshot = {} of String => {String, String}
       index_time = @index.modified_at
       verified = Set(String).new
@@ -459,7 +350,7 @@ module Git
           snapshot[entry.path] = {entry.mode, entry.oid} if Dir.exists?(directory) && !File.symlink?(directory)
           next
         end
-        found = @worktree.snapshot(entry, max_bytes, mode_sensitive) { check.try &.call }
+        found = @worktree.snapshot(entry, max_bytes, mode_sensitive, conversion: conversion) { check.try &.call }
         next unless found
         mode, oid, data = found
         snapshot[entry.path] = {mode, oid}

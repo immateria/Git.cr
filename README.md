@@ -78,6 +78,50 @@ Revision arguments use Git's familiar grammar: abbreviated IDs, `HEAD~2`,
 `main^`, `@{upstream}`, reflog selectors, `main:path/to/file`, and ranges
 such as `main..topic` or `main...topic` where the operation accepts ranges.
 
+## Text and line endings
+
+Regular-file staging, working-tree status and diffs apply native
+`.gitattributes` `text`/`eol` rules and `core.autocrlf`. For example:
+
+```gitattributes
+*.txt text eol=crlf
+*.bin -text
+```
+
+`stage` and `stage_file` store LF-normalized text blobs without rewriting
+the working file. `switch`, `restore`, hard reset and clone checkout
+materialize the configured line endings while keeping canonical blob IDs
+in the index. An unchanged file is not rewritten solely because its
+attributes change.
+
+Rules support root and nested `.gitattributes`, the index fallback when a
+working attribute file is absent, `info/attributes`, macros and explicit
+`core.attributesFile` configuration. Checkout uses its selected attribute
+source; restore uses index attributes with explicitly restored attribute
+files overlaid. `text=auto` preserves binary content and respects existing
+indexed CRLF blobs; explicit `text` converts CRLF pairs without binary
+detection. Symlink targets and raw `stage_blob`/object-writing APIs are
+never converted.
+
+Repository-local conversion configuration is used by default. A supplied `config:`
+is authoritative; HOME, system and global configuration are not imported
+implicitly. `core.eol` and `core.safecrlf` are supported; unsafe staging
+raises before index publication. Conversion retains byte limits and
+cancellation checks.
+
+Pass a `warning:` callback (`Proc(String, Nil)`) to `stage` or `stage_file` to
+receive `core.safecrlf=warn` diagnostics. Each distinct diagnostic is delivered
+once per operation, before index publication. Callback exceptions propagate;
+the library does not write warnings to standard error.
+
+Worktree-only restore preserves the index, including its cached stat size.
+Like `git restore --source=HEAD`, restoring different EOL bytes can therefore
+leave a stat-size change in Git's status even when the canonical diff is empty.
+
+Merge, replay and stash still use their existing raw worktree preflights.
+External clean/smudge filters, `ident`, working-tree encoding conversion,
+and complete attribute-pattern compatibility remain separate work.
+
 ## Line blame
 
 Blame a committed file at HEAD or an explicit revision:
@@ -301,7 +345,7 @@ Git is an oracle for these tests, not a requirement for native repository
 operations. Remote specs also run `git http-backend`, `git daemon`,
 `git upload-pack` and `git receive-pack` on loopback addresses.
 
-The latest full verification, on **2026-11-06**, passed **1,174 examples** on
+The latest full verification, on **2026-11-06**, passed **1,254 examples** on
 Crystal **1.13.0** and **1.22.2**, with Git **2.47.3**, on Linux x86-64.
 Earlier runs covered macOS 15.4.1 arm64 and Linux 7.0 arm64 with 640 examples
 (2026-11-02/03), and Linux x86-64 with 681 examples on Crystal 1.13.3, 1.21.1

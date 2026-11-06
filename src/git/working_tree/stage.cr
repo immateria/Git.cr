@@ -1,9 +1,12 @@
 module Git
   class WorkingTree
-    # Explicit read of a single regular worktree file for staging. Does not
-    # interpret attributes or run clean filters; those remain Git parity work.
-    protected def stage_content(path : String, max_bytes : Int32, &check : -> Nil) : {String, String}
+    # Raw identity-checked read unless a caller supplies native conversion.
+    # Publication receipts continue to observe the actual worktree bytes.
+    protected def stage_content(path : String, max_bytes : Int32, *, conversion : Conversion? = nil,
+                                index_oid : String? = nil, safe : Bool = false,
+                                &check : -> Nil) : {String, String}
       oid, mode, bytes = read_working_regular(path, max_bytes) { check.call }
+      bytes = conversion.clean(path, bytes, index_oid: index_oid, safe: safe) if conversion
       {mode, bytes}
     end
   end
@@ -44,20 +47,31 @@ module Git
   class Repository
     # Native subset of git add -- <path>: explicit, existing regular files
     # and symlinks. A symlink's target bytes are staged without following it.
-    # Ignore, attributes and pathspec expansion remain separate work.
+    # Native text/EOL attributes apply to regular files. External filters and
+    # pathspec expansion remain separate work.
+    # The optional warning callback receives safecrlf=warn diagnostics before
+    # index publication; callback exceptions propagate without staging.
     def stage_file(path : String, *, max_bytes : Int32 = 8_388_608,
                    max_index_bytes : Int32 = 8_388_608,
+                   config : Config? = nil,
+                   warning : Proc(String, Nil)? = nil,
                    check : Proc(Nil)? = nil) : String
       require_worktree!
       PathBytes.validate_relative!(path, max_depth: Metadata::MAX_DEPTH)
+      conversion = Conversion.new(self, config: config, max_bytes: max_bytes,
+        max_index_bytes: max_index_bytes, warning: warning, check: check)
+      existing = @index.entries(max_index_bytes) { check.try &.call }.find { |entry| entry.path == path && entry.stage == 0 && {"100644", "100755"}.includes?(entry.mode) }
       full = File.join(@root, path)
       mode, bytes = if File.symlink?(full)
                       {"120000", Checkout.symlink_target(@root, path, max_bytes)}
                     else
-                      @worktree.stage_content(path, max_bytes) { check.try &.call }
+                      @worktree.stage_content(path, max_bytes, conversion: conversion,
+                        index_oid: existing.try(&.oid), safe: true) { check.try &.call }
                     end
       oid = write_blob(bytes, max_bytes: max_bytes.to_i64, check: check)
-      stat = Index.stat_for(full, mode)
+      # A warning callback may replace the working bytes after the read.
+      # Never pair its new stat with the content read before the callback.
+      stat = warning && !conversion.warnings.empty? ? nil : Index.stat_for(full, mode)
       @index.stage_entry(path, mode, oid, stat: stat, max_bytes: max_index_bytes, check: check)
       oid
     end
@@ -71,9 +85,12 @@ module Git
     # Staging::PathspecMismatch, both before anything is written. Submodules
     # are left alone. core.filemode comes from config. Returns the sorted
     # paths whose index entries changed.
+    # With warning:, distinct safecrlf=warn diagnostics are reported once
+    # per operation before index publication. Callback exceptions propagate.
     def stage(paths : Array(String)? = nil, *, tracked_only : Bool = false,
               max_bytes : Int32 = 8_388_608, max_index_bytes : Int32 = 8_388_608,
               max_paths : Int32 = 10_000, config : Config? = nil,
+              warning : Proc(String, Nil)? = nil,
               check : Proc(Nil)? = nil) : Array(String)
       require_worktree!
       raise ArgumentError.new("invalid Git stage budgets") if max_bytes < 1 || max_index_bytes < 128 || max_paths < 1
@@ -83,13 +100,16 @@ module Git
         specs = given.map { |raw| Staging.pathspec(raw) }.uniq
       end
       whole = specs.includes?("")
+      selected_path = ->(path : String) { specs.any? { |spec| Staging.covers?(spec, path) } }
       allowed = nil.as(Proc(String, Bool)?)
       unless whole
         allowed = ->(path : String) do
-          File.basename(path) == ".gitignore" || specs.any? { |spec| Staging.covers?(spec, path) || spec.starts_with?(path + "/") }
+          File.basename(path) == ".gitignore" || selected_path.call(path) || specs.any? { |spec| spec.starts_with?(path + "/") }
         end
       end
       mode_sensitive = config.try(&.boolean?("core.filemode")) != false
+      conversion = Conversion.new(self, config: config, max_bytes: max_bytes,
+        max_index_bytes: max_index_bytes, warning: warning, check: check)
       budget = {max_bytes, max_index_bytes}.max
       index = @index.entries(budget) { check.try &.call }
       by_path = {} of String => Array(Index::Entry)
@@ -110,17 +130,23 @@ module Git
         raise Staging::IgnoredPaths.new(ignored.sort!) unless ignored.empty?
       end
       found, truncated, _ = @worktree.changes(budget, max_paths,
-        include_untracked: !tracked_only, allowed_path: allowed, config: config) { check.try &.call }
+        include_untracked: !tracked_only, allowed_path: allowed, selected_path: selected_path, config: config,
+        conversion: conversion, safe_conversion: true, include_stat_dirty: true) { check.try &.call }
       raise Error.new("Git stage path budget exceeded") if truncated
       embedded = {} of String => Bool
       edits = {} of String => Index::Edit
       found.each do |change|
         check.try &.call
         path = change.path
-        next if edits.has_key?(path) || specs.none? { |spec| Staging.covers?(spec, path) }
+        next if edits.has_key?(path) || !selected_path.call(path)
         next if gitlinks.any? { |link| Staging.covers?(link, path) }
         existing = by_path[path]?
+        indexed = existing.try { |entries| entries.find { |entry| entry.stage == 0 && {"100644", "100755"}.includes?(entry.mode) } }
         status = change.status
+        if status == "stat_dirty"
+          edits[path] = Index::InvalidateStat.new(path)
+          next
+        end
         next if status == "untracked" && embedded_repository?(path, embedded)
         full = File.join(@root, path)
         symlink = File.symlink?(full)
@@ -132,7 +158,8 @@ module Git
           mode, bytes = if symlink
                           {"120000", Checkout.symlink_target(@root, path, max_bytes)}
                         else
-                          worktree_mode, content = @worktree.stage_content(path, max_bytes) { check.try &.call }
+                          worktree_mode, content = @worktree.stage_content(path, max_bytes,
+                            conversion: conversion, index_oid: indexed.try(&.oid), safe: true) { check.try &.call }
                           unless mode_sensitive
                             kept = existing.try(&.first?)
                             worktree_mode = kept && {"100644", "100755"}.includes?(kept.mode) ? kept.mode : "100644"
@@ -142,14 +169,26 @@ module Git
           oid = write_blob(bytes, max_bytes: max_bytes.to_i64, check: check)
           unchanged = existing && existing.size == 1 && existing[0].stage == 0 &&
                       existing[0].mode == mode && existing[0].oid == oid
-          edits[path] = Index::Put.new(path, mode, oid, Index.stat_for(full, mode)) unless unchanged
+          if unchanged
+            edits[path] = Index::InvalidateStat.new(path) if existing.try(&.first?).try(&.stat)
+          else
+            edits[path] = Index::Put.new(path, mode, oid, Index.stat_for(full, mode))
+          end
         end
       end
       return [] of String if edits.empty?
-      image = @index.prepare_changes(edits.values, max_bytes: max_index_bytes,
+      changes = edits.values
+      if warning && !conversion.warnings.empty?
+        # A later warning can edit any earlier staged file as well. Discard
+        # every new cache record from this operation, not only the last one.
+        changes.map! do |edit|
+          edit.is_a?(Index::Put) ? Index::Put.new(edit.path, edit.mode, edit.oid).as(Index::Edit) : edit
+        end
+      end
+      image = @index.prepare_changes(changes, max_bytes: max_index_bytes,
         max_entries: @max_search_entries, check: check)
       @index.publish_image(image, max_bytes: max_index_bytes, check: check)
-      edits.keys.sort!
+      edits.values.reject { |edit| edit.is_a?(Index::InvalidateStat) }.map(&.path).sort!
     end
 
     # Whether a directory above path holds its own .git (an embedded

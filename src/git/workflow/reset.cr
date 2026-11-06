@@ -35,6 +35,7 @@ module Git
     # "reset: moving to <source>". Merge-in-progress state is refused.
     def reset(source : String = "HEAD", *, mode : Reset::Mode = Reset::Mode::Mixed,
               actor : Signature? = nil,
+              config : Config? = nil,
               max_object_bytes : Int32 = 8_388_608,
               max_index_bytes : Int32 = 8_388_608,
               max_total_bytes : Int64 = 67_108_864,
@@ -42,7 +43,7 @@ module Git
               check : Proc(Nil)? = nil) : Reset::Result
       log = actor.try { |who| References::LogEntry.new(who, "reset: moving to #{source}") }
       if mode.hard?
-        return reset_head_hard(source, log: log, max_object_bytes: max_object_bytes,
+        return reset_head_hard(source, log: log, config: config, max_object_bytes: max_object_bytes,
           max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
           max_entries: max_entries, check: check)
       end

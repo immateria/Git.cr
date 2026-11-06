@@ -29,7 +29,10 @@ module Git
     # untracked paths without following symlinked directories. Note that this
     # is a bounded snapshot-like observation, not an atomic filesystem view.
     protected def changes(max_bytes : Int32, limit : Int32, *, include_untracked : Bool = true,
-                          allowed_path : Proc(String, Bool)? = nil, config : Config? = nil,
+                          allowed_path : Proc(String, Bool)? = nil,
+                          selected_path : Proc(String, Bool)? = nil, config : Config? = nil,
+                          conversion : Conversion? = nil, safe_conversion : Bool = false,
+                          include_stat_dirty : Bool = false,
                           &check : -> Nil) : {Array(Change), Bool, Int32}
       # The caller supplies an explicitly resolved Git config. Do not load
       # ambient/home configuration or follow arbitrary external paths here.
@@ -45,6 +48,9 @@ module Git
         check.call
         next if allowed_path && !allowed_path.call(entry.path)
         tracked.add(entry.path)
+        # Ignore files may be admitted for traversal without being selected
+        # for staging. Do not read or convert their tracked content here.
+        next if selected_path && !selected_path.call(entry.path)
         if entry.stage != 0
           changes << Change.new(entry.path, "unmerged", entry.oid, nil)
           next
@@ -92,8 +98,18 @@ module Git
         raise Error.new("Git working tree scan budget exceeded") if remaining < 0
         oid, mode, data = read_working_regular(entry.path, {max_bytes.to_i64, remaining}.min.to_i) { check.call }
         bytes_scanned += data.bytesize
+        if conversion
+          indexed_oid = {"100644", "100755"}.includes?(entry.mode) ? entry.oid : nil
+          canonical = conversion.clean(entry.path, data, index_oid: indexed_oid, safe: safe_conversion)
+          oid = ObjectId.digest("blob", canonical, @object_format)
+        end
         if oid != entry.oid || (mode_sensitive && (entry.mode == "100755") != (mode == "100755")) || entry.mode == "120000"
           changes << Change.new(entry.path, "modified", entry.oid, oid)
+        elsif include_stat_dirty && (recorded = entry.stat) && recorded.size != 0 && recorded.size != data.bytesize
+          # Staging can invalidate stale stat data even when conversion
+          # leaves the indexed object unchanged. Only a stale nonzero size
+          # needs this: Git rehashes other stat differences on its own.
+          changes << Change.new(entry.path, "stat_dirty", entry.oid, oid)
         end
       end
       ignored_count = 0
@@ -125,11 +141,11 @@ module Git
               # listed as itself ("nested/"), as Git lists both.
               next if submodules.includes?(relative)
               if File.exists?(File.join(full, ".git"))
-                changes << Change.new(relative + "/", "untracked", nil, nil)
+                changes << Change.new(relative + "/", "untracked", nil, nil) unless selected_path && !selected_path.call(relative)
                 next
               end
               queue << {relative, depth + 1}
-            elsif !tracked.includes?(relative)
+            elsif !tracked.includes?(relative) && (!selected_path || selected_path.call(relative))
               changes << Change.new(relative, "untracked", nil, nil)
             end
           end
@@ -173,9 +189,10 @@ module Git
     record FileComparison, path : String, old_oid : String, new_oid : String?, old_mode : String,
       new_mode : String?, old_text : String, new_text : String
 
-    # Compare one indexed regular file with its raw working-tree bytes. No
-    # Git filters or executables are consulted. Host authorization is separate.
+    # Compare one indexed regular file with its canonical working-tree bytes.
+    # Native text/EOL conversion is optional; external filters are not invoked.
     protected def file_comparison(path : String, max_bytes : Int32, *, config : Config? = nil,
+                                  conversion : Conversion? = nil,
                                   &check : -> Nil) : FileComparison?
       mode_sensitive = config.try(&.boolean?("core.filemode")) != false
       validate_index_path!(path)
@@ -195,6 +212,10 @@ module Git
         raise Error.new("Git working file is a symlink")
       elsif File.exists?(absolute)
         new_oid, new_mode, new_text = read_working_regular(path, max_bytes) { check.call }
+        if conversion
+          new_text = conversion.clean(path, new_text, index_oid: entry.oid)
+          new_oid = ObjectId.digest("blob", new_text, @object_format)
+        end
         raise Error.new("Git binary working content cannot be diffed") unless new_text.valid_encoding? && !new_text.includes?('\0')
       end
       check.call
@@ -215,9 +236,10 @@ module Git
                         allowed_path : Proc(String, Bool)? = nil, config : Config? = nil,
                         check : Proc(Nil)? = nil) : WorkingTree::ChangeList
       require_worktree!
+      conversion = Conversion.new(self, config: config, max_bytes: max_bytes, check: check)
       changes, truncated, ignored = @worktree.changes(max_bytes, limit,
         include_untracked: include_untracked, allowed_path: allowed_path,
-        config: config) { check.try &.call }
+        config: config, conversion: conversion) { check.try &.call }
       WorkingTree::ChangeList.new(changes, truncated, ignored)
     end
 
@@ -226,7 +248,8 @@ module Git
     def working_file(path : String, *, max_bytes : Int32 = 8_388_608, config : Config? = nil,
                      check : Proc(Nil)? = nil) : WorkingTree::FileComparison?
       require_worktree!
-      @worktree.file_comparison(path, max_bytes, config: config) { check.try &.call }
+      conversion = Conversion.new(self, config: config, max_bytes: max_bytes, check: check)
+      @worktree.file_comparison(path, max_bytes, config: config, conversion: conversion) { check.try &.call }
     end
   end
 end
