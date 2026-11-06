@@ -111,6 +111,7 @@ module Git
           "#{state.kind}:#{state.original_head}:#{state.source}",
           {} of String => Checkout::FileState, raw_original,
           max_bytes: max_index_bytes, max_entries: max_entries)
+        sequencer_mark_restoring!(admin, state)
         restoration_persisted = true
         guard.call
         blocking_removals.each do |path, previous|

@@ -94,5 +94,15 @@ module Git
     private def rebase_dynamic_text(state : Rebase::State) : String
       "next #{state.next_index}\nexpected #{state.expected_head}\nkeep-empty #{state.keep_empty ? 1 : 0}\n"
     end
+
+    private def rebase_mark_restoring!(directory : DescriptorPath::Directory, state : Rebase::State) : Nil
+      raise Error.new("Git rebase state changed") unless rebase_state? == state
+      replay_require_recovery!(directory, "worktree-restore")
+      before = rebase_read_file!(directory, "state", 4_096)
+      plain = rebase_dynamic_text(state)
+      after = plain + "#{Sequencer::RESTORING}\n"
+      raise Error.new("Git rebase dynamic state changed") unless before == plain || before == after
+      replay_replace_metadata!(directory, "state", before, after)
+    end
   end
 end

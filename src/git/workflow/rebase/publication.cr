@@ -1,4 +1,19 @@
 module Git
+  struct Rebase
+    # :nodoc:
+    # Prepared without publication so initial onto expansion is checked before
+    # rebase state or ORIG_HEAD can become visible.
+    record MovePlan, state : State, from_oid : String, to_oid : String, restore : Bool,
+      observed_head : String?, old : Hash(String, Checkout::FileState),
+      desired : Hash(String, Checkout::FileState), current : Array(Index::Entry),
+      conversion : Conversion, view : Merge::Recovery::View?,
+      observations : Hash(String, Checkout::FileState?), writes : Array(Checkout::Write),
+      image : Index::Image?, blocking_removes : Array(String), trailing_removes : Array(String),
+      transition_dirs : Array(String), checksum : String?, raw_old : Hash(String, Checkout::FileState),
+      raw_desired : Hash(String, Checkout::FileState), restoration_data : String?,
+      restoration_persisted : Bool
+  end
+
   class Repository
     private def rebase_move_branch!(state : Rebase::State, from_oid : String, to_oid : String, *,
                                     log : References::LogEntry,
@@ -6,7 +21,20 @@ module Git
                                     max_total_bytes : Int64, max_entries : Int32,
                                     check : Proc(Nil)?, config : Config, restore : Bool = false) : Array(String)
       return [] of String if from_oid == to_oid && !restore
-      raise Error.new("Git rebase move state changed") unless rebase_state? == state
+      plan = rebase_prepare_move(state, from_oid, to_oid, max_object_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
+        max_entries: max_entries, check: check, config: config, restore: restore)
+      rebase_publish_move!(plan, log: log, max_object_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
+        max_entries: max_entries, check: check)
+    end
+
+    private def rebase_prepare_move(state : Rebase::State, from_oid : String, to_oid : String, *,
+                                    max_object_bytes : Int32, max_index_bytes : Int32,
+                                    max_total_bytes : Int64, max_entries : Int32,
+                                    check : Proc(Nil)?, config : Config, restore : Bool = false,
+                                    require_state : Bool = true) : Rebase::MovePlan
+      raise Error.new("Git rebase move state changed") unless rebase_state? == (require_state ? state : nil)
       branch, observed_head = head_ref_and_oid
       raise Error.new("Git rebase move HEAD changed") unless branch == state.branch &&
                                                              (observed_head == from_oid || (restore && observed_head == to_oid))
@@ -114,6 +142,27 @@ module Git
         write_paths.any? { |written| Checkout.transition_blocker?(path, written) }
       end
       transition_dirs = view ? view.transition_directories(desired.keys) : Checkout.transition_directories(old.keys, desired.keys)
+      check.try &.call
+      raise Error.new("Git rebase move state changed") unless rebase_state? == (require_state ? state : nil)
+      raise Error.new("Git rebase move HEAD changed") unless head_ref_and_oid == {state.branch, observed_head}
+      raise Error.new("Git rebase move index changed") unless @index.snapshot_checksum(max_index_bytes) == checksum
+      Rebase::MovePlan.new(state, from_oid, to_oid, restore, observed_head, old, desired,
+        current, conversion, view, observations, writes, image, blocking_removes,
+        trailing_removes, transition_dirs, checksum, raw_old, raw_desired,
+        restoration_data, restoration_persisted)
+    end
+
+    private def rebase_publish_move!(plan : Rebase::MovePlan, *, log : References::LogEntry,
+                                     max_object_bytes : Int32, max_index_bytes : Int32,
+                                     max_total_bytes : Int64, max_entries : Int32,
+                                     check : Proc(Nil)?) : Array(String)
+      state, from_oid, to_oid, restore = {plan.state, plan.from_oid, plan.to_oid, plan.restore}
+      observed_head, old, desired, current = {plan.observed_head, plan.old, plan.desired, plan.current}
+      conversion, view, observations, writes = {plan.conversion, plan.view, plan.observations, plan.writes}
+      image, blocking_removes, trailing_removes = {plan.image, plan.blocking_removes, plan.trailing_removes}
+      transition_dirs, checksum = {plan.transition_dirs, plan.checksum}
+      raw_old, raw_desired = {plan.raw_old, plan.raw_desired}
+      restoration_data, restoration_persisted = {plan.restoration_data, plan.restoration_persisted}
       admin = DescriptorPath::Directory.open(@git_dir)
       index_lock = nil.as(IO::FileDescriptor?)
       started = false
@@ -162,6 +211,7 @@ module Git
             replay_recovery!(child.not_nil!, "worktree-restore",
               "#{state.branch}:#{state.original_head}:#{state.onto}:#{state.next_index}:#{from_oid}:#{to_oid}",
               raw_old, raw_desired, max_bytes: max_index_bytes, max_entries: max_entries)
+            rebase_mark_restoring!(child.not_nil!, state)
             restoration_persisted = true
           ensure
             child.try &.close

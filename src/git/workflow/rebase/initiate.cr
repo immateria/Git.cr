@@ -48,11 +48,17 @@ module Git
       end
       state = Rebase::State.new(branch, original_head, upstream_oid, onto_oid,
         todo, 0, onto_oid, keep_empty)
+      onto_plan = if original_head != onto_oid
+                    rebase_prepare_move(state, original_head, onto_oid, config: config,
+                      max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
+                      max_total_bytes: max_total_bytes, max_entries: max_entries,
+                      check: check, require_state: false)
+                  end
       rebase_write_initial_state!(state)
       write_orig_head(original_head)
-      if original_head != onto_oid
+      if onto_plan
         begin
-          rebase_move_branch!(state, original_head, onto_oid, config: config,
+          rebase_publish_move!(onto_plan,
             log: References::LogEntry.new(committer, "rebase (start): checkout #{onto || upstream}"),
             max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
             max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
@@ -98,10 +104,12 @@ module Git
         end
         raise Error.new("Git rebase todo budget exceeded") if todo.size > 512
         dynamic = rebase_read_file!(child, "state", 4_096).lines.map(&.strip)
-        raise Error.new("Git rebase dynamic state invalid") unless dynamic.size == 3 &&
+        restoring = dynamic.size == 4 && dynamic[3] == Sequencer::RESTORING
+        raise Error.new("Git rebase dynamic state invalid") unless (dynamic.size == 3 || restoring) &&
                                                                    dynamic[0].starts_with?("next ") &&
                                                                    dynamic[1].starts_with?("expected ") &&
                                                                    dynamic[2].starts_with?("keep-empty ")
+        replay_require_recovery!(child, "worktree-restore") if restoring
         next_index = dynamic[0].byte_slice(5).to_i?
         raise Error.new("Git rebase next index invalid") unless next_index && next_index >= 0 && next_index <= todo.size
         expected = ObjectId.valid!(dynamic[1].byte_slice(9), @object_format)

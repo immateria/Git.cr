@@ -4,6 +4,9 @@ module Git
   # sequencer, while CHERRY_PICK_HEAD / REVERT_HEAD remain compatible with the
   # standard Git repository state model.
   struct Sequencer
+    RAW_RECOVERY_MAGIC = "\0git-replay-raw-v1\0"
+    RESTORING          = "restoring raw-v1"
+
     enum Kind
       CherryPick
       Revert
