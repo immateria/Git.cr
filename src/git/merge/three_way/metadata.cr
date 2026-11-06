@@ -10,7 +10,7 @@ module Git
     end
 
     private def merge_read_metadata?(admin : DescriptorPath::Directory, name : String) : String?
-      io = admin.open_file?(name)
+      io = admin.open_file?(name, LibC::O_RDONLY | LibC::O_NONBLOCK)
       return nil unless io
       begin
         raise Error.new("Git merge metadata not a regular file") unless io.info.type.file?

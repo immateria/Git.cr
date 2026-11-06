@@ -116,6 +116,7 @@ module Git
           end
           raise Error.new("Git merge HEAD changed") unless head_ref_and_oid == {branch, old_oid}
           raise Error.new("Git merge index changed") unless @index.snapshot_checksum(max_index_bytes) == snapshot
+          raise Error.new("Git merge state changed") if started && merge_state? != {branch, old_oid, target}
         end
         guard.call
         Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
@@ -125,6 +126,7 @@ module Git
         started = true
         write_orig_head(old_oid)
         merge_write_metadata!(admin, branch, old_oid, target, message, recovery_data)
+        guard.call
         if planned = image
           raise Error.new("Git merge index image diverged") unless @index.image_state(planned, max_bytes: max_index_bytes) == :before
           lock.write(planned.data.to_slice)

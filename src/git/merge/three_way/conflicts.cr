@@ -15,9 +15,14 @@ module Git
                                theirs : Checkout::FileState?, label : String,
                                max_bytes : Int32, check : Proc(Nil)?, *,
                                ours_label : String = "HEAD", marker_size : Int32 = 7,
-                               allow_missing_newline : Bool = false) : String?
+                               allow_missing_newline : Bool = false,
+                               ancestor : Checkout::FileState? = nil) : String?
       return nil unless ours && theirs && ours.mode == theirs.mode
       return nil unless {"100644", "100755"}.includes?(ours.mode)
+      if ancestor && {"100644", "100755"}.includes?(ancestor.mode)
+        base_kind, original = repository.object(ancestor.oid, max_bytes) { check.try &.call }
+        return nil unless base_kind == "blob" && original.valid_encoding? && !original.includes?('\0')
+      end
       left_kind, left = repository.object(ours.oid, max_bytes) { check.try &.call }
       right_kind, right = repository.object(theirs.oid, max_bytes) { check.try &.call }
       return nil unless left_kind == "blob" && right_kind == "blob" && left.valid_encoding? &&

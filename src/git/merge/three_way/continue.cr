@@ -16,6 +16,11 @@ module Git
       raise Error.new("Git merge has unresolved paths") if @index.entries(max_index_bytes) { check.try &.call }.any? { |entry| entry.stage != 0 }
       admin = DescriptorPath::Directory.open(@git_dir)
       begin
+        recovery_data = Merge::Recovery.read(admin, "CRYSTAL_MERGE_PATHS", max_index_bytes)
+        # Every valid entry consumes bytes already bounded by max_index_bytes.
+        receipt_entries = recovery_data.try(&.bytesize) || 0
+        Merge::Recovery.decode(recovery_data, ours, theirs, @object_format,
+          max_index_bytes, receipt_entries)
         text = message || merge_read_metadata?(admin, "MERGE_MSG") || raise Error.new("Git merge message missing")
         raise Error.new("invalid Git merge commit message") if text.empty? || text.includes?('\0')
         tree = write_index_tree(max_index_bytes: max_index_bytes,
@@ -24,6 +29,7 @@ module Git
           committer: committer, message: text, max_bytes: max_object_bytes, check: check)
         checked = -> do
           check.try &.call
+          raise Error.new("Git merge recovery metadata changed during commit") unless Merge::Recovery.read(admin, "CRYSTAL_MERGE_PATHS", max_index_bytes) == recovery_data
           raise Error.new("Git merge changed during commit") unless head_ref_and_oid == {branch, ours} &&
                                                                     merge_state? == {branch, ours, theirs} &&
                                                                     @index.snapshot_checksum(max_index_bytes) == snapshot

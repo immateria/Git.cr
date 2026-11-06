@@ -126,7 +126,7 @@ module Git
                      collision_markers(repository, local, remote, context, max_object_bytes, check)
                    else
                      markers(repository, local, remote, marker_label, max_object_bytes, check,
-                       ours_label: marker_ours, marker_size: marker_size)
+                       ours_label: marker_ours, marker_size: marker_size, ancestor: ancestor)
                    end
           if marker
             transferred += marker.bytesize

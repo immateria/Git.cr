@@ -47,6 +47,35 @@ module Git
       rename_identity(before)[0] != rename_identity(after)[0]
     end
 
+    private def self.divergent_source(repository : Repository, base : Checkout::FileState,
+                                      ours : Checkout::FileState, theirs : Checkout::FileState, *,
+                                      our_label : String, their_label : String, marker_size : Int32,
+                                      max_object_bytes : Int32, virtual : Bool,
+                                      check : Proc(Nil)?) : Checkout::FileState?
+      if merged = merge_blob(repository, base, ours, theirs, max_object_bytes, check)
+        return merged[0]
+      end
+      return nil unless {base.mode, ours.mode, theirs.mode}.all? { |mode| {"100644", "100755"}.includes?(mode) }
+      mode = ours.mode == theirs.mode || ours.mode == base.mode ? theirs.mode : ours.mode
+      contents = {base, ours, theirs}.map do |state|
+        kind, raw = repository.object(state.oid, max_object_bytes) { check.try &.call }
+        raise Error.new("Git divergent rename source is not a blob") unless kind == "blob"
+        raw
+      end
+      if contents.any?(&.includes?('\0'))
+        return virtual ? Checkout::FileState.new(mode, base.oid) : nil
+      end
+      unless contents.all?(&.valid_encoding?)
+        raise Error.new("Git divergent rename source conflict text encoding unsupported")
+      end
+      marker = markers(repository, Checkout::FileState.new(mode, ours.oid),
+        Checkout::FileState.new(mode, theirs.oid), their_label, max_object_bytes, check,
+        ours_label: our_label, marker_size: marker_size + 1,
+        allow_missing_newline: true)
+      raise Error.new("Git divergent rename source conflict marker budget exceeded") unless marker
+      Checkout::FileState.new(mode, repository.write_blob(marker, max_bytes: max_object_bytes, check: check))
+    end
+
     protected def self.rename_plan(repository : Repository, base : Hash(String, Checkout::FileState),
                                    ours : Hash(String, Checkout::FileState),
                                    theirs : Hash(String, Checkout::FileState), *,
@@ -71,26 +100,32 @@ module Git
               conflicts[dest] = Conflict.new(dest, base[old], ours[dest], theirs[dest])
             end
           else
-            merged = merge_blob(repository, base[old], ours[dest], theirs[other_dest], max_object_bytes, check)
-            shared = if merged
-                       merged[0]
-                     elsif marker = markers(repository, ours[dest], theirs[other_dest],
-                             "#{their_label}:#{other_dest}", max_object_bytes, check,
-                             ours_label: "#{our_label}:#{dest}", marker_size: marker_size + 1)
-                       Checkout::FileState.new(ours[dest].mode, repository.write_blob(marker, max_bytes: max_object_bytes, check: check))
-                     else
-                       nil
-                     end
-            # A binary conflict has no merged blob: retain each destination's
-            # own bytes rather than copying ours over the incoming rename.
+            shared = divergent_source(repository, base[old], ours[dest], theirs[other_dest],
+              our_label: "#{our_label}:#{dest}", their_label: "#{their_label}:#{other_dest}",
+              marker_size: marker_size, max_object_bytes: max_object_bytes, virtual: virtual, check: check)
+            # Real binary conflicts retain each destination's own bytes;
+            # virtual conflicts share the original source as their ancestor.
             conflicts[old] = Conflict.new(old, base[old], nil, nil)
-            conflicts[dest] = Conflict.new(dest, nil, shared || ours[dest], nil)
-            conflicts[other_dest] = Conflict.new(other_dest, nil, nil, shared || theirs[other_dest])
+            # Another source can arrive at either destination. Preserve its
+            # opposite stage, including a source not processed by this loop.
+            remote = conflicts[dest]?.try(&.theirs) || theirs[dest]?
+            local = conflicts[other_dest]?.try(&.ours) || ours[other_dest]?
+            conflicts[dest] = Conflict.new(dest, nil, shared || ours[dest], remote)
+            conflicts[other_dest] = Conflict.new(other_dest, nil, local, shared || theirs[other_dest])
+            if remote
+              contexts[dest] = MarkerContext.new(our_label, their_label, marker_size)
+              structural.add(dest)
+            end
+            if local
+              contexts[other_dest] = MarkerContext.new(our_label, their_label, marker_size)
+              structural.add(other_dest)
+            end
           end
           next
         end
         if addition = theirs[dest]?
           contexts[dest] = MarkerContext.new(our_label, their_label, marker_size)
+          addition = conflicts[dest]?.try(&.theirs) || addition
           if changed = theirs[old]?
             merged = merge_collision_source(repository, base[old], ours[dest], changed,
               our_label: "#{our_label}:#{dest}", their_label: "#{their_label}:#{old}",

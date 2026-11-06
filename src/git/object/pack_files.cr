@@ -711,7 +711,7 @@ module Git
       end
 
       private def inflate(io : IO, max : Int32) : String
-        Compress::Zlib::Reader.open(io) { |z| bounded_decompress(z, max + 128) }
+        Compress::Zlib::Reader.open(io) { |z| bounded_decompress(z, max.to_i64 + 128) }
       end
 
       # Where entries end in a pack read without its index, after checking
@@ -759,7 +759,7 @@ module Git
         bytes
       end
 
-      private def bounded_decompress(z : IO, max : Int32) : String
+      private def bounded_decompress(z : IO, max : Int64) : String
         target = IO::Memory.new
         IO.copy(z, target, max + 1)
         raise Git::Error.new("Git object exceeded size limit") if target.size > max

@@ -72,7 +72,7 @@ module Git
 
     private def rebase_read_file!(directory : DescriptorPath::Directory,
                                   name : String, max_bytes : Int32) : String
-      io = directory.open_file(name, LibC::O_RDONLY)
+      io = directory.open_file(name, LibC::O_RDONLY | LibC::O_NONBLOCK)
       begin
         raise Error.new("Git rebase metadata is not regular") unless io.info.type.file?
         raise Error.new("Git rebase metadata budget exceeded") if io.info.size > max_bytes

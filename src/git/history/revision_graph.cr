@@ -10,7 +10,8 @@ module Git
       repository.check!
       left_oid = resolve_commit(repository, left, max_commit_bytes, check)
       right_oid = resolve_commit(repository, right, max_commit_bytes, check)
-      RevisionWalker.new(repository, check: check).merge_bases(left_oid, right_oid, max_nodes: max_nodes).sort
+      RevisionWalker.new(repository, max_object_bytes: max_commit_bytes, check: check)
+        .merge_bases(left_oid, right_oid, max_nodes: max_nodes).sort
     end
   end
 

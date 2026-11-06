@@ -101,7 +101,7 @@ module Git
     private def verify_existing!(path : String, oid : String, type : String, data : Bytes) : Nil
       info = File.info?(path, follow_symlinks: false)
       raise Error.new("Git loose object target is not a regular file") unless info && info.type.file?
-      raw = inflate_file(path, data.size + 128)
+      raw = inflate_file(path, data.size.to_i64 + 128)
       marker = raw.byte_index('\0')
       raise Error.new("Git existing loose object has invalid envelope") unless marker &&
                                                                                raw.byte_slice(0, marker) == "#{type} #{data.size}" &&
@@ -123,16 +123,20 @@ module Git
           object(base_oid, max_bytes, next_depth, ancestors) { check.call }
         end
         type, content = @pack_files.decode_pack(packfile, offset, max_bytes, depth, seen, resolver) { check.call }
+        # Cached delta bases must obey this read's payload budget too.
+        raise Git::Error.new("Git object exceeds byte budget") if content.bytesize > max_bytes
         verify_oid!(oid, type, content)
         return {type, content}
       end
       loose = File.join(@common, "objects", oid.byte_slice(0, 2), oid.byte_slice(2, @object_format.hexsize - 2))
       if File.file?(loose)
-        data = inflate_file(loose, max_bytes + 128)
+        data = inflate_file(loose, max_bytes.to_i64 + 128)
         sep = data.byte_index('\0') || raise Git::Error.new("invalid loose Git object")
         header = data.byte_slice(0, sep)
         type, length = parse_object_header(header)
         content = data.byte_slice(sep + 1, data.bytesize - sep - 1)
+        # The inflation allowance covers the envelope, not extra payload.
+        raise Git::Error.new("Git object exceeds byte budget") if content.bytesize > max_bytes
         raise Git::Error.new("Git loose object size mismatch") unless content.bytesize == length
         verify_oid!(oid, type, content)
         return {type, content}
@@ -244,7 +248,7 @@ module Git
       raise Git::Error.new("Git object digest mismatch") unless ObjectId.digest(type, data, @object_format) == oid
     end
 
-    private def inflate_file(path : String, max : Int32) : String
+    private def inflate_file(path : String, max : Int64) : String
       raise Git::Error.new("Git object file redirected") if File.symlink?(path) || File.realpath(path) != path
       File.open(path) do |f|
         Compress::Zlib::Reader.open(f) { |z| bounded_decompress(z, max) }
@@ -253,7 +257,7 @@ module Git
       raise Git::Error.new("Git object decompression failed: #{ex.class}")
     end
 
-    private def bounded_decompress(z : IO, max : Int32) : String
+    private def bounded_decompress(z : IO, max : Int64) : String
       target = IO::Memory.new
       IO.copy(z, target, max + 1)
       raise Git::Error.new("Git object exceeded size limit") if target.size > max

@@ -161,3 +161,26 @@ cleanly only for content collisions; structural conflicts retain their stages
 without duplicate markers. Both inner and outer text marker budgets fail before
 mutable publication. Worktree executable status is compared as Git's canonical
 mode bit, independently of process umask and unrelated permission bits.
+
+## Adversarial merge and recovery checks
+
+- `merge_adversarial_sources_spec.cr` compares crossed rename destinations,
+  rename/delete overlaps, equal structural stages, and recursive reductions
+  that previously dropped changes while reporting a clean merge. It checks
+  binary source ancestors, divergent executable modes, and regular replacements
+  of symlink ancestors. Unsupported text encoding and source marker limits
+  must fail before mutable publication.
+- `operation_metadata_adversarial_spec.cr` substitutes merge identities during
+  publication and FIFOs for operation metadata, checking refusal without
+  blocking or publishing a commit with different parents.
+- `rebase_abort_retry_spec.cr` interrupts outer abort during worktree restoration
+  and between ref/index publication. A fresh repository instance must restore
+  the original branch, index and files, while preserving later caller edits.
+- `object_read_payload_budget_spec.cr` checks exact payload limits for loose,
+  packed and cached delta-base objects, zero-length payloads and maximum Int32
+  limits. `merge_base_commit_budget_spec.cr` checks ancestor traversal limits
+  before merge publication.
+
+The adversarial pass also compared 196 rename/destination/deletion combinations
+and 216 three-base combinations with Git 2.47.3. These finite sweeps supplement
+the permanent reductions; they do not establish full ort parity.

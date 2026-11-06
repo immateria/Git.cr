@@ -138,3 +138,47 @@ pass. Review findings were reproduced before fixes and covered by the final
 suite. Work remains uncommitted on feat/merge-parity; nothing was pushed,
 published or saved to environment configuration. Source type changes and full
 ort hunk/attribute layout remain explicitly outside this iteration.
+
+## Adversarial review of committed merge work
+
+The user requested a quality/adversarial pass after commit `6cc535c`. Independent
+reviews reproduced destination-stage loss in crossed divergent renames and a
+recursive reduction that reported a false clean result. Destination contributions
+now compose by side and retain structural conflicts even when their merged blobs
+are equal. Divergent text sources merge executable modes; binary sources retain
+separate real-side blobs for ordinary merges and the original source for virtual
+bases. Binary classification includes compatible regular ancestors and excludes
+symlink targets when both tips become regular files. Unsupported divergent text
+encoding and oversized markers refuse before publication.
+
+Recovery review also reproduced mutable MERGE_HEAD changing commit parents,
+blocking FIFO operation metadata opens, and outer rebase abort retries clearing
+state before restoring a stale index. Publication binds merge state, continuation
+validates and binds receipt identity before committing, operation
+metadata opens nonblocking before type validation, and rebase abort reconciles
+observed worktree, index and reference states before cleanup. Unrelated worktree
+content still refuses restoration. Budget review fixed loose payload envelope
+allowance leaking into payload limits, cached packed-base reads bypassing smaller
+limits, merge-base traversal ignoring its supplied commit limit, and Int32 envelope
+arithmetic overflow.
+
+Permanent reductions cover both object formats. Exploratory checks compared 196
+rename/destination/deletion combinations and 216 three-base combinations with
+Git 2.47.3. The container's PID 1 accumulated orphan Git children, causing transient
+fork failures during checks; final verification uses a child-reaping supervisor
+outside the checkout with reduced compiler/GC concurrency. Nothing was pushed
+or published.
+
+Adversarial final verification: all 1111 examples pass with 0 failures, 0 errors
+and 0 pending on Crystal 1.22.2 (1:31 execution) and Crystal 1.13.0 (1:35 execution),
+Git 2.47.3, Linux x86-64. This adds 74 permanent regression examples. Both full
+builds used a generated entrypoint requiring all 73 spec files, a single LLVM
+module, one compiler worker and one GC marker. The floor compiler build used
+one CPU; both final test runs used the normal CPU affinity. Oracle pack/index
+workers were capped at one through an external wrapper; config-inspection
+commands kept their original arguments to preserve config-scope assertions.
+Earlier attempts hit host process/thread limits rather than assertion failures.
+The wrapper, supervisor and logs are outside the checkout in /workspace/adversarial.
+Changed-source formatting and `git diff --check` pass. Four existing IO::Memory
+deprecation warnings remain on Crystal 1.22.2; macOS was not executed. The audit
+fixes remain uncommitted after baseline `6cc535c`.
