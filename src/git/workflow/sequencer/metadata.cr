@@ -9,7 +9,8 @@ module Git
       begin
         {"CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "MERGE_MSG", "CRYSTAL_SEQUENCER_ORIG",
          "CRYSTAL_SEQUENCER_PARENT", "CRYSTAL_SEQUENCER_AUTHOR",
-         "CRYSTAL_SEQUENCER_ALLOW_EMPTY", "CRYSTAL_SEQUENCER_PATHS"}.any? { |name| !!admin.stat?(name) }
+         "CRYSTAL_SEQUENCER_ALLOW_EMPTY", "CRYSTAL_SEQUENCER_PATHS", "CRYSTAL_SEQUENCER_RESTORE",
+         "CRYSTAL_SEQUENCER_RESTORE.lock", "CRYSTAL_SEQUENCER_RESTORE.required"}.any? { |name| !!admin.stat?(name) }
       ensure
         admin.close
       end
@@ -73,6 +74,12 @@ module Git
       if admin.stat?("CRYSTAL_SEQUENCER_PATHS")
         admin.unlink("CRYSTAL_SEQUENCER_PATHS")
         admin.sync
+      end
+      {"CRYSTAL_SEQUENCER_RESTORE", "CRYSTAL_SEQUENCER_RESTORE.required"}.each do |name|
+        if admin.stat?(name)
+          admin.unlink(name)
+          admin.sync
+        end
       end
     end
   end

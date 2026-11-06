@@ -7,7 +7,7 @@ module Git
     # REBASE_HEAD plus the normal index stages and can be resumed with
     # rebase_continue/skip/abort.
     def rebase(upstream : String, *, committer : Signature,
-               onto : String? = nil, keep_empty : Bool = false,
+               onto : String? = nil, keep_empty : Bool = false, config : Config? = nil,
                max_commits : Int32 = 512, max_graph_nodes : Int32 = 16_384,
                max_object_bytes : Int32 = 8_388_608,
                max_index_bytes : Int32 = 8_388_608,
@@ -15,6 +15,7 @@ module Git
                max_entries : Int32 = 10_000,
                check : Proc(Nil)? = nil) : Rebase::Result
       require_worktree!
+      config ||= self.config
       raise ArgumentError.new("invalid Git rebase budgets") if max_commits < 0 || max_commits > 512 ||
                                                                max_graph_nodes < 1 || max_object_bytes < 128 ||
                                                                max_index_bytes < 128 || max_total_bytes < max_object_bytes ||
@@ -35,7 +36,7 @@ module Git
         max_commits: max_commits, max_graph_nodes: max_graph_nodes,
         max_object_bytes: max_object_bytes, check: check)
 
-      rebase_preflight_clean!(original_head, max_object_bytes: max_object_bytes,
+      rebase_preflight_clean!(original_head, config: config, max_object_bytes: max_object_bytes,
         max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
 
@@ -51,7 +52,7 @@ module Git
       write_orig_head(original_head)
       if original_head != onto_oid
         begin
-          rebase_move_branch!(state, original_head, onto_oid,
+          rebase_move_branch!(state, original_head, onto_oid, config: config,
             log: References::LogEntry.new(committer, "rebase (start): checkout #{onto || upstream}"),
             max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
             max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
@@ -67,7 +68,7 @@ module Git
           raise ex
         end
       end
-      rebase_run(state, committer: committer, max_object_bytes: max_object_bytes,
+      rebase_run(state, config: config, committer: committer, max_object_bytes: max_object_bytes,
         max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
     end

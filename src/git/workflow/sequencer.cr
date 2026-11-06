@@ -8,6 +8,7 @@ require "./sequencer/continuation"
 require "./sequencer/abort"
 require "./sequencer/replay"
 require "./sequencer/metadata"
+require "./sequencer/recovery"
 
 module Git
   # A commit replay in progress (Git's sequencer): a cherry-pick, a revert or
@@ -48,11 +49,11 @@ module Git
 
     # `--abort`: restore the branch, index and worktree from before the
     # operation. Returns the paths it changed.
-    def abort(*, max_object_bytes : Int32 = 8_388_608, max_index_bytes : Int32 = 8_388_608,
+    def abort(*, config : Config? = nil, max_object_bytes : Int32 = 8_388_608, max_index_bytes : Int32 = 8_388_608,
               max_total_bytes : Int64 = 67_108_864, max_entries : Int32 = 10_000,
               check : Proc(Nil)? = nil) : Array(String)
       require_state!
-      @repository.sequencer_abort(max_object_bytes: max_object_bytes,
+      @repository.sequencer_abort(config: config || @repository.config, max_object_bytes: max_object_bytes,
         max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
     end
@@ -60,10 +61,10 @@ module Git
     # `--skip`: drop the current commit. With a single commit in the
     # sequence this restores the state from before the operation, as abort
     # does.
-    def skip(*, max_object_bytes : Int32 = 8_388_608, max_index_bytes : Int32 = 8_388_608,
+    def skip(*, config : Config? = nil, max_object_bytes : Int32 = 8_388_608, max_index_bytes : Int32 = 8_388_608,
              max_total_bytes : Int64 = 67_108_864, max_entries : Int32 = 10_000,
              check : Proc(Nil)? = nil) : Array(String)
-      abort(max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
+      abort(config: config || @repository.config, max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
         max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
     end
 

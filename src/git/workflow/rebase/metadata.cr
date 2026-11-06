@@ -60,6 +60,12 @@ module Git
           child.sync
         end
         raise Error.new("Git rebase progress lock remains during cleanup") if child.stat?("state.lock")
+        {"worktree-restore", "worktree-restore.required"}.each do |name|
+          if child.stat?(name)
+            child.unlink(name)
+            child.sync
+          end
+        end
         child.close
         child = nil
         parent.rmdir("rebase-merge")

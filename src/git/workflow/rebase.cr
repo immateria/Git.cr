@@ -24,29 +24,29 @@ module Git
     end
 
     # `git rebase --continue`: commit the resolved step and replay the rest.
-    def continue(*, committer : Signature, max_object_bytes : Int32 = 8_388_608,
+    def continue(*, committer : Signature, config : Config? = nil, max_object_bytes : Int32 = 8_388_608,
                  max_index_bytes : Int32 = 8_388_608, max_total_bytes : Int64 = 67_108_864,
                  max_entries : Int32 = 10_000, check : Proc(Nil)? = nil) : Result
-      @repository.rebase_continue(committer: committer, max_object_bytes: max_object_bytes,
+      @repository.rebase_continue(committer: committer, config: config || @repository.config, max_object_bytes: max_object_bytes,
         max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
     end
 
     # `git rebase --skip`: drop the stopped commit and replay the rest.
-    def skip(*, committer : Signature, max_object_bytes : Int32 = 8_388_608,
+    def skip(*, committer : Signature, config : Config? = nil, max_object_bytes : Int32 = 8_388_608,
              max_index_bytes : Int32 = 8_388_608, max_total_bytes : Int64 = 67_108_864,
              max_entries : Int32 = 10_000, check : Proc(Nil)? = nil) : Result
-      @repository.rebase_skip(committer: committer, max_object_bytes: max_object_bytes,
+      @repository.rebase_skip(committer: committer, config: config || @repository.config, max_object_bytes: max_object_bytes,
         max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
     end
 
     # `git rebase --abort`: return the branch, index and worktree to where
     # the rebase started. Returns the paths it changed.
-    def abort(*, committer : Signature, max_object_bytes : Int32 = 8_388_608,
+    def abort(*, committer : Signature, config : Config? = nil, max_object_bytes : Int32 = 8_388_608,
               max_index_bytes : Int32 = 8_388_608, max_total_bytes : Int64 = 67_108_864,
               max_entries : Int32 = 10_000, check : Proc(Nil)? = nil) : Array(String)
-      @repository.rebase_abort(committer: committer, max_object_bytes: max_object_bytes,
+      @repository.rebase_abort(committer: committer, config: config || @repository.config, max_object_bytes: max_object_bytes,
         max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
     end
