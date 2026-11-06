@@ -238,3 +238,70 @@ describe "workflow helper bounds" do
     end
   end
 end
+
+describe "partial attribute map source policy" do
+  ["sha1", "sha256"].each do |format|
+    it "uses secure working then index fallback only for absent #{format} map keys" do
+      GitOracle.with_repo(format: format) do |root|
+        repository = Git::Repository.new(root)
+        repository.stage_blob(".gitattributes", "*.txt text eol=crlf\n")
+        empty = {} of String => String?
+        converter = Git::Conversion.new(repository, attribute_blobs: empty,
+          worktree_fallback: true, worktree_index_fallback: true)
+        converter.checkout("file.txt", "x\n").should eq("x\r\n")
+        # The default map and planned-index source stay exact; a current index
+        # outside the supplied projection is not an implicit source.
+        Git::Conversion.new(repository, attribute_blobs: empty).checkout("file.txt", "x\n").should eq("x\n")
+        Git::Conversion.new(repository, attribute_blobs: empty, worktree_fallback: true).checkout("file.txt", "x\n").should eq("x\n")
+        Git::Conversion.for_index(repository, [] of Git::Index::Entry).checkout("file.txt", "x\n").should eq("x\n")
+        File.write(File.join(root, ".gitattributes"), "*.txt text eol=lf\n")
+        converter = Git::Conversion.new(repository, attribute_blobs: empty,
+          worktree_fallback: true, worktree_index_fallback: true)
+        converter.checkout("file.txt", "x\n").should eq("x\n")
+        File.write(File.join(root, ".gitattributes"), "*.txt text eol=crlf\n")
+        converter = Git::Conversion.new(repository, attribute_blobs: {".gitattributes" => nil.as(String?)},
+          worktree_fallback: true, worktree_index_fallback: true)
+        converter.checkout("file.txt", "x\n").should eq("x\n")
+        # A present blob also wins over both fallback sources.
+        lf = repository.write_blob("*.txt text eol=lf\n")
+        converter = Git::Conversion.new(repository, attribute_blobs: {".gitattributes" => lf.as(String?)},
+          worktree_fallback: true, worktree_index_fallback: true)
+        converter.checkout("file.txt", "x\n").should eq("x\n")
+      end
+    end
+  end
+
+  it "rejects index fallback without both a blob map and working fallback" do
+    GitOracle.with_repo do |root|
+      repository = Git::Repository.new(root)
+      expect_raises(ArgumentError) { Git::Conversion.new(repository, worktree_index_fallback: true) }
+      expect_raises(ArgumentError) { Git::Conversion.new(repository, worktree_fallback: true, worktree_index_fallback: true) }
+      expect_raises(ArgumentError) do
+        Git::Conversion.new(repository, attribute_blobs: {} of String => String?, worktree_index_fallback: true)
+      end
+      expect_raises(ArgumentError) { Git::Attributes.new(repository, worktree_index_fallback: true) }
+      expect_raises(ArgumentError) { Git::Attributes.new(repository, worktree_fallback: true, worktree_index_fallback: true) }
+      expect_raises(ArgumentError) do
+        Git::Attributes.new(repository, attribute_blobs: {} of String => String?, worktree_index_fallback: true)
+      end
+    end
+  end
+end
+
+describe "fully reserved workflow output budget" do
+  it "accepts empty writes and states at zero budget and refuses nonempty output" do
+    GitOracle.with_repo do |root|
+      repository = Git::Repository.new(root)
+      converter = Git::Conversion.new(repository, attribute_blobs: {} of String => String?)
+      converter.materialize([] of Git::Checkout::Write, max_total_bytes: 0_i64).should be_empty
+      converter.raw_states({} of String => Git::Checkout::FileState, max_total_bytes: 0_i64).should be_empty
+      oid = repository.write_blob("x")
+      expect_raises(Git::Error, /byte budget/) do
+        converter.materialize([Git::Checkout::Write.new("file", "100644", oid, "x")], max_total_bytes: 0_i64)
+      end
+      expect_raises(Git::Error, /byte budget/) do
+        converter.raw_states({"file" => Git::Checkout::FileState.new("100644", oid)}, max_total_bytes: 0_i64)
+      end
+    end
+  end
+end
