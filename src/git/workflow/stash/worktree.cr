@@ -40,6 +40,8 @@ module Git
     private def stash_untracked_files(index_paths : Set(String), *,
                                       selected_paths : Set(String)?,
                                       include_ignored : Bool,
+                                      conversion : Conversion,
+                                      observed : Hash(String, Checkout::FileState),
                                       max_object_bytes : Int32,
                                       max_total_bytes : Int64,
                                       max_entries : Int32,
@@ -63,9 +65,12 @@ module Git
           state, raw = leaf
           transferred += raw.bytesize
           raise Error.new("Git stash total byte budget exceeded") if transferred > max_total_bytes
-          written = write_blob(raw, max_bytes: max_object_bytes.to_i64, check: check)
-          raise Error.new("Git stash untracked blob identity changed") unless written == state.oid
-          found[relative] = state
+          canonical = state.mode == "120000" ? raw : conversion.clean(relative, raw, safe: true)
+          oid = ObjectId.digest("blob", canonical, @object_format)
+          written = write_blob(canonical, max_bytes: max_object_bytes.to_i64, check: check)
+          raise Error.new("Git stash untracked blob identity changed") unless written == oid
+          found[relative] = Checkout::FileState.new(state.mode, oid)
+          observed[relative] = state
         end
         return {found, transferred}
       end
@@ -101,9 +106,12 @@ module Git
           state, raw = leaf
           transferred += raw.bytesize
           raise Error.new("Git stash total byte budget exceeded") if transferred > max_total_bytes
-          written = write_blob(raw, max_bytes: max_object_bytes.to_i64, check: check)
-          raise Error.new("Git stash untracked blob identity changed") unless written == state.oid
-          found[relative] = state
+          canonical = state.mode == "120000" ? raw : conversion.clean(relative, raw, safe: true)
+          oid = ObjectId.digest("blob", canonical, @object_format)
+          written = write_blob(canonical, max_bytes: max_object_bytes.to_i64, check: check)
+          raise Error.new("Git stash untracked blob identity changed") unless written == oid
+          found[relative] = Checkout::FileState.new(state.mode, oid)
+          observed[relative] = state
         end
       end
       {found, transferred}
@@ -149,17 +157,17 @@ module Git
     # staged-only save.
     private def stash_staged_cleanup_files(head_files : Hash(String, Checkout::FileState),
                                            index_files : Hash(String, Checkout::FileState),
-                                           observed : Hash(String, Checkout::FileState), *,
+                                           worktree_files : Hash(String, Checkout::FileState), *,
                                            max_object_bytes : Int32,
                                            max_total_bytes : Int64,
                                            check : Proc(Nil)?) : {Hash(String, Checkout::FileState), Int64}
       cleanup = {} of String => Checkout::FileState
       transferred = 0_i64
-      names = (head_files.keys + index_files.keys + observed.keys).uniq.sort
+      names = (head_files.keys + index_files.keys + worktree_files.keys).uniq.sort
       names.each do |path|
         check.try &.call
         base = index_files[path]?
-        ours = observed[path]?
+        ours = worktree_files[path]?
         theirs = head_files[path]?
         desired = if ours == theirs || theirs == base
                     ours
@@ -212,24 +220,34 @@ module Git
     end
 
     private def stash_verify_worktree_snapshot!(index : Array(Index::Entry),
-                                                expected : Hash(String, Checkout::FileState),
                                                 observed : Hash(String, Checkout::FileState), *,
+                                                canonical : Hash(String, Checkout::FileState),
+                                                index_oids : Hash(String, String),
+                                                conversion : Conversion?,
                                                 selected_paths : Set(String)?,
                                                 max_object_bytes : Int32,
                                                 check : Proc(Nil)?) : Nil
       indexed = index.map(&.path).to_set
       index.each do |entry|
         next if selected_paths && !selected_paths.includes?(entry.path)
+        next if observed.has_key?(entry.path)
         leaf = stash_worktree_leaf?(entry.path, max_object_bytes,
           allow_directory_missing: false, check: check)
-        actual = leaf.try(&.[0])
-        raise Error.new("Git stash worktree changed during save") unless actual == expected[entry.path]?
+        raise Error.new("Git stash worktree changed during save") if leaf
       end
       observed.each do |path, expected_state|
-        next if indexed.includes?(path)
+        message = indexed.includes?(path) ? "Git stash worktree changed during save" : "Git stash excluded worktree path changed during save"
         leaf = stash_worktree_leaf?(path, max_object_bytes,
-          allow_directory_missing: false, check: check)
-        raise Error.new("Git stash excluded worktree path changed during save") unless leaf.try(&.[0]) == expected_state
+          allow_directory_missing: false, check: check) || raise Error.new(message)
+        state, raw = leaf
+        raise Error.new(message) unless state == expected_state
+        if conversion
+          cleaned = state.mode == "120000" ? raw : conversion.clean(path, raw, index_oid: index_oids[path]?)
+          actual = Checkout::FileState.new(state.mode, ObjectId.digest("blob", cleaned, @object_format))
+          unless actual == canonical[path]
+            raise Error.new("Git stash worktree attribute source changed during save")
+          end
+        end
       end
     end
 

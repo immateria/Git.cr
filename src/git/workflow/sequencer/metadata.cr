@@ -9,7 +9,9 @@ module Git
       begin
         {"CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "MERGE_MSG", "CRYSTAL_SEQUENCER_ORIG",
          "CRYSTAL_SEQUENCER_PARENT", "CRYSTAL_SEQUENCER_AUTHOR",
-         "CRYSTAL_SEQUENCER_ALLOW_EMPTY", "CRYSTAL_SEQUENCER_PATHS"}.any? { |name| !!admin.stat?(name) }
+         "CRYSTAL_SEQUENCER_ALLOW_EMPTY", "CRYSTAL_SEQUENCER_PATHS", "CRYSTAL_SEQUENCER_RESTORE",
+         "CRYSTAL_SEQUENCER_RESTORE.lock", "CRYSTAL_SEQUENCER_RESTORE.required",
+         "CRYSTAL_SEQUENCER_ORIG.lock"}.any? { |name| !!admin.stat?(name) }
       ensure
         admin.close
       end
@@ -74,6 +76,24 @@ module Git
         admin.unlink("CRYSTAL_SEQUENCER_PATHS")
         admin.sync
       end
+      {"CRYSTAL_SEQUENCER_RESTORE", "CRYSTAL_SEQUENCER_RESTORE.required"}.each do |name|
+        if admin.stat?(name)
+          admin.unlink(name)
+          admin.sync
+        end
+      end
+    end
+
+    private def sequencer_mark_restoring!(admin : DescriptorPath::Directory, state : Sequencer::State) : Nil
+      raise Error.new("Git sequencer state changed") unless sequencer_state? == state
+      replay_require_recovery!(admin, "CRYSTAL_SEQUENCER_RESTORE")
+      before = sequencer_read_metadata?(admin, "CRYSTAL_SEQUENCER_ORIG") ||
+               raise Error.new("Git sequencer original state missing")
+      lines = before.lines.map(&.strip)
+      return if lines.size == 4 && lines[3] == Sequencer::RESTORING
+      version = lines.size == 3 ? lines[2] : "legacy"
+      after = (lines.first(2) + [version, Sequencer::RESTORING]).join('\n') + "\n"
+      replay_replace_metadata!(admin, "CRYSTAL_SEQUENCER_ORIG", before, after)
     end
   end
 end

@@ -3,7 +3,7 @@ module Git
     private def rebase_run(initial : Rebase::State, *, committer : Signature,
                            max_object_bytes : Int32, max_index_bytes : Int32,
                            max_total_bytes : Int64, max_entries : Int32,
-                           check : Proc(Nil)?) : Rebase::Result
+                           check : Proc(Nil)?, config : Config) : Rebase::Result
       state = initial
       loop do
         branch, current = head_ref_and_oid
@@ -28,7 +28,7 @@ module Git
                            end
         result = begin
           sequencer_start(Sequencer::Kind::Rebase, source, committer: committer,
-            author: nil, message: nil, mainline: nil, allow_empty: state.keep_empty || originally_empty,
+            author: nil, message: nil, mainline: nil, allow_empty: state.keep_empty || originally_empty, config: config,
             max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
             max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
         rescue ex : Sequencer::EmptyCommit
@@ -38,7 +38,7 @@ module Git
           raise ex if state.keep_empty
           item = sequencer_state? || raise Error.new("Git rebase empty replay state missing")
           rebase_validate_item!(state, item)
-          sequencer_abort(max_object_bytes: max_object_bytes,
+          sequencer_abort(config: config, max_object_bytes: max_object_bytes,
             max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
             max_entries: max_entries, check: check)
           state = rebase_advance_state!(state, state.next_index + 1, state.expected_head)

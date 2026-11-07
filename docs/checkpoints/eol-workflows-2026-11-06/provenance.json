@@ -1,0 +1,79 @@
+{
+  "archive_blobs": {
+    "docs/checkpoints/eol-workflows-2026-11-06/consumer/README.md": "ecb994d27118f8f2560c1a415a5d9ddac357d37d",
+    "docs/checkpoints/eol-workflows-2026-11-06/consumer/main.cr": "4307d930a42f24e6d12a780e5a5aa790ca483f2d",
+    "docs/checkpoints/eol-workflows-2026-11-06/consumer/shard.yml": "9e69561429b7224e99efbb908cc492bbc35541c2",
+    "docs/checkpoints/eol-workflows-2026-11-06/design.md": "c7f73a366f8c359de9c12c12c1d530b29f0dab13",
+    "docs/checkpoints/eol-workflows-2026-11-06/git-oracle-stable": "a2a649606c21456d81122a54653b7e0c2dcc5aa0",
+    "docs/checkpoints/eol-workflows-2026-11-06/plan.md": "a6e68b4c5d5d8a50d2ce758716cd787fdf71ea25",
+    "docs/checkpoints/eol-workflows-2026-11-06/progress.md": "3f2a83126cd3aacc05e0c5677725646edabc8d10",
+    "docs/checkpoints/eol-workflows-2026-11-06/review-package.py": "4a00399f5c8ad80bccd293a8e356a8b3882cbb26",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-1-review.md": "e1a3e37fb4ee1897231b51ec06a839ac7a4c98e9",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-1.diff.md": "13e110ed939230acc45f62a17791480dceaeaa7d",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-2-review.md": "be9d092dae3add50305ed665dcec6cb3f1861cad",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-2.diff.md": "c5cae295ec14fa5c6d740ab9e87baf477bec87dc",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-3-review.md": "8488b947b30c1e33765ee8cdea916b445655959f",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-3.diff.md": "7af2f244656507d3008bdb20b84dce03bffd9c49",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-4-review.md": "c71eb6925eb3ea639ebfdecce34c76de27015a3a",
+    "docs/checkpoints/eol-workflows-2026-11-06/reviews/task-4.diff.md": "3d99630cba3c63e310c71bd4ac8dfb8ea364c25e",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-1-brief.md": "4ccba7f90cdd1022153fd7cad153823893e2a391",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-1-report.md": "f4fc4167883f37c96d5cac95b2550b0db82065ef",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-2-brief.md": "f6d0e94edac0881b0d2317af99c21c0cba977aef",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-2-report.md": "e9142cf867bd0eb1276cb541c01bb3c892523422",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-3-brief.md": "01e205bc105959758611edad83ae506f14b3314b",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-3-report.md": "bb8ef3c63e0c4c80d657c88a3681434db954c958",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-4-brief.md": "12c54ac64a49da62b51e56a68bd0c5bf3b14bffe",
+    "docs/checkpoints/eol-workflows-2026-11-06/task-4-report.md": "f9d5b93e97703239a91adee14c62311d96963656"
+  },
+  "base": "1ff359874fc931f33d53aa5fb22fc4913e1fa62b",
+  "component_heads": {
+    "foundation": "8d6309702ea47693f837d4be44fc090f43d49f78",
+    "integration": "ad1113acfa9abddf3ad7aec551d6696b415ffeb5",
+    "merge": "5804533b7b81f81e8a336558aac087fb0ee7c29a",
+    "replay": "87fe5926e55bb70b44e1dd41389b6d8f0cbf653c",
+    "stash": "eb47d749b90aa51f614beee03f36ef8f21726f6e"
+  },
+  "source_path_changes": {
+    "merge": [
+      "spec/eol_merge_spec.cr",
+      "src/git/merge.cr",
+      "src/git/merge/fast_forward.cr",
+      "src/git/merge/three_way/abort.cr",
+      "src/git/merge/three_way/initiate.cr",
+      "src/git/remote/pull.cr"
+    ],
+    "replay": [
+      "spec/eol_replay_attributes_spec.cr",
+      "spec/eol_replay_partial_spec.cr",
+      "spec/eol_replay_preparation_spec.cr",
+      "spec/eol_replay_recovery_spec.cr",
+      "spec/eol_replay_review_spec.cr",
+      "spec/eol_replay_spec.cr",
+      "src/git/workflow/rebase.cr",
+      "src/git/workflow/rebase/continuation.cr",
+      "src/git/workflow/rebase/initiate.cr",
+      "src/git/workflow/rebase/metadata.cr",
+      "src/git/workflow/rebase/preflight.cr",
+      "src/git/workflow/rebase/publication.cr",
+      "src/git/workflow/rebase/replay.cr",
+      "src/git/workflow/sequencer.cr",
+      "src/git/workflow/sequencer/abort.cr",
+      "src/git/workflow/sequencer/initiate.cr",
+      "src/git/workflow/sequencer/metadata.cr",
+      "src/git/workflow/sequencer/recovery.cr",
+      "src/git/workflow/sequencer/replay.cr",
+      "src/git/workflow/sequencer/state.cr",
+      "src/git/workflow/sequencer/values.cr"
+    ],
+    "stash": [
+      "spec/eol_stash_apply_spec.cr",
+      "spec/eol_stash_spec.cr",
+      "spec/eol_stash_warning_source_spec.cr",
+      "src/git/workflow/stash.cr",
+      "src/git/workflow/stash/apply.cr",
+      "src/git/workflow/stash/save.cr",
+      "src/git/workflow/stash/worktree.cr"
+    ]
+  },
+  "verification": "Committed source/index equality and hashes verified; no tests run for checkpoint; combined feature unverified."
+}

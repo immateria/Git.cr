@@ -28,7 +28,7 @@ module Git
                                         max_index_bytes : Int32,
                                         max_total_bytes : Int64,
                                         max_entries : Int32,
-                                        check : Proc(Nil)?) : Nil
+                                        check : Proc(Nil)?, config : Config) : Nil
       tree = read_commit(head_oid, max_bytes: max_object_bytes, check: check).tree
       expected = Checkout.tree_files(self, tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
@@ -38,7 +38,9 @@ module Git
                                                                           expected[entry.path]?.try { |state| state.mode == entry.mode && state.oid == entry.oid } == true
                                                                         end
       Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
-        max_total_bytes: max_total_bytes, check: check, allow_symlinks: true)
+        max_total_bytes: max_total_bytes, check: check, allow_symlinks: true,
+        conversion: Conversion.new(self, config: config, max_bytes: max_object_bytes,
+          max_index_bytes: max_index_bytes, check: check))
     end
   end
 end

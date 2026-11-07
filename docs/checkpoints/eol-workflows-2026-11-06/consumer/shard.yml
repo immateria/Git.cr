@@ -1,0 +1,6 @@
+name: git_eol_workflows_consumer
+version: 0.1.0
+crystal: ">= 1.13.0"
+dependencies:
+  git:
+    path: ../integration

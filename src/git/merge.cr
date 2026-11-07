@@ -32,10 +32,10 @@ module Git
 
     # `git merge --abort`: restore the index and worktree to the branch's
     # commit. Returns the paths it changed.
-    def abort(*, max_object_bytes : Int32 = 8_388_608, max_index_bytes : Int32 = 8_388_608,
+    def abort(*, config : Config? = nil, max_object_bytes : Int32 = 8_388_608, max_index_bytes : Int32 = 8_388_608,
               max_total_bytes : Int64 = 67_108_864, max_entries : Int32 = 10_000,
               check : Proc(Nil)? = nil) : Array(String)
-      @repository.merge_abort(max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
+      @repository.merge_abort(config: config, max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
         max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
     end
   end

@@ -1,12 +1,40 @@
 module Git
+  struct Rebase
+    # :nodoc:
+    # Prepared without publication so initial onto expansion is checked before
+    # rebase state or ORIG_HEAD can become visible.
+    record MovePlan, state : State, from_oid : String, to_oid : String, restore : Bool,
+      observed_head : String?, old : Hash(String, Checkout::FileState),
+      desired : Hash(String, Checkout::FileState), current : Array(Index::Entry),
+      conversion : Conversion, view : Merge::Recovery::View?,
+      observations : Hash(String, Checkout::FileState?), writes : Array(Checkout::Write),
+      image : Index::Image?, blocking_removes : Array(String), trailing_removes : Array(String),
+      transition_dirs : Array(String), checksum : String?, raw_old : Hash(String, Checkout::FileState),
+      raw_desired : Hash(String, Checkout::FileState), restoration_data : String?,
+      restoration_persisted : Bool
+  end
+
   class Repository
     private def rebase_move_branch!(state : Rebase::State, from_oid : String, to_oid : String, *,
                                     log : References::LogEntry,
                                     max_object_bytes : Int32, max_index_bytes : Int32,
                                     max_total_bytes : Int64, max_entries : Int32,
-                                    check : Proc(Nil)?, restore : Bool = false) : Array(String)
+                                    check : Proc(Nil)?, config : Config, restore : Bool = false) : Array(String)
       return [] of String if from_oid == to_oid && !restore
-      raise Error.new("Git rebase move state changed") unless rebase_state? == state
+      plan = rebase_prepare_move(state, from_oid, to_oid, max_object_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
+        max_entries: max_entries, check: check, config: config, restore: restore)
+      rebase_publish_move!(plan, log: log, max_object_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, max_total_bytes: max_total_bytes,
+        max_entries: max_entries, check: check)
+    end
+
+    private def rebase_prepare_move(state : Rebase::State, from_oid : String, to_oid : String, *,
+                                    max_object_bytes : Int32, max_index_bytes : Int32,
+                                    max_total_bytes : Int64, max_entries : Int32,
+                                    check : Proc(Nil)?, config : Config, restore : Bool = false,
+                                    require_state : Bool = true) : Rebase::MovePlan
+      raise Error.new("Git rebase move state changed") unless rebase_state? == (require_state ? state : nil)
       branch, observed_head = head_ref_and_oid
       raise Error.new("Git rebase move HEAD changed") unless branch == state.branch &&
                                                              (observed_head == from_oid || (restore && observed_head == to_oid))
@@ -16,36 +44,72 @@ module Git
         max_files: max_entries, check: check, allow_symlinks: true)
       desired = Checkout.tree_files(self, target_tree, max_object_bytes: max_object_bytes,
         max_files: max_entries, check: check, allow_symlinks: true)
+      checksum = @index.snapshot_checksum(max_index_bytes)
       current = @index.entries(max_index_bytes) { check.try &.call }
       unless Merge.index_matches_head?(current, old) || (restore && Merge.index_matches_head?(current, desired))
         raise Error.new("Git rebase move requires index equal to HEAD")
       end
       Checkout.require_tree_paths!(old.keys, "Git rebase predecessor")
       Checkout.require_tree_paths!(desired.keys, "Git rebase destination")
+      conversion = Conversion.new(self, config: config, max_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, check: check)
+      output = Conversion.new(self, config: config, attribute_tree: target_tree,
+        max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+      raw_desired = restore ? output.raw_states(desired, max_total_bytes: max_total_bytes,
+        operation: "Git rebase move") : {} of String => Checkout::FileState
+      restoration_data = nil.as(String?)
+      restoration_persisted = false
+      raw_old = if restore
+                  Conversion.new(self, config: config, attribute_tree: old_tree,
+                    max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+                    .raw_states(old, max_total_bytes: max_total_bytes, operation: "Git rebase abort")
+                else
+                  {} of String => Checkout::FileState
+                end
+      if restore
+        parent = DescriptorPath::Directory.open(@git_dir)
+        child = nil.as(DescriptorPath::Directory?)
+        begin
+          child = parent.open_directory("rebase-merge")
+          raise Error.new("Git rebase move state changed") unless rebase_state? == state
+          restoration_persisted = !!child.not_nil!.stat?("worktree-restore")
+          restoration_data = replay_recovery!(child.not_nil!, "worktree-restore",
+            "#{state.branch}:#{state.original_head}:#{state.onto}:#{state.next_index}:#{from_oid}:#{to_oid}",
+            raw_old, raw_desired, max_bytes: max_index_bytes, max_entries: max_entries, persist: false)
+        ensure
+          child.try &.close
+          parent.close
+        end
+      end
+      clean_observations = {} of String => Checkout::FileState
       view = if restore
                # An interrupted abort can leave either tree's files or either
                # complete index image. Admit only those exact bytes, including
                # restored files that have not yet entered the index.
-               receipt = Merge::Recovery::Receipt.new(old.keys, old)
-               observed = Merge::Recovery.observe(self, current, desired, receipt,
+               receipt = Merge::Recovery::Receipt.new(old.keys, raw_old)
+               observed = Merge::Recovery.observe(self, current, raw_desired, receipt,
                  max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes,
                  max_entries: max_entries, check: check)
                observed.observations.each do |path, actual|
-                 if actual && actual != old[path]? && actual != desired[path]?
+                 if actual && actual != raw_old[path]? && actual != raw_desired[path]?
                    raise Error.new("Git rebase abort refuses changed worktree content: #{path}")
                  end
                end
                observed.preflight!(@root, desired.keys, max_entries)
                observed
              else
-               Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
-                 max_total_bytes: max_total_bytes, check: check, allow_symlinks: true)
+               clean_observations = Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
+                 max_total_bytes: max_total_bytes, check: check, allow_symlinks: true, conversion: conversion)
                Checkout.require_transition_destinations!(@root, old.keys, desired.keys,
                  max_entries: max_entries)
                nil
              end
-      observations = view ? view.observations : old.transform_values { |value| value.as(Checkout::FileState?) }
-      changed = (observations.keys + desired.keys).uniq.sort.select { |path| observations[path]? != desired[path]? }
+      observations = view ? view.observations : clean_observations.transform_values { |value| value.as(Checkout::FileState?) }
+      changed = if restore
+                  (observations.keys + desired.keys).uniq.sort.select { |path| observations[path]? != raw_desired[path]? }
+                else
+                  (old.keys + desired.keys).uniq.sort.select { |path| old[path]? != desired[path]? }
+                end
       raise Error.new("Git rebase move entry budget exceeded") if changed.size > max_entries
       edits = [] of Index::Edit
       writes = [] of Checkout::Write
@@ -65,6 +129,8 @@ module Git
           edits << Index::Remove.new(path)
         end
       end
+      writes = output.materialize(writes, max_total_bytes: max_total_bytes - (view.try(&.bytes) || 0_i64),
+        operation: "Git rebase move")
       if restore
         edits = IndexRestore.edits(current, IndexRestore.source_entries(self, target_tree,
           max_object_bytes: max_object_bytes, max_entries: max_entries, check: check), nil)
@@ -76,7 +142,27 @@ module Git
         write_paths.any? { |written| Checkout.transition_blocker?(path, written) }
       end
       transition_dirs = view ? view.transition_directories(desired.keys) : Checkout.transition_directories(old.keys, desired.keys)
-      checksum = @index.snapshot_checksum(max_index_bytes)
+      check.try &.call
+      raise Error.new("Git rebase move state changed") unless rebase_state? == (require_state ? state : nil)
+      raise Error.new("Git rebase move HEAD changed") unless head_ref_and_oid == {state.branch, observed_head}
+      raise Error.new("Git rebase move index changed") unless @index.snapshot_checksum(max_index_bytes) == checksum
+      Rebase::MovePlan.new(state, from_oid, to_oid, restore, observed_head, old, desired,
+        current, conversion, view, observations, writes, image, blocking_removes,
+        trailing_removes, transition_dirs, checksum, raw_old, raw_desired,
+        restoration_data, restoration_persisted)
+    end
+
+    private def rebase_publish_move!(plan : Rebase::MovePlan, *, log : References::LogEntry,
+                                     max_object_bytes : Int32, max_index_bytes : Int32,
+                                     max_total_bytes : Int64, max_entries : Int32,
+                                     check : Proc(Nil)?) : Array(String)
+      state, from_oid, to_oid, restore = {plan.state, plan.from_oid, plan.to_oid, plan.restore}
+      observed_head, old, desired, current = {plan.observed_head, plan.old, plan.desired, plan.current}
+      conversion, view, observations, writes = {plan.conversion, plan.view, plan.observations, plan.writes}
+      image, blocking_removes, trailing_removes = {plan.image, plan.blocking_removes, plan.trailing_removes}
+      transition_dirs, checksum = {plan.transition_dirs, plan.checksum}
+      raw_old, raw_desired = {plan.raw_old, plan.raw_desired}
+      restoration_data, restoration_persisted = {plan.restoration_data, plan.restoration_persisted}
       admin = DescriptorPath::Directory.open(@git_dir)
       index_lock = nil.as(IO::FileDescriptor?)
       started = false
@@ -88,6 +174,17 @@ module Git
         guard = -> do
           check.try &.call
           raise Error.new("Git rebase move state changed") unless rebase_state? == state
+          if restoration_persisted
+            parent = DescriptorPath::Directory.open(@git_dir)
+            child = nil.as(DescriptorPath::Directory?)
+            begin
+              child = parent.open_directory("rebase-merge")
+              raise Error.new("Git rebase restoration metadata changed") unless Merge::Recovery.read(child.not_nil!, "worktree-restore", max_index_bytes) == restoration_data
+            ensure
+              child.try &.close
+              parent.close
+            end
+          end
           raise Error.new("Git rebase move HEAD changed") unless head_ref_and_oid == {state.branch, observed_head}
           raise Error.new("Git rebase move index changed") unless @index.snapshot_checksum(max_index_bytes) == checksum
         end
@@ -96,7 +193,7 @@ module Git
           view.preflight!(@root, desired.keys, max_entries)
         else
           Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
-            max_total_bytes: max_total_bytes, check: check, allow_symlinks: true)
+            max_total_bytes: max_total_bytes, check: check, allow_symlinks: true, conversion: conversion)
           Checkout.require_transition_destinations!(@root, old.keys, desired.keys,
             max_entries: max_entries)
         end
@@ -105,6 +202,22 @@ module Git
           index_lock.write(planned.data.to_slice)
           index_lock.flush
           index_lock.fsync
+        end
+        if restore
+          parent = DescriptorPath::Directory.open(@git_dir)
+          child = nil.as(DescriptorPath::Directory?)
+          begin
+            child = parent.open_directory("rebase-merge")
+            replay_recovery!(child.not_nil!, "worktree-restore",
+              "#{state.branch}:#{state.original_head}:#{state.onto}:#{state.next_index}:#{from_oid}:#{to_oid}",
+              raw_old, raw_desired, max_bytes: max_index_bytes, max_entries: max_entries)
+            rebase_mark_restoring!(child.not_nil!, state)
+            restoration_persisted = true
+          ensure
+            child.try &.close
+            parent.close
+          end
+          guard.call
         end
         blocking_removes.each do |path|
           started = true

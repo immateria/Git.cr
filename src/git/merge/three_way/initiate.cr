@@ -5,20 +5,21 @@ module Git
     # A clean merge is committed with two parents. Conflicts retain real
     # index stages and MERGE_HEAD for explicit continuation or abort.
     def merge(source : String, *, author : Signature, committer : Signature,
+              config : Config? = nil,
               message : String, max_history_nodes : Int32 = 16_384,
               max_object_bytes : Int32 = 8_388_608,
               max_index_bytes : Int32 = 8_388_608,
               max_total_bytes : Int64 = 67_108_864,
               max_entries : Int32 = 10_000,
               check : Proc(Nil)? = nil) : Merge::Result
-      merge_as("merge #{source}", source, author: author, committer: committer,
+      merge_as("merge #{source}", source, author: author, committer: committer, config: config,
         message: message, max_history_nodes: max_history_nodes,
         max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
         max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
     end
 
     # merge, logging as Git's reflog action (`merge <source>`, `pull`).
-    protected def merge_as(action : String, source : String, *, author : Signature,
+    protected def merge_as(action : String, source : String, *, author : Signature, config : Config? = nil,
                            committer : Signature, message : String,
                            max_history_nodes : Int32 = 16_384,
                            max_object_bytes : Int32 = 8_388_608,
@@ -27,6 +28,7 @@ module Git
                            max_entries : Int32 = 10_000,
                            check : Proc(Nil)? = nil) : Merge::Result
       require_worktree!
+      selected_config = config || self.config
       raise ArgumentError.new("invalid Git three-way merge budgets") if max_history_nodes < 1 || max_object_bytes < 128 ||
                                                                         max_index_bytes < 128 || max_total_bytes < max_object_bytes ||
                                                                         max_entries < 1 || max_entries > @max_search_entries
@@ -51,7 +53,7 @@ module Git
         return Merge::Result.new(old_oid, target, bases[0], [] of String, [] of String, nil)
       end
       if bases == [old_oid]
-        fast = fast_forward_as(action, source, max_history_nodes: max_history_nodes,
+        fast = fast_forward_as(action, source, config: selected_config, max_history_nodes: max_history_nodes,
           max_object_bytes: max_object_bytes, max_index_bytes: max_index_bytes,
           max_total_bytes: max_total_bytes, max_entries: max_entries, actor: committer, check: check)
         return Merge::Result.new(old_oid, target, old_oid, fast.changed_paths, [] of String, target)
@@ -77,15 +79,20 @@ module Git
         max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes, check: check, their_label: source)
       current = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git merge requires index equal to HEAD") unless Merge.index_matches_head?(current, ours)
-      Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
-        max_total_bytes: max_total_bytes, check: check, allow_symlinks: true)
+      clean_conversion = Conversion.new(self, config: selected_config, max_bytes: max_object_bytes,
+        max_index_bytes: max_index_bytes, check: check)
+      observed = Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
+        max_total_bytes: max_total_bytes, check: check, allow_symlinks: true, conversion: clean_conversion)
       plan = Merge.plan_files(self, names, base, ours, theirs, rename_plan,
         marker_label: source, operation: "Git merge",
         max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes, check: check)
       plan = Merge.relocate_directories(self, plan, current, ours, theirs,
         their_label: source, max_object_bytes: max_object_bytes,
         max_total_bytes: max_total_bytes, max_entries: max_entries, check: check)
-      edits, writes, conflicts = {plan.edits, plan.writes, plan.conflicts}
+      output_conversion = Conversion.for_index(self, current, edits: plan.edits, writes: plan.writes,
+        config: selected_config, max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+      writes = output_conversion.materialize(plan.writes, max_total_bytes: max_total_bytes, operation: "Git merge")
+      edits, conflicts = {plan.edits, plan.conflicts}
       final_paths = plan.final_paths(current)
       if Checkout.path_collision(final_paths)
         raise Error.new("Git merge divergent file/directory conflict unsupported")
@@ -120,7 +127,7 @@ module Git
         end
         guard.call
         Checkout.require_clean!(self, current, max_blob_bytes: max_object_bytes,
-          max_total_bytes: max_total_bytes, check: check, allow_symlinks: true)
+          max_total_bytes: max_total_bytes, check: check, allow_symlinks: true, conversion: clean_conversion)
         Checkout.require_transition_destinations!(@root, ours.keys, final_paths,
           max_entries: max_entries)
         started = true
@@ -133,20 +140,20 @@ module Git
           lock.flush
           lock.fsync
         end
-        blocking_removals.each do |path, state|
-          Checkout.remove(@root, path, state, format: @object_format, check: guard)
+        blocking_removals.each do |path, _state|
+          Checkout.remove(@root, path, observed[path], format: @object_format, check: guard)
           changed_paths << path
         end
         transition_dirs.each do |directory|
           Checkout.remove_empty_directory(@root, directory, check: guard)
         end
         writes.each_with_index do |write, sequence|
-          Checkout.write(@root, write, sequence, expected_old: ours[write.path]?,
+          Checkout.write(@root, write, sequence, expected_old: observed[write.path]?,
             format: @object_format, check: guard)
           changed_paths << write.path
         end
-        trailing_removals.each do |path, state|
-          Checkout.remove(@root, path, state, format: @object_format, check: guard)
+        trailing_removals.each do |path, _state|
+          Checkout.remove(@root, path, observed[path], format: @object_format, check: guard)
           changed_paths << path
         end
         if image

@@ -36,10 +36,13 @@ module Git
         max_files: max_entries, check: check)
       index = @index.entries(max_index_bytes) { check.try &.call }
       raise Error.new("Git hard reset index entry budget exceeded") if index.size > max_entries
-      target_conversion = unless clean_only
-        Conversion.new(self, config: config, attribute_tree: target_tree,
-          max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
-      end
+      selected_config = config || self.config
+      target_conversion = Conversion.new(self, config: selected_config, attribute_tree: target_tree,
+        max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+      source_conversion = if clean_only
+                            Conversion.new(self, config: selected_config,
+                              max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+                          end
       index.each do |entry|
         raise Error.new("Git hard reset requires an ordinary resolved index") unless entry.stage == 0 &&
                                                                                      !entry.intent && !entry.skip_worktree && !entry.assume_unchanged &&
@@ -50,7 +53,7 @@ module Git
                                                                                       old[entry.path]?.try { |state| state.mode == entry.mode && state.oid == entry.oid } == true
                                                                                     end
         Checkout.require_clean!(self, index, max_blob_bytes: max_object_bytes,
-          max_total_bytes: max_total_bytes, check: check)
+          max_total_bytes: max_total_bytes, check: check, conversion: source_conversion)
       end
       index_by_path = {} of String => Index::Entry
       index.each { |entry| index_by_path[entry.path] = entry }
@@ -77,6 +80,7 @@ module Git
         indexed = index_by_path[path]?
         stat_clean = indexed ? @worktree.stat_unchanged?(indexed, true, index_time, verified) { check.try &.call } : false
         current = nil.as(Checkout::FileState?)
+        clean_current = nil.as(Checkout::FileState?)
         if tracked.includes?(path)
           parent = @root
           path.split('/')[0...-1].each do |component|
@@ -93,18 +97,21 @@ module Git
             transferred += data.bytesize
             raise Error.new("Git hard reset total byte budget exceeded") if transferred > max_total_bytes
             current = Checkout::FileState.new(mode, ObjectId.digest("blob", data, @object_format))
+            if source_conversion
+              canonical = source_conversion.clean(path, data, index_oid: indexed.try(&.oid))
+              clean_current = Checkout::FileState.new(mode, ObjectId.digest("blob", canonical, @object_format))
+            end
           end
         end
-        if clean_only && old[path]? != current
+        if clean_only && old[path]? != clean_current
           raise Error.new("Git clean-only reset refuses dirty tracked files")
         end
         observed[path] = current
         if goal = desired[path]?
-          next if stat_clean && indexed && goal.mode == indexed.mode && goal.oid == indexed.oid
-          next if clean_only && goal == current
+          next if (clean_only || stat_clean) && indexed && goal.mode == indexed.mode && goal.oid == indexed.oid
           kind, bytes = object(goal.oid, max_object_bytes) { check.try &.call }
           raise Error.new("Git hard reset target not a blob") unless kind == "blob"
-          data = target_conversion ? target_conversion.checkout(path, bytes) : bytes
+          data = target_conversion.checkout(path, bytes)
           transferred += data.bytesize
           raise Error.new("Git hard reset total byte budget exceeded") if transferred > max_total_bytes
           output = Checkout::FileState.new(goal.mode, ObjectId.digest("blob", data, @object_format))
@@ -140,7 +147,7 @@ module Git
         guard.call
         if clean_only
           Checkout.require_clean!(self, index, max_blob_bytes: max_object_bytes,
-            max_total_bytes: max_total_bytes, check: check)
+            max_total_bytes: max_total_bytes, check: check, conversion: source_conversion)
         end
         if prepared = image
           raise Error.new("Git hard reset index image diverged") unless @index.image_state(prepared, max_bytes: max_index_bytes) == :before

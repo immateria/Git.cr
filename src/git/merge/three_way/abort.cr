@@ -3,12 +3,13 @@ module Git
     # Abort an incomplete native merge by restoring ordinary tracked content
     # and the entire index to the still-current original HEAD. This is an
     # explicitly destructive operation on merge-touched tracked paths.
-    protected def merge_abort(*, max_object_bytes : Int32 = 8_388_608,
+    protected def merge_abort(*, config : Config? = nil, max_object_bytes : Int32 = 8_388_608,
                               max_index_bytes : Int32 = 8_388_608,
                               max_total_bytes : Int64 = 67_108_864,
                               max_entries : Int32 = 10_000,
                               check : Proc(Nil)? = nil) : Array(String)
       require_worktree!
+      selected_config = config || self.config
       branch, ours_oid, theirs_oid = merge_state? || raise Error.new("no Git merge in progress")
       raise Error.new("Git merge abort HEAD changed") unless head_ref_and_oid == {branch, ours_oid}
       ours_tree = read_commit(ours_oid, max_bytes: max_object_bytes, check: check).tree
@@ -27,7 +28,10 @@ module Git
       allowed = (ours.keys + theirs.keys + receipt.paths + receipt.outputs.keys).uniq
       raise Error.new("Git merge abort refuses unrelated staged paths") if current.any? { |entry| !allowed.includes?(entry.path) }
       Checkout.require_tree_paths!(ours.keys, "Git merge abort target")
-      view = Merge::Recovery.observe(self, current, ours, receipt,
+      conversion = Conversion.new(self, config: selected_config, attribute_tree: ours_tree,
+        max_bytes: max_object_bytes, max_index_bytes: max_index_bytes, check: check)
+      raw_ours = conversion.raw_states(ours, max_total_bytes: max_total_bytes, operation: "Git merge abort")
+      view = Merge::Recovery.observe(self, current, raw_ours, receipt,
         max_object_bytes: max_object_bytes, max_total_bytes: max_total_bytes,
         max_entries: max_entries, check: check)
       view.preflight!(@root, ours.keys, max_entries)
@@ -45,12 +49,13 @@ module Git
         check.try &.call
         observed = observations[path]
         if goal = ours[path]?
-          next if goal == observed
+          next if raw_ours[path] == observed
           kind, raw = object(goal.oid, max_object_bytes) { check.try &.call }
           raise Error.new("Git merge abort source not blob") unless kind == "blob"
-          total += raw.bytesize
+          data = goal.mode == "120000" ? raw : conversion.checkout(path, raw)
+          total += data.bytesize
           raise Error.new("Git merge abort total byte budget exceeded") if total > max_total_bytes
-          writes << Checkout::Write.new(path, goal.mode, goal.oid, raw)
+          writes << Checkout::Write.new(path, goal.mode, goal.oid, data)
         elsif observed_state = observed
           removals << {path, observed_state}
         end

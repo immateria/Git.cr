@@ -50,6 +50,7 @@ module Git
     def initialize(@repository : Repository, *, config : Config? = nil,
                    attribute_tree : String? = nil,
                    attribute_blobs : Hash(String, String?)? = nil,
+                   worktree_fallback : Bool = false, worktree_index_fallback : Bool = false,
                    @max_bytes : Int32 = 8_388_608,
                    @max_index_bytes : Int32 = 8_388_608,
                    @warning : Proc(String, Nil)? = nil, @check : Proc(Nil)? = nil)
@@ -78,6 +79,7 @@ module Git
       @safe_crlf = !@warn_crlf && @config.boolean?("core.safecrlf") == true
       @attributes = Attributes.new(@repository, config: @config,
         attribute_tree: attribute_tree, attribute_blobs: attribute_blobs,
+        worktree_fallback: worktree_fallback, worktree_index_fallback: worktree_index_fallback,
         max_bytes: @max_bytes, max_index_bytes: @max_index_bytes, check: @check)
     end
 

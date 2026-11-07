@@ -25,9 +25,12 @@ module Git
         original = sequencer_read_metadata?(admin, "CRYSTAL_SEQUENCER_ORIG") ||
                    raise Error.new("Git sequencer original state missing")
         lines = original.lines.map(&.strip)
-        versioned = lines.size == 3 && lines[2] == Merge::Recovery::STATE_VERSION
-        raise Error.new("Git sequencer original state invalid") unless lines.size == 2 || versioned
+        restoring = lines.size == 4 && lines[3] == Sequencer::RESTORING
+        versioned = (lines.size == 3 || restoring) && lines[2] == Merge::Recovery::STATE_VERSION
+        legacy = lines.size == 2 || (restoring && lines[2] == "legacy")
+        raise Error.new("Git sequencer original state invalid") unless legacy || versioned
         Merge::Recovery.require_versioned!(admin, "CRYSTAL_SEQUENCER_PATHS") if versioned
+        replay_require_recovery!(admin, "CRYSTAL_SEQUENCER_RESTORE") if restoring
         branch = if lines[0] == "-"
                    nil
                  else
